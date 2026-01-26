@@ -205,3 +205,48 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test and type checker caches
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+
+# Coverage
+.coverage
+htmlcov/
+
+# Local config/env
+.env
+.env.*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Audio captures
+*.wav
+documents/EN50067_RDS_Standard.pdf
+documents/IEC-62106-2-2018.pdf
+documents/IEC-62106-6-2023.pdf
+documents/R-REC-BS.450-4-201910-I!!PDF-E.pdf
+documents/trev_307-radiotext.pdf
+documents/rds-docs-unlocked.pdf
+captures/**
