@@ -90,7 +90,7 @@ Open `http://localhost:8300`.
 
 Default login (if not overridden in `stereofool.ini` or Settings):
 - Username: `admin`
-- Password: `demo`
+- Password: `pass`
 
 ## Configuration
 

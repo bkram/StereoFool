@@ -831,11 +831,11 @@ MPX_HTML = r"""
                         <div class="section-body">
                             <div class="grid grid-cols-2 gap-2">
                             <div>
-                                <label>Output Device</label>
+                                <label>Input Device</label>
                                 <div class="live-display sub" id="live_device_out"> </div>
                             </div>
                             <div>
-                                <label>Input Device</label>
+                                <label>Output Device</label>
                                 <div class="live-display sub" id="live_device_in"> </div>
                             </div>
                             </div>
@@ -928,45 +928,49 @@ MPX_HTML = r"""
                     <div class="section">
                         <div class="section-header">Monitor Audio Path</div>
                         <div class="section-body">
-                            <div class="text-[11px] text-gray-400 mb-2">Demodulated monitor signal flow.</div>
-                            <div class="bg-black/50 border border-gray-700 rounded px-3 py-2 text-[11px] text-gray-200 leading-relaxed">
-                                MPX pre-gain
-                                &gt; L+R low-pass 15 kHz
-                                &gt; L-R band-pass 23-53 kHz
-                                &gt; 38 kHz demod
-                                &gt; L-R low-pass 15 kHz
-                                &gt; stereo decode
-                                &gt; de-emphasis
-                                &gt; resample
-                                &gt; monitor out
-                            </div>
+                            <div class="text-xs text-gray-400 mb-2">Demodulated monitor signal flow.</div>
+                            <ul class="bg-black/50 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 leading-relaxed list-disc pl-5">
+                                <li>MPX pre-gain</li>
+                                <li>L+R low-pass (15 kHz)</li>
+                                <li>L-R band-pass (23-53 kHz)</li>
+                                <li>38 kHz demod</li>
+                                <li>L-R low-pass (15 kHz)</li>
+                                <li>Stereo decode</li>
+                                <li>De-emphasis</li>
+                                <li>Resample</li>
+                                <li>Monitor out</li>
+                            </ul>
                         </div>
                     </div>
                     <div class="section">
                         <div class="section-header">MPX + RDS Chain</div>
                         <div class="section-body">
-                            <div class="text-[11px] text-gray-400 mb-2">Main stereo MPX chain (simplified).</div>
-                            <div class="bg-black/50 border border-gray-700 rounded px-3 py-2 text-[11px] text-gray-200 leading-relaxed">
-                                Source input or tone
-                                &gt; input gain
-                                &gt; HPF + LPF + HF trim + pilot notch
-                                &gt; AGC
-                                &gt; multiband
-                                &gt; audio limiter
-                                &gt; L+R / L-R
-                                &gt; pre-emphasis
-                                &gt; pre-emphasis limiter
-                                &gt; M/S clamp
-                                &gt; 38 kHz DSB + band-pass
-                                &gt; L+R + DSB sum
-                                &gt; audio MPX LPF
-                                &gt; composite clip / MPX limiter
-                                &gt; deviation scale
-                                &gt; pilot + RDS add
-                                &gt; audio headroom trim
-                                &gt; DC block + notch
-                                &gt; output gain
-                            </div>
+                            <div class="text-xs text-gray-400 mb-2">Main stereo MPX chain (simplified).</div>
+                            <ul class="bg-black/50 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 leading-relaxed list-disc pl-5">
+                                <li>Source input or tone</li>
+                                <li>Input gain</li>
+                                <li>HPF</li>
+                                <li>LPF</li>
+                                <li>HF trim</li>
+                                <li>Pilot notch</li>
+                                <li>Multiband (optional)</li>
+                                <li>Stereo widen (optional)</li>
+                                <li>LPF (post widen)</li>
+                                <li>L+R / L-R</li>
+                                <li>Pre-emphasis</li>
+                                <li>Pre-emphasis limiter (optional)</li>
+                                <li>Safety gain (post pre-emphasis)</li>
+                                <li>38 kHz DSB + band-pass</li>
+                                <li>L+R + DSB sum</li>
+                                <li>Audio MPX LPF</li>
+                                <li>Composite clip (optional)</li>
+                                <li>MPX lookahead limiter (optional)</li>
+                                <li>Deviation scale</li>
+                                <li>Pilot + RDS add</li>
+                                <li>Audio headroom trim</li>
+                                <li>DC block + notch</li>
+                                <li>Output gain</li>
+                            </ul>
                         </div>
                     </div>
                 </div>

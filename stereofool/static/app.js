@@ -317,8 +317,8 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         if (data.device_out_name || data.device_in_name) {
             const outName = data.device_out_name || 'None';
             const inName = data.device_in_name || 'None';
-            setText('live_device_out', outName);
-            setText('live_device_in', inName);
+            setText('live_device_out', inName);
+            setText('live_device_in', outName);
         } else {
             setText('live_device_out', ' ');
             setText('live_device_in', ' ');

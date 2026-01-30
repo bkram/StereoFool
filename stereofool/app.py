@@ -11,7 +11,7 @@ import threading
 import time
 import wave
 from collections import deque
-from typing import Any, Mapping, Sequence, cast
+from typing import Any, Mapping, Sequence, TypedDict, cast
 
 if __package__ in (None, ""):
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -54,9 +54,17 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("stereofool")
 
-auth_config: dict[str, str] = {"user": "admin", "pass": "pass"}
-server_config: dict[str, int | None] = {"port": None}
 allow_subnets: list[str] = ["127.0.0.0/8", "::1/128"]
+class ServerConfig(TypedDict):
+    port: int | None
+    allow_subnets: list[str]
+
+
+auth_config: dict[str, str] = {"user": "admin", "pass": "pass"}
+server_config: ServerConfig = {
+    "port": None,
+    "allow_subnets": list(allow_subnets),
+}
 
 RESTART_KEYS = {
     "device_out_idx",
@@ -484,6 +492,7 @@ def load_config():
                 parsed = _parse_subnets(config["SYSTEM"].get("allow_subnets", ""))
                 if parsed:
                     allow_subnets[:] = parsed
+                server_config["allow_subnets"] = list(allow_subnets)
         if "INTERFACES" in config:
             if "device_out_idx" in config["INTERFACES"]:
                 mpx_state["device_out_idx"] = config["INTERFACES"].getint(
@@ -978,6 +987,7 @@ def save_settings():
         auth_config["pass"] = _hash_password(password)
     if parsed_subnets:
         allow_subnets[:] = parsed_subnets
+        server_config["allow_subnets"] = list(allow_subnets)
     session["auth"] = True
     save_config()
     return ("ok", 200)

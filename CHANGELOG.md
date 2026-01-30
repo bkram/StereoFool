@@ -4,7 +4,10 @@
 
 - Windows audio host API preference now favors DirectSound (MME remains available).
 - Startup now normalizes saved device indices to valid devices, avoiding bad/stale selections.
+- RDS default strings synced with shipped `stereofool.ini`.
+- Monitoring device labels/values swapped.
 - README: added a Windows note about launching with higher priority on low-end systems.
+- Help tab updated to match the current DSP chain order.
 
 ## 0.4
 
