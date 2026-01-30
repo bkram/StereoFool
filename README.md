@@ -80,11 +80,17 @@ pip install -r requirements.txt
 python stereofool/app.py
 ```
 
+On Windows, on low-end systems, higher priority may improve stability:
+
+```cmd
+start "" /HIGH python stereofool/app.py
+```
+
 Open `http://localhost:8300`.
 
 Default login (if not overridden in `stereofool.ini` or Settings):
 - Username: `admin`
-- Password: `pass`
+- Password: `demo`
 
 ## Configuration
 
@@ -172,4 +178,4 @@ pyright
 
 ## License
 
-TBD
+GPL-3.0. See `LICENSE`.

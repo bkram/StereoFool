@@ -45,7 +45,7 @@ from stereofool.rds import parse_text_source
 from stereofool.ui import LOGIN_HTML, MPX_HTML
 
 
-APP_VERSION = "0.4"
+APP_VERSION = "0.5"
 app = Flask(__name__)
 CONFIG_FILE = "stereofool.ini"
 app.secret_key = os.environ.get("STEREOFOOL_SECRET", os.urandom(24).hex())
@@ -86,7 +86,7 @@ restart_state = {"pending": False}
 capture_seconds_cli: float | None = None
 
 PREFERRED_HOSTAPIS = {
-    "win": ["MME"],
+    "win": ["Windows DirectSound", "MME"],
     "darwin": ["Core Audio"],
     "linux": ["ALSA", "PulseAudio", "JACK"],
 }
@@ -388,6 +388,45 @@ def get_valid_input_devices(force_refresh=False):
         logger.warning("Device Error: %s", exc)
     device_cache["inputs"] = valid_inputs
     return valid_inputs
+
+
+def normalize_device_indices():
+    outputs = get_valid_devices(force_refresh=True)
+    inputs = get_valid_input_devices(force_refresh=True)
+    valid_outputs = {d["index"] for d in outputs}
+    valid_inputs = {d["index"] for d in inputs}
+
+    current_out = mpx_state.get("device_out_idx", -1)
+    if current_out is not None and current_out >= 0 and current_out not in valid_outputs:
+        if outputs:
+            mpx_state["device_out_idx"] = outputs[0]["index"]
+            logger.warning(
+                "StereoFool: output device %s not usable; selecting %s",
+                current_out,
+                outputs[0]["name"],
+            )
+        else:
+            mpx_state["device_out_idx"] = -1
+            logger.warning(
+                "StereoFool: output device %s not usable; disabling output",
+                current_out,
+            )
+
+    current_in = mpx_state.get("device_in_idx", -1)
+    if current_in is not None and current_in >= 0 and current_in not in valid_inputs:
+        if mpx_state.get("source_mode") == "input" and inputs:
+            mpx_state["device_in_idx"] = inputs[0]["index"]
+            logger.warning(
+                "StereoFool: input device %s not usable; selecting %s",
+                current_in,
+                inputs[0]["name"],
+            )
+        else:
+            mpx_state["device_in_idx"] = -1
+            logger.warning(
+                "StereoFool: input device %s not usable; disabling input",
+                current_in,
+            )
 
 
 def select_sample_rate(device_out_idx, device_in_idx):
@@ -1087,8 +1126,7 @@ if __name__ == "__main__":
             )
     except Exception as exc:
         logger.warning("StereoFool: device list unavailable: %s", exc)
-    get_valid_devices(force_refresh=True)
-    get_valid_input_devices(force_refresh=True)
+    normalize_device_indices()
     auto_start_if_enabled()
     default_port = 8300
     port = server_config.get("port") or default_port

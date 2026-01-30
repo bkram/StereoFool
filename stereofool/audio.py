@@ -139,7 +139,7 @@ class FMEngine:
 
     def _init_audio_filters(self):
         self.audio_lpf_sos = dsp_signal.butter(
-            8, 15000, btype="low", fs=self.proc_rate, output="sos"
+            10, 15000, btype="low", fs=self.proc_rate, output="sos"
         )
         self.audio_lpf_zi_l = (dsp_signal.sosfilt_zi(self.audio_lpf_sos) * 0).astype(self.dtype)
         self.audio_lpf_zi_r = (dsp_signal.sosfilt_zi(self.audio_lpf_sos) * 0).astype(self.dtype)

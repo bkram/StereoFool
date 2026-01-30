@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5
+
+- Windows audio host API preference now favors DirectSound (MME remains available).
+- Startup now normalizes saved device indices to valid devices, avoiding bad/stale selections.
+- README: added a Windows note about launching with higher priority on low-end systems.
+
 ## 0.4
 
 - Removed AGC and input limiter from the processing chain and UI.
