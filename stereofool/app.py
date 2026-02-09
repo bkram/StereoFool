@@ -58,7 +58,8 @@ LOGIN_TEMPLATE = app.jinja_env.from_string(LOGIN_HTML)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("stereofool")
 
-allow_subnets: list[str] = ["127.0.0.0/8", "::1/128"]
+BUILTIN_ALLOW_SUBNETS = ("127.0.0.0/8", "::1/128")
+allow_subnets: list[str] = list(BUILTIN_ALLOW_SUBNETS)
 class ServerConfig(TypedDict):
     port: int | None
     allow_subnets: list[str]
@@ -388,6 +389,18 @@ def _parse_subnets(value):
     return subnets
 
 
+def _merge_allow_subnets(subnets: Sequence[str]) -> list[str]:
+    merged: list[str] = []
+    for subnet in [*BUILTIN_ALLOW_SUBNETS, *subnets]:
+        if subnet not in merged:
+            merged.append(subnet)
+    return merged
+
+
+def _custom_allow_subnets() -> list[str]:
+    return [net for net in allow_subnets if net not in BUILTIN_ALLOW_SUBNETS]
+
+
 def _client_ip():
     return request.headers.get("X-Forwarded-For", request.remote_addr or "").split(",")[0].strip()
 
@@ -631,9 +644,10 @@ def load_config():
                 server_config["port"] = config["SYSTEM"].getint("port", fallback=None)
             if "allow_subnets" in config["SYSTEM"]:
                 parsed = _parse_subnets(config["SYSTEM"].get("allow_subnets", ""))
-                if parsed:
-                    allow_subnets[:] = parsed
-                server_config["allow_subnets"] = list(allow_subnets)
+                allow_subnets[:] = _merge_allow_subnets(parsed)
+            else:
+                allow_subnets[:] = list(BUILTIN_ALLOW_SUBNETS)
+            server_config["allow_subnets"] = list(allow_subnets)
         if "INTERFACES" in config:
             if "device_out_idx" in config["INTERFACES"]:
                 mpx_state["device_out_idx"] = config["INTERFACES"].getint(
@@ -726,7 +740,7 @@ def _write_config_now():
         }
         if not config.has_section("SYSTEM"):
             config.add_section("SYSTEM")
-        config["SYSTEM"]["allow_subnets"] = ", ".join(allow_subnets)
+        config["SYSTEM"]["allow_subnets"] = ", ".join(_custom_allow_subnets())
         if not config.has_section("INTERFACES"):
             config.add_section("INTERFACES")
         config["INTERFACES"]["device_out_idx"] = str(mpx_state.get("device_out_idx", 0))
@@ -1248,9 +1262,8 @@ def save_settings():
         auth_config["user"] = user
     if password:
         auth_config["pass"] = _hash_password(password)
-    if parsed_subnets:
-        allow_subnets[:] = parsed_subnets
-        server_config["allow_subnets"] = list(allow_subnets)
+    allow_subnets[:] = _merge_allow_subnets(parsed_subnets)
+    server_config["allow_subnets"] = list(allow_subnets)
     session["auth"] = True
     _bump_ui_revision()
     save_config()
