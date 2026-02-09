@@ -930,14 +930,14 @@ MPX_HTML = r"""
                     <div class="section">
                         <div class="section-header">Scopes</div>
                         <div class="section-body" style="display: block;">
-                            <div style="display: flex; gap: 16px; flex-wrap: nowrap;">
-                                <div style="flex: 1 1 0; min-width: 0;">
+                            <div class="scope-row">
+                                <div class="scope-panel">
                                     <label>Stereo Input Scope</label>
-                                    <canvas id="scope_input" width="360" height="120" class="w-full bg-black/70 border border-gray-700 rounded"></canvas>
+                                    <canvas id="scope_input" width="360" height="120" class="scope-canvas w-full bg-black/70 border border-gray-700 rounded"></canvas>
                                 </div>
-                                <div style="flex: 1 1 0; min-width: 0;">
+                                <div class="scope-panel">
                                     <label>MPX Output Scope</label>
-                                    <canvas id="scope_mpx" width="360" height="120" class="w-full bg-black/70 border border-gray-700 rounded"></canvas>
+                                    <canvas id="scope_mpx" width="360" height="120" class="scope-canvas w-full bg-black/70 border border-gray-700 rounded"></canvas>
                                 </div>
                             </div>
                         </div>

@@ -11,6 +11,7 @@ import threading
 import time
 import wave
 from collections import deque
+from pathlib import Path
 from typing import Any, Mapping, Sequence, TypedDict, cast
 
 if __package__ in (None, ""):
@@ -18,7 +19,7 @@ if __package__ in (None, ""):
 
 import numpy as np
 import sounddevice as sd
-from flask import Flask, request, redirect, session, url_for
+from flask import Flask, jsonify, request, redirect, session, url_for
 from flask_socketio import SocketIO, disconnect, join_room
 from scipy import signal as dsp_signal
 
@@ -811,11 +812,76 @@ def text_updater_loop():
         time.sleep(4.0)
 
 
+def refresh_monitor_snapshot() -> dict[str, Any]:
+    with monitor_lock:
+        monitor_data["heartbeat"] = int(time.time() * 1000)
+        if rds_state["running"]:
+            monitor_data["af"] = rds_state["af_list"]
+            monitor_data["pty_idx"] = rds_state["pty"]
+            monitor_data["pi"] = rds_state["pi"]
+            monitor_data["pilot_generated"] = True
+            monitor_data["rds_carrier"] = bool(mpx_state.get("en_rds"))
+        else:
+            monitor_data.update(
+                {
+                    "ps": "OFF AIR",
+                    "rt": "Encoder Stopped",
+                    "lps": "",
+                    "ptyn": "",
+                    "af": "",
+                    "pty_idx": 0,
+                    "rt_plus_info": "",
+                    "pi": "----",
+                    "pilot_generated": False,
+                    "rds_carrier": False,
+                }
+            )
+        return dict(monitor_data)
+
+
+def compose_monitor_payload(
+    monitor_snapshot: Mapping[str, Any], input_wave: Sequence[float], mpx_wave: Sequence[float]
+) -> dict[str, Any]:
+    with meter_lock:
+        payload: dict[str, Any] = {
+            "running": mpx_state["running"],
+            "processing_bypass": bool(mpx_state.get("processing_bypass")),
+            **monitor_snapshot,
+            "heartbeat": int(time.time() * 1000),
+            "input_rms": meter_state["input_rms"],
+            "mpx_rms": meter_state["mpx_rms"],
+            "input_peak": meter_state["input_peak"],
+            "mpx_peak": meter_state["mpx_peak"],
+            "input_vu": meter_state["input_vu"],
+            "input_rms_l": meter_state.get("input_rms_l", 0.0),
+            "input_rms_r": meter_state.get("input_rms_r", 0.0),
+            "input_vu_l": meter_state.get("input_vu_l", 0.0),
+            "input_vu_r": meter_state.get("input_vu_r", 0.0),
+            "mpx_vu": meter_state["mpx_vu"],
+            "input_pre_rms": meter_state["input_pre_rms"],
+            "input_pre_peak": meter_state["input_pre_peak"],
+            "input_pre_vu": meter_state["input_pre_vu"],
+            "output_rms": meter_state["output_rms"],
+            "output_peak": meter_state["output_peak"],
+            "output_vu": meter_state["output_vu"],
+            "limiter_active": meter_state["limiter_active"],
+            "multiband_enabled": meter_state["multiband_enabled"],
+            "multiband_active": meter_state["multiband_active"],
+            "stereo_widen_enabled": bool(mpx_state.get("stereo_widen_enabled")),
+            "preemph_limit_enabled": meter_state["preemph_limit_enabled"],
+            "preemph_limit_active": meter_state["preemph_limit_active"],
+            "composite_clip_enabled": meter_state["composite_clip_enabled"],
+            "composite_clip_active": meter_state["composite_clip_active"],
+        }
+    payload["input_wave"] = list(input_wave)
+    payload["mpx_wave"] = list(mpx_wave)
+    return payload
+
+
 def monitor_pusher_loop():
     meta_counter = 0
     wave_counter = 0
-    with monitor_lock:
-        monitor_snapshot = dict(monitor_data)
+    monitor_snapshot = refresh_monitor_snapshot()
     last_input_wave: list[float] = []
     last_mpx_wave: list[float] = []
     while True:
@@ -825,30 +891,7 @@ def monitor_pusher_loop():
             time.sleep(MONITOR_EMIT_INTERVAL)
             continue
         if meta_counter <= 0:
-            with monitor_lock:
-                monitor_data["heartbeat"] = int(time.time() * 1000)
-                if rds_state["running"]:
-                    monitor_data["af"] = rds_state["af_list"]
-                    monitor_data["pty_idx"] = rds_state["pty"]
-                    monitor_data["pi"] = rds_state["pi"]
-                    monitor_data["pilot_generated"] = True
-                    monitor_data["rds_carrier"] = bool(mpx_state.get("en_rds"))
-                else:
-                    monitor_data.update(
-                        {
-                            "ps": "OFF AIR",
-                            "rt": "Encoder Stopped",
-                            "lps": "",
-                            "ptyn": "",
-                            "af": "",
-                            "pty_idx": 0,
-                            "rt_plus_info": "",
-                            "pi": "----",
-                            "pilot_generated": False,
-                            "rds_carrier": False,
-                        }
-                    )
-                monitor_snapshot = dict(monitor_data)
+            monitor_snapshot = refresh_monitor_snapshot()
             meta_counter = MONITOR_META_UPDATE_EVERY
         meta_counter -= 1
 
@@ -859,39 +902,7 @@ def monitor_pusher_loop():
             wave_counter = MONITOR_WAVE_UPDATE_EVERY
         wave_counter -= 1
 
-        with meter_lock:
-            payload = {
-                "running": mpx_state["running"],
-                "processing_bypass": bool(mpx_state.get("processing_bypass")),
-                **monitor_snapshot,
-                "heartbeat": int(time.time() * 1000),
-                "input_rms": meter_state["input_rms"],
-                "mpx_rms": meter_state["mpx_rms"],
-                "input_peak": meter_state["input_peak"],
-                "mpx_peak": meter_state["mpx_peak"],
-                "input_vu": meter_state["input_vu"],
-                "input_rms_l": meter_state.get("input_rms_l", 0.0),
-                "input_rms_r": meter_state.get("input_rms_r", 0.0),
-                "input_vu_l": meter_state.get("input_vu_l", 0.0),
-                "input_vu_r": meter_state.get("input_vu_r", 0.0),
-                "mpx_vu": meter_state["mpx_vu"],
-                "input_pre_rms": meter_state["input_pre_rms"],
-                "input_pre_peak": meter_state["input_pre_peak"],
-                "input_pre_vu": meter_state["input_pre_vu"],
-                "output_rms": meter_state["output_rms"],
-                "output_peak": meter_state["output_peak"],
-                "output_vu": meter_state["output_vu"],
-                "limiter_active": meter_state["limiter_active"],
-                "multiband_enabled": meter_state["multiband_enabled"],
-                "multiband_active": meter_state["multiband_active"],
-                "stereo_widen_enabled": bool(mpx_state.get("stereo_widen_enabled")),
-                "preemph_limit_enabled": meter_state["preemph_limit_enabled"],
-                "preemph_limit_active": meter_state["preemph_limit_active"],
-                "composite_clip_enabled": meter_state["composite_clip_enabled"],
-                "composite_clip_active": meter_state["composite_clip_active"],
-            }
-        payload["input_wave"] = last_input_wave
-        payload["mpx_wave"] = last_mpx_wave
+        payload = compose_monitor_payload(monitor_snapshot, last_input_wave, last_mpx_wave)
         socketio.emit("monitor", payload, to=monitor_room)
         time.sleep(MONITOR_EMIT_INTERVAL)
 
@@ -1246,6 +1257,18 @@ def save_settings():
     return ("ok", 200)
 
 
+@app.route("/monitor_snapshot")
+def monitor_snapshot():
+    if not session.get("auth"):
+        return ("unauthorized", 401)
+    snapshot = refresh_monitor_snapshot()
+    with wave_lock:
+        input_wave = list(wave_state["input_wave"])
+        mpx_wave = list(wave_state["mpx_wave"])
+    payload = compose_monitor_payload(snapshot, input_wave, mpx_wave)
+    return jsonify(payload)
+
+
 @socketio.on("connect")
 def handle_connect():
     global monitor_clients
@@ -1370,39 +1393,44 @@ def handle_control(data):
         logger.info("StereoFool: OFF AIR requested")
 
 
-if __name__ == "__main__":
+def parse_cli_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="StereoFool: composite MPX + RDS")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--save-file", type=str, default=None)
     parser.add_argument("--length", type=float, default=None)
-    args = parser.parse_args()
-    if args.config:
-        CONFIG_FILE = args.config
-        if not os.path.exists(CONFIG_FILE):
-            config = configparser.ConfigParser(interpolation=None)
-            config["SYSTEM"] = {}
-            config["INTERFACES"] = {}
-            config["MPX"] = {
-                k: str(v)
-                for k, v in mpx_state.items()
-                if k
-                not in {
-                    "device_out_idx",
-                    "device_in_idx",
-                    "source_mode",
-                    "wav_record_enabled",
-                    "wav_record_path",
-                    "monitor_enabled",
-                    "monitor_device_idx",
-                    "monitor_rate_hz",
-                }
-            }
-            config["RDS"] = {k: str(v) for k, v in rds_default_state.items()}
-            with open(CONFIG_FILE, "w") as f:
-                config.write(f)
-    load_config()
-    logger.info("StereoFool v%s starting", APP_VERSION)
+    return parser.parse_args()
+
+
+def ensure_config_exists(config_path: str) -> None:
+    path = Path(config_path)
+    if path.exists():
+        return
+    config = configparser.ConfigParser(interpolation=None)
+    config["SYSTEM"] = {}
+    config["INTERFACES"] = {}
+    config["MPX"] = {
+        k: str(v)
+        for k, v in mpx_state.items()
+        if k
+        not in {
+            "device_out_idx",
+            "device_in_idx",
+            "source_mode",
+            "wav_record_enabled",
+            "wav_record_path",
+            "monitor_enabled",
+            "monitor_device_idx",
+            "monitor_rate_hz",
+        }
+    }
+    config["RDS"] = {k: str(v) for k, v in rds_default_state.items()}
+    with path.open("w") as f:
+        config.write(f)
+
+
+def apply_cli_overrides(args: argparse.Namespace) -> None:
+    global capture_seconds_cli
     if args.port:
         server_config["port"] = args.port
     if args.save_file:
@@ -1413,6 +1441,9 @@ if __name__ == "__main__":
         args.length = None
     if args.length is not None:
         capture_seconds_cli = args.length
+
+
+def log_available_devices() -> None:
     try:
         devs = cast(Sequence[Mapping[str, Any]], sd.query_devices())
         for idx, dev in enumerate(devs):
@@ -1426,10 +1457,12 @@ if __name__ == "__main__":
             )
     except Exception as exc:
         logger.warning("StereoFool: device list unavailable: %s", exc)
-    normalize_device_indices()
-    auto_start_if_enabled()
+
+
+def run_web_server() -> None:
     default_port = 8300
     port = server_config.get("port") or default_port
+    logger.info("StereoFool: web server Socket.IO (async_mode=threading)")
     socketio.run(
         app,
         host="0.0.0.0",
@@ -1437,3 +1470,23 @@ if __name__ == "__main__":
         debug=False,
         allow_unsafe_werkzeug=True,
     )
+
+
+def main() -> int:
+    global CONFIG_FILE
+    args = parse_cli_args()
+    if args.config:
+        CONFIG_FILE = args.config
+        ensure_config_exists(CONFIG_FILE)
+    load_config()
+    logger.info("StereoFool v%s starting", APP_VERSION)
+    apply_cli_overrides(args)
+    log_available_devices()
+    normalize_device_indices()
+    auto_start_if_enabled()
+    run_web_server()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -211,17 +211,11 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         }
     }
 
-    socket.on('connect', () => {
-        const hb = document.getElementById('heartbeat');
-        if (hb) hb.style.opacity = '1';
-    });
+    let lastMonitorUpdateMs = 0;
+    let monitorPollBusy = false;
 
-    socket.on('disconnect', () => {
-        const hb = document.getElementById('heartbeat');
-        if (hb) hb.style.opacity = '0.2';
-    });
-
-    socket.on('monitor', (data) => {
+    function applyMonitorData(data) {
+        lastMonitorUpdateMs = Date.now();
         const hb = document.getElementById('heartbeat');
         if (hb) hb.style.opacity = hb.style.opacity === '0.3' ? '1' : '0.3';
         running = data.running;
@@ -355,7 +349,41 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
             setText('live_rds_carrier', data.rds_carrier ? 'On' : 'Off');
         }
         updateDeviationLabels();
+    }
+
+    async function pollMonitorFallback() {
+        if (monitorPollBusy) return;
+        if ((Date.now() - lastMonitorUpdateMs) < 1500) return;
+        monitorPollBusy = true;
+        try {
+            const res = await fetch('/monitor_snapshot', {
+                method: 'GET',
+                credentials: 'same-origin',
+                cache: 'no-store',
+            });
+            if (res.ok) {
+                const data = await res.json();
+                applyMonitorData(data);
+            }
+        } catch (e) {
+            // Ignore fallback fetch errors; websocket may recover.
+        } finally {
+            monitorPollBusy = false;
+        }
+    }
+
+    socket.on('connect', () => {
+        const hb = document.getElementById('heartbeat');
+        if (hb) hb.style.opacity = '1';
     });
+
+    socket.on('disconnect', () => {
+        const hb = document.getElementById('heartbeat');
+        if (hb) hb.style.opacity = '0.2';
+    });
+
+    socket.on('monitor', applyMonitorData);
+    setInterval(pollMonitorFallback, 1000);
 
     function updateRTVisibility() {
         const manual = document.getElementById('rt_manual_buffers');

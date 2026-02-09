@@ -13,10 +13,13 @@
 - Monitor/output safety:
   - when monitor output device matches MPX output device, MPX output is auto-disabled for that run.
   - monitor UI fields now keep fixed placeholders and no longer collapse when empty.
+  - monitoring scopes now use fixed-size canvases with centered layout for consistent rendering and lower browser draw cost.
 - Websocket/reload resilience:
   - monitor emits target authenticated monitor clients only.
   - reconnect handling replaces stale session sockets to reduce rapid-refresh churn.
   - monitor payload loop skips work when no UI clients are connected.
+  - added `/monitor_snapshot` authenticated JSON endpoint and frontend fallback polling when websocket monitor frames stall.
+  - web runtime standardized on Flask-SocketIO `threading` mode for consistent UI behavior.
 - Host API and interface robustness:
   - `STEREOFOOL_HOSTAPI` now supports alias matching (`wasapi`, `wdmks`, etc.) with strict override behavior.
   - startup still normalizes stale device indices to valid devices.
@@ -24,6 +27,9 @@
 - Config persistence reliability:
   - debounced config writes added for UI updates.
   - config write path serialized and hardened against writer-thread failure.
+- Startup/runtime structure:
+  - startup flow refactored into `main()` with focused helpers for CLI parsing, config bootstrap, device logging, and server launch.
+  - config bootstrap now uses `pathlib.Path` for clearer file handling.
 - Diagnostics:
   - added periodic and final totals for stream status flags (underflow/overflow/priming).
   - added monitor queue drop/underrun counters and input backlog trim counters.
