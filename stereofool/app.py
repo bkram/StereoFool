@@ -18,8 +18,8 @@ if __package__ in (None, ""):
 
 import numpy as np
 import sounddevice as sd
-from flask import Flask, render_template_string, request, redirect, session, url_for
-from flask_socketio import SocketIO
+from flask import Flask, request, redirect, session, url_for
+from flask_socketio import SocketIO, disconnect, join_room
 from scipy import signal as dsp_signal
 
 from stereofool.constants import (
@@ -33,6 +33,7 @@ from stereofool.state import (
     meter_lock,
     meter_state,
     monitor_data,
+    monitor_lock,
     mpx_state,
     rds_default_state,
     rds_state,
@@ -50,6 +51,8 @@ app = Flask(__name__)
 CONFIG_FILE = "stereofool.ini"
 app.secret_key = os.environ.get("STEREOFOOL_SECRET", os.urandom(24).hex())
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
+MPX_TEMPLATE = app.jinja_env.from_string(MPX_HTML)
+LOGIN_TEMPLATE = app.jinja_env.from_string(LOGIN_HTML)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("stereofool")
@@ -70,6 +73,7 @@ RESTART_KEYS = {
     "device_out_idx",
     "device_in_idx",
     "source_mode",
+    "blocksize",
     "processing_rate_hz",
     "wav_record_enabled",
     "wav_record_path",
@@ -92,12 +96,27 @@ audio_thread: threading.Thread | None = None
 restart_lock = threading.Lock()
 restart_state = {"pending": False}
 capture_seconds_cli: float | None = None
+config_save_lock = threading.Lock()
+config_save_event = threading.Event()
+config_save_state = {"pending": False, "last_request": 0.0}
+config_file_lock = threading.Lock()
+monitor_clients_lock = threading.Lock()
+monitor_clients = 0
+monitor_room = "monitor_clients"
+monitor_sid_to_session: dict[str, str] = {}
+monitor_session_to_sid: dict[str, str] = {}
+ui_cache_lock = threading.Lock()
+ui_state_revision = 0
+ui_cache = {"key": None, "html": ""}
 
 PREFERRED_HOSTAPIS = {
     "win": ["Windows DirectSound", "MME"],
     "darwin": ["Core Audio"],
     "linux": ["ALSA", "PulseAudio", "JACK"],
 }
+MONITOR_EMIT_INTERVAL = 0.1
+MONITOR_WAVE_UPDATE_EVERY = 2
+MONITOR_META_UPDATE_EVERY = 5
 
 
 class WavCapture:
@@ -153,12 +172,19 @@ class MonitorOutput:
         self.device_idx = device_idx
         self.sample_rate = int(sample_rate)
         self.blocksize = max(1, int(blocksize))
-        self.max_buffer_frames = max(self.blocksize * 8, 1024)
+        self._last_status_log = 0.0
+        self._last_status_summary_log = 0.0
+        self._status_counts: dict[str, int] = {}
+        self.prefill_frames = max(self.blocksize * 3, 2048)
+        self.max_buffer_frames = max(self.blocksize * 16, self.prefill_frames * 2)
         self.buffered_frames = 0
         self.buffer_lock = threading.Lock()
         self.chunks: deque[np.ndarray] = deque()
         self.chunk_offset = 0
         self.stream = None
+        self.waiting_prefill = True
+        self.queue_drop_frames = 0
+        self.queue_underruns = 0
 
     def start(self):
         if self.device_idx is None or self.device_idx < 0:
@@ -181,6 +207,15 @@ class MonitorOutput:
             except Exception:
                 pass
             self.stream = None
+        if self._status_counts:
+            logger.warning(
+                "StereoFool: monitor stream status totals: %s",
+                ", ".join(f"{k}={v}" for k, v in sorted(self._status_counts.items())),
+            )
+        if self.queue_drop_frames:
+            logger.warning("StereoFool: monitor queue dropped %s frames", self.queue_drop_frames)
+        if self.queue_underruns:
+            logger.warning("StereoFool: monitor queue underruns %s", self.queue_underruns)
 
     def push(self, data):
         if self.stream is None:
@@ -196,23 +231,47 @@ class MonitorOutput:
                 self.buffered_frames += chunk.shape[0]
                 if self.buffered_frames > self.max_buffer_frames:
                     drop = self.buffered_frames - self.max_buffer_frames
+                    dropped = 0
                     while self.chunks and drop > 0:
                         head = self.chunks[0]
                         remaining = head.shape[0] - self.chunk_offset
                         if drop < remaining:
                             self.chunk_offset += drop
                             self.buffered_frames -= drop
+                            dropped += drop
                             drop = 0
                         else:
                             drop -= remaining
                             self.buffered_frames -= remaining
+                            dropped += remaining
                             self.chunks.popleft()
                             self.chunk_offset = 0
+                    if dropped > 0:
+                        self.queue_drop_frames += dropped
+                        self._status_counts["queue_drop"] = self._status_counts.get("queue_drop", 0) + 1
         except Exception:
             return
 
     def _callback(self, outdata, frames, _time_info, _status):
+        if _status:
+            self._accumulate_status(_status)
+            now = time.monotonic()
+            if now - self._last_status_log >= 1.0:
+                logger.warning("StereoFool: monitor stream status: %s", _status)
+                self._last_status_log = now
+            if now - self._last_status_summary_log >= 5.0 and self._status_counts:
+                logger.warning(
+                    "StereoFool: monitor stream status totals: %s",
+                    ", ".join(f"{k}={v}" for k, v in sorted(self._status_counts.items())),
+                )
+                self._last_status_summary_log = now
         out = np.zeros((frames, 2), dtype=np.float32)
+        with self.buffer_lock:
+            if self.waiting_prefill and self.buffered_frames >= self.prefill_frames:
+                self.waiting_prefill = False
+        if self.waiting_prefill:
+            outdata[:] = out
+            return
         filled = 0
         with self.buffer_lock:
             while filled < frames and self.chunks:
@@ -228,13 +287,73 @@ class MonitorOutput:
                 else:
                     self.chunks.popleft()
                     self.chunk_offset = 0
+        if filled < frames:
+            self.queue_underruns += 1
+            self._status_counts["queue_underrun"] = self._status_counts.get("queue_underrun", 0) + 1
+            self.waiting_prefill = True
         outdata[:] = out
+
+    def _accumulate_status(self, status):
+        status_map = {
+            "input_overflow": "in_overflow",
+            "input_underflow": "in_underflow",
+            "output_overflow": "out_overflow",
+            "output_underflow": "out_underflow",
+            "priming_output": "priming_output",
+        }
+        seen_flag = False
+        for attr, key in status_map.items():
+            try:
+                if bool(getattr(status, attr)):
+                    self._status_counts[key] = self._status_counts.get(key, 0) + 1
+                    seen_flag = True
+            except Exception:
+                continue
+        if not seen_flag:
+            key = str(status)
+            self._status_counts[key] = self._status_counts.get(key, 0) + 1
+
+
+def _normalize_hostapi_name(name):
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
 
 
 def resolve_hostapi_filter(apis):
     hostapi_override = os.environ.get("STEREOFOOL_HOSTAPI", "").strip()
+    available_names = [str(a.get("name", "")) for a in apis]
+    available_norm = {_normalize_hostapi_name(name): name for name in available_names}
     if hostapi_override:
-        return {name.strip().lower() for name in hostapi_override.split(",") if name.strip()}
+        alias_map = {
+            "wasapi": "windowswasapi",
+            "wdmks": "windowswdmks",
+            "kernelstreaming": "windowswdmks",
+            "ks": "windowswdmks",
+            "mme": "mme",
+            "directsound": "windowsdirectsound",
+            "dsound": "windowsdirectsound",
+            "asio": "asio",
+            "coreaudio": "coreaudio",
+            "alsa": "alsa",
+            "pulseaudio": "pulseaudio",
+            "jack": "jack",
+        }
+        requested = []
+        for raw in hostapi_override.split(","):
+            token = raw.strip()
+            if not token:
+                continue
+            token_norm = _normalize_hostapi_name(token)
+            token_norm = alias_map.get(token_norm, token_norm)
+            requested.append(token_norm)
+        matches = {norm for norm in requested if norm in available_norm}
+        if not matches:
+            logger.warning(
+                "StereoFool: STEREOFOOL_HOSTAPI=%r matched no host APIs; available=%s",
+                hostapi_override,
+                ", ".join(available_names),
+            )
+        # Explicit override is strict: no silent fallback to all APIs.
+        return matches, True
     if sys.platform.startswith("win"):
         platform_key = "win"
     elif sys.platform.startswith("linux"):
@@ -242,9 +361,13 @@ def resolve_hostapi_filter(apis):
     else:
         platform_key = sys.platform
     preferred = PREFERRED_HOSTAPIS.get(platform_key, [])
-    available = {a["name"] for a in apis}
-    matches = [name for name in preferred if name in available]
-    return {name.lower() for name in matches}
+    matches = []
+    for name in preferred:
+        norm = _normalize_hostapi_name(name)
+        if norm in available_norm:
+            matches.append(norm)
+    # Built-in preferred filter is best-effort and can fall back.
+    return set(matches), False
 
 
 def _parse_subnets(value):
@@ -334,14 +457,16 @@ def get_valid_devices(force_refresh=False):
     try:
         devs = cast(Sequence[Mapping[str, Any]], sd.query_devices())
         apis = cast(Sequence[Mapping[str, Any]], sd.query_hostapis())
-        hostapi_filter = resolve_hostapi_filter(apis)
+        hostapi_filter, strict_filter = resolve_hostapi_filter(apis)
 
         def collect_outputs(filter_set):
+            if strict_filter and not filter_set:
+                return []
             outputs = []
             for i, d in enumerate(devs):
                 d_info = cast(Mapping[str, Any], d)
                 api_name = str(apis[int(d_info["hostapi"])]["name"])
-                if filter_set and api_name.lower() not in filter_set:
+                if filter_set and _normalize_hostapi_name(api_name) not in filter_set:
                     continue
                 try:
                     if int(d_info["max_output_channels"]) > 0:
@@ -354,7 +479,7 @@ def get_valid_devices(force_refresh=False):
             return outputs
 
         valid_outputs = collect_outputs(hostapi_filter)
-        if hostapi_filter and not valid_outputs:
+        if hostapi_filter and not valid_outputs and not strict_filter:
             valid_outputs = collect_outputs(set())
     except Exception as exc:
         logger.warning("Device Error: %s", exc)
@@ -370,14 +495,16 @@ def get_valid_input_devices(force_refresh=False):
     try:
         devs = cast(Sequence[Mapping[str, Any]], sd.query_devices())
         apis = cast(Sequence[Mapping[str, Any]], sd.query_hostapis())
-        hostapi_filter = resolve_hostapi_filter(apis)
+        hostapi_filter, strict_filter = resolve_hostapi_filter(apis)
 
         def collect_inputs(filter_set):
+            if strict_filter and not filter_set:
+                return []
             inputs = []
             for i, d in enumerate(devs):
                 d_info = cast(Mapping[str, Any], d)
                 api_name = str(apis[int(d_info["hostapi"])]["name"])
-                if filter_set and api_name.lower() not in filter_set:
+                if filter_set and _normalize_hostapi_name(api_name) not in filter_set:
                     continue
                 try:
                     if int(d_info["max_input_channels"]) > 0:
@@ -390,7 +517,7 @@ def get_valid_input_devices(force_refresh=False):
             return inputs
 
         valid_inputs = collect_inputs(hostapi_filter)
-        if hostapi_filter and not valid_inputs:
+        if hostapi_filter and not valid_inputs and not strict_filter:
             valid_inputs = collect_inputs(set())
     except Exception as exc:
         logger.warning("Device Error: %s", exc)
@@ -447,6 +574,19 @@ def select_sample_rate(device_out_idx, device_in_idx):
         except Exception:
             continue
     return FALLBACK_SAMPLE_RATE
+
+
+def resolve_blocksize():
+    raw = mpx_state.get("blocksize", BLOCKSIZE)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = BLOCKSIZE
+    if value < 256:
+        return 256
+    if value > 262144:
+        return 262144
+    return value
 
 
 # --- RDS state (full) ---
@@ -526,6 +666,10 @@ def load_config():
                 mpx_state["monitor_rate_hz"] = config["INTERFACES"].getint(
                     "monitor_rate_hz", fallback=mpx_state["monitor_rate_hz"]
                 )
+            if "blocksize" in config["INTERFACES"]:
+                mpx_state["blocksize"] = config["INTERFACES"].getint(
+                    "blocksize", fallback=mpx_state["blocksize"]
+                )
     rds_state["auto_start"] = True
 
 
@@ -535,65 +679,112 @@ def _coerce_bool(val):
     return bool(val)
 
 
-def save_config():
-    config = configparser.ConfigParser(interpolation=None)
-    if os.path.exists(CONFIG_FILE):
-        config.read(CONFIG_FILE)
-    rds_state["auto_start"] = True
-    rds_config = {
-        k: str(v)
-        for k, v in rds_state.items()
-        if k
-        not in {
-            "device_out_idx",
-            "device_in_idx",
-            "running",
+def _write_config_now():
+    with config_file_lock:
+        config = configparser.ConfigParser(interpolation=None)
+        if os.path.exists(CONFIG_FILE):
+            config.read(CONFIG_FILE)
+        rds_state["auto_start"] = True
+        rds_config = {
+            k: str(v)
+            for k, v in rds_state.items()
+            if k
+            not in {
+                "device_out_idx",
+                "device_in_idx",
+                "running",
+            }
         }
-    }
-    mpx_config = {
-        k: str(v)
-        for k, v in mpx_state.items()
-        if k
-        not in {
-            "device_out_idx",
-            "device_in_idx",
-            "source_mode",
-            "wav_record_enabled",
-            "wav_record_path",
-            "monitor_enabled",
-            "monitor_device_idx",
-            "monitor_rate_hz",
-            "processing_bypass",
-            "running",
+        mpx_config = {
+            k: str(v)
+            for k, v in mpx_state.items()
+            if k
+            not in {
+                "device_out_idx",
+                "device_in_idx",
+                "source_mode",
+                "wav_record_enabled",
+                "wav_record_path",
+                "monitor_enabled",
+                "monitor_device_idx",
+                "monitor_rate_hz",
+                "blocksize",
+                "processing_bypass",
+                "running",
+            }
         }
-    }
-    config["RDS"] = rds_config
-    config["MPX"] = mpx_config
-    stored_pass = auth_config.get("pass", "admin")
-    if stored_pass and not stored_pass.startswith("sha256$"):
-        stored_pass = _hash_password(stored_pass)
-        auth_config["pass"] = stored_pass
-    config["AUTH"] = {
-        "user": auth_config.get("user", "admin"),
-        "pass": stored_pass,
-    }
-    if not config.has_section("SYSTEM"):
-        config.add_section("SYSTEM")
-    config["SYSTEM"]["allow_subnets"] = ", ".join(allow_subnets)
-    if not config.has_section("INTERFACES"):
-        config.add_section("INTERFACES")
-    config["INTERFACES"]["device_out_idx"] = str(mpx_state.get("device_out_idx", 0))
-    config["INTERFACES"]["device_in_idx"] = str(mpx_state.get("device_in_idx", -1))
-    config["INTERFACES"]["source_mode"] = str(mpx_state.get("source_mode", "input"))
-    config["INTERFACES"]["wav_record_enabled"] = str(mpx_state.get("wav_record_enabled", False))
-    config["INTERFACES"]["wav_record_path"] = str(mpx_state.get("wav_record_path", "output.wav"))
-    config["INTERFACES"]["monitor_enabled"] = str(mpx_state.get("monitor_enabled", False))
-    config["INTERFACES"]["monitor_device_idx"] = str(mpx_state.get("monitor_device_idx", -1))
-    config["INTERFACES"]["monitor_rate_hz"] = str(mpx_state.get("monitor_rate_hz", 48000))
-    if server_config.get("port"):
-        config["SYSTEM"]["port"] = str(server_config["port"])
-    with open(CONFIG_FILE, "w") as f:
-        config.write(f)
+        config["RDS"] = rds_config
+        config["MPX"] = mpx_config
+        stored_pass = auth_config.get("pass", "admin")
+        if stored_pass and not stored_pass.startswith("sha256$"):
+            stored_pass = _hash_password(stored_pass)
+            auth_config["pass"] = stored_pass
+        config["AUTH"] = {
+            "user": auth_config.get("user", "admin"),
+            "pass": stored_pass,
+        }
+        if not config.has_section("SYSTEM"):
+            config.add_section("SYSTEM")
+        config["SYSTEM"]["allow_subnets"] = ", ".join(allow_subnets)
+        if not config.has_section("INTERFACES"):
+            config.add_section("INTERFACES")
+        config["INTERFACES"]["device_out_idx"] = str(mpx_state.get("device_out_idx", 0))
+        config["INTERFACES"]["device_in_idx"] = str(mpx_state.get("device_in_idx", -1))
+        config["INTERFACES"]["source_mode"] = str(mpx_state.get("source_mode", "input"))
+        config["INTERFACES"]["wav_record_enabled"] = str(
+            mpx_state.get("wav_record_enabled", False)
+        )
+        config["INTERFACES"]["wav_record_path"] = str(mpx_state.get("wav_record_path", "output.wav"))
+        config["INTERFACES"]["monitor_enabled"] = str(mpx_state.get("monitor_enabled", False))
+        config["INTERFACES"]["monitor_device_idx"] = str(mpx_state.get("monitor_device_idx", -1))
+        config["INTERFACES"]["monitor_rate_hz"] = str(mpx_state.get("monitor_rate_hz", 48000))
+        config["INTERFACES"]["blocksize"] = str(mpx_state.get("blocksize", BLOCKSIZE))
+        if server_config.get("port"):
+            config["SYSTEM"]["port"] = str(server_config["port"])
+        with open(CONFIG_FILE, "w") as f:
+            config.write(f)
+
+
+def _bump_ui_revision():
+    global ui_state_revision
+    with ui_cache_lock:
+        ui_state_revision += 1
+
+
+def _config_writer_loop():
+    while True:
+        config_save_event.wait()
+        while True:
+            with config_save_lock:
+                pending = bool(config_save_state["pending"])
+                wait_remaining = 0.35 - (time.monotonic() - float(config_save_state["last_request"]))
+            if not pending:
+                config_save_event.clear()
+                break
+            if wait_remaining > 0:
+                # Coalesce rapid UI updates into one config write.
+                time.sleep(min(wait_remaining, 0.1))
+                continue
+            try:
+                _write_config_now()
+            except Exception:
+                logger.exception("StereoFool: failed to save config")
+                time.sleep(0.2)
+            finally:
+                with config_save_lock:
+                    elapsed = time.monotonic() - float(config_save_state["last_request"])
+                    if elapsed >= 0.35:
+                        config_save_state["pending"] = False
+
+
+def save_config(debounce=False):
+    if not debounce:
+        _write_config_now()
+        return
+    with config_save_lock:
+        config_save_state["pending"] = True
+        config_save_state["last_request"] = time.monotonic()
+    config_save_event.set()
 
 
 def sig_abort(sig, _frame):
@@ -621,34 +812,59 @@ def text_updater_loop():
 
 
 def monitor_pusher_loop():
+    meta_counter = 0
+    wave_counter = 0
+    with monitor_lock:
+        monitor_snapshot = dict(monitor_data)
+    last_input_wave: list[float] = []
+    last_mpx_wave: list[float] = []
     while True:
-        monitor_data["heartbeat"] = int(time.time() * 1000)
-        if rds_state["running"]:
-            monitor_data["af"] = rds_state["af_list"]
-            monitor_data["pty_idx"] = rds_state["pty"]
-            monitor_data["pi"] = rds_state["pi"]
-            monitor_data["pilot_generated"] = True
-            monitor_data["rds_carrier"] = bool(mpx_state.get("en_rds"))
-        else:
-            monitor_data.update(
-                {
-                    "ps": "OFF AIR",
-                    "rt": "Encoder Stopped",
-                    "lps": "",
-                    "ptyn": "",
-                    "af": "",
-                    "pty_idx": 0,
-                    "rt_plus_info": "",
-                    "pi": "----",
-                    "pilot_generated": False,
-                    "rds_carrier": False,
-                }
-            )
+        with monitor_clients_lock:
+            active_clients = monitor_clients
+        if active_clients <= 0:
+            time.sleep(MONITOR_EMIT_INTERVAL)
+            continue
+        if meta_counter <= 0:
+            with monitor_lock:
+                monitor_data["heartbeat"] = int(time.time() * 1000)
+                if rds_state["running"]:
+                    monitor_data["af"] = rds_state["af_list"]
+                    monitor_data["pty_idx"] = rds_state["pty"]
+                    monitor_data["pi"] = rds_state["pi"]
+                    monitor_data["pilot_generated"] = True
+                    monitor_data["rds_carrier"] = bool(mpx_state.get("en_rds"))
+                else:
+                    monitor_data.update(
+                        {
+                            "ps": "OFF AIR",
+                            "rt": "Encoder Stopped",
+                            "lps": "",
+                            "ptyn": "",
+                            "af": "",
+                            "pty_idx": 0,
+                            "rt_plus_info": "",
+                            "pi": "----",
+                            "pilot_generated": False,
+                            "rds_carrier": False,
+                        }
+                    )
+                monitor_snapshot = dict(monitor_data)
+            meta_counter = MONITOR_META_UPDATE_EVERY
+        meta_counter -= 1
+
+        if wave_counter <= 0:
+            with wave_lock:
+                last_input_wave = wave_state["input_wave"]
+                last_mpx_wave = wave_state["mpx_wave"]
+            wave_counter = MONITOR_WAVE_UPDATE_EVERY
+        wave_counter -= 1
+
         with meter_lock:
             payload = {
                 "running": mpx_state["running"],
                 "processing_bypass": bool(mpx_state.get("processing_bypass")),
-                **monitor_data,
+                **monitor_snapshot,
+                "heartbeat": int(time.time() * 1000),
                 "input_rms": meter_state["input_rms"],
                 "mpx_rms": meter_state["mpx_rms"],
                 "input_peak": meter_state["input_peak"],
@@ -674,21 +890,22 @@ def monitor_pusher_loop():
                 "composite_clip_enabled": meter_state["composite_clip_enabled"],
                 "composite_clip_active": meter_state["composite_clip_active"],
             }
-        with wave_lock:
-            payload["input_wave"] = wave_state["input_wave"]
-            payload["mpx_wave"] = wave_state["mpx_wave"]
-        socketio.emit("monitor", payload)
-        time.sleep(0.1)
+        payload["input_wave"] = last_input_wave
+        payload["mpx_wave"] = last_mpx_wave
+        socketio.emit("monitor", payload, to=monitor_room)
+        time.sleep(MONITOR_EMIT_INTERVAL)
 
 
 threading.Thread(target=text_updater_loop, daemon=True).start()
 threading.Thread(target=monitor_pusher_loop, daemon=True).start()
+threading.Thread(target=_config_writer_loop, daemon=True).start()
 
 
 def run_audio(capture_seconds=None):
     timed_out = False
     output_enabled = bool(mpx_state.get("output_enabled", True))
     sd_out = mpx_state["device_out_idx"]
+    blocksize = resolve_blocksize()
     if output_enabled and sd_out is not None and sd_out >= 0:
         sample_rate = select_sample_rate(sd_out, mpx_state.get("device_in_idx", -1))
     else:
@@ -717,7 +934,19 @@ def run_audio(capture_seconds=None):
     monitor_enabled = bool(mpx_state.get("monitor_enabled"))
     monitor_rate = int(mpx_state.get("monitor_rate_hz", 48000))
     monitor_device = int(mpx_state.get("monitor_device_idx", -1))
-    monitor_blocksize = max(1, int(round(BLOCKSIZE * (monitor_rate / float(sample_rate)))))
+    if (
+        monitor_enabled
+        and monitor_device >= 0
+        and output_enabled
+        and sd_out is not None
+        and sd_out >= 0
+        and monitor_device == sd_out
+    ):
+        output_enabled = False
+        logger.info(
+            "StereoFool: monitor device matches output device; disabling MPX output for monitor mode"
+        )
+    monitor_blocksize = max(1, int(round(blocksize * (monitor_rate / float(sample_rate)))))
     if monitor_enabled and monitor_device >= 0:
         monitor = MonitorOutput(monitor_device, monitor_rate, blocksize=monitor_blocksize)
         monitor.start()
@@ -731,6 +960,7 @@ def run_audio(capture_seconds=None):
         capture_callback=capture.push if capture else None,
         monitor_callback=monitor.push if monitor else None,
         monitor_rate=monitor_rate,
+        blocksize=blocksize,
     )
     try:
         sd_out = mpx_state["device_out_idx"]
@@ -754,21 +984,31 @@ def run_audio(capture_seconds=None):
             in_name,
             sample_rate,
         )
-        monitor_data["sample_rate"] = sample_rate
-        monitor_data["device_out_name"] = out_name
-        monitor_data["device_in_name"] = in_name
+        with monitor_lock:
+            monitor_data["sample_rate"] = sample_rate
+            monitor_data["device_out_name"] = out_name
+            monitor_data["device_in_name"] = in_name
         if not output_enabled:
             start_time = time.time()
             if mpx_state.get("source_mode") == "input" and sd_in >= 0:
+                last_status_log = [0.0]
 
                 def _input_only_callback(indata, frames, _time_info, _status):
+                    if _status:
+                        now = time.monotonic()
+                        last = last_status_log[0]
+                        if now - last >= 1.0:
+                            logger.warning(
+                                "StereoFool: input-only stream status: %s", _status
+                            )
+                            last_status_log[0] = now
                     outdata = np.zeros((frames, 2), dtype=engine.dtype)
                     engine._process_frame(outdata, frames, indata)
 
                 with sd.InputStream(
                     device=sd_in,
                     samplerate=sample_rate,
-                    blocksize=BLOCKSIZE,
+                    blocksize=blocksize,
                     channels=2,
                     latency="high",
                     callback=_input_only_callback,
@@ -781,11 +1021,11 @@ def run_audio(capture_seconds=None):
                             break
                         sd.sleep(100)
             else:
-                block_time = BLOCKSIZE / float(sample_rate)
-                outdata = np.zeros((BLOCKSIZE, 2), dtype=engine.dtype)
+                block_time = blocksize / float(sample_rate)
+                outdata = np.zeros((blocksize, 2), dtype=engine.dtype)
                 next_tick = time.time()
                 while mpx_state["running"]:
-                    engine._process_frame(outdata, BLOCKSIZE, None)
+                    engine._process_frame(outdata, blocksize, None)
                     if capture_seconds and time.time() - start_time >= capture_seconds:
                         timed_out = True
                         mpx_state["running"] = False
@@ -798,7 +1038,7 @@ def run_audio(capture_seconds=None):
             with sd.Stream(
                 device=(sd_in, sd_out),
                 samplerate=sample_rate,
-                blocksize=BLOCKSIZE,
+                blocksize=blocksize,
                 channels=2,
                 latency="high",
                 callback=engine.callback_duplex,
@@ -815,7 +1055,7 @@ def run_audio(capture_seconds=None):
             with sd.OutputStream(
                 device=sd_out,
                 samplerate=sample_rate,
-                blocksize=BLOCKSIZE,
+                blocksize=blocksize,
                 channels=2,
                 latency="high",
                 callback=engine.callback_output,
@@ -836,6 +1076,7 @@ def run_audio(capture_seconds=None):
         logger.info("StereoFool: audio stopped")
         if engine.audio_in:
             engine.audio_in.stop()
+        engine.close()
         if capture:
             capture.stop()
         if monitor:
@@ -918,8 +1159,17 @@ def index():
         return redirect(url_for("login"))
     outputs = get_valid_devices()
     inputs = get_valid_input_devices()
-    return render_template_string(
-        MPX_HTML,
+    with ui_cache_lock:
+        revision = ui_state_revision
+    cache_key = (
+        revision,
+        tuple((int(d["index"]), str(d["name"])) for d in inputs),
+        tuple((int(d["index"]), str(d["name"])) for d in outputs),
+    )
+    with ui_cache_lock:
+        if ui_cache["key"] == cache_key and ui_cache["html"]:
+            return ui_cache["html"]
+    html = MPX_TEMPLATE.render(
         inputs=inputs,
         outputs=outputs,
         state=mpx_state,
@@ -929,6 +1179,10 @@ def index():
         server_config=server_config,
         app_version=APP_VERSION,
     )
+    with ui_cache_lock:
+        ui_cache["key"] = cache_key
+        ui_cache["html"] = html
+    return html
 
 
 @app.route("/rds")
@@ -953,9 +1207,7 @@ def login():
             session["auth"] = True
             return redirect(url_for("index"))
         msg = "Invalid credentials"
-    return render_template_string(
-        LOGIN_HTML, msg=msg, user=auth_config.get("user", ""), app_version=APP_VERSION
-    )
+    return LOGIN_TEMPLATE.render(msg=msg, user=auth_config.get("user", ""), app_version=APP_VERSION)
 
 
 @app.route("/logout")
@@ -989,8 +1241,43 @@ def save_settings():
         allow_subnets[:] = parsed_subnets
         server_config["allow_subnets"] = list(allow_subnets)
     session["auth"] = True
+    _bump_ui_revision()
     save_config()
     return ("ok", 200)
+
+
+@socketio.on("connect")
+def handle_connect():
+    global monitor_clients
+    if not session.get("auth"):
+        return
+    sid = cast(str, getattr(request, "sid", ""))
+    cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
+    session_cookie = request.cookies.get(cookie_name, "")
+    prior_sid = None
+    with monitor_clients_lock:
+        prior_sid = monitor_session_to_sid.get(session_cookie) if session_cookie else None
+        if session_cookie:
+            monitor_session_to_sid[session_cookie] = sid
+            monitor_sid_to_session[sid] = session_cookie
+        monitor_clients += 1
+    join_room(monitor_room)
+    if prior_sid and prior_sid != sid:
+        try:
+            disconnect(sid=prior_sid)
+        except Exception:
+            pass
+
+
+@socketio.on("disconnect")
+def handle_disconnect():
+    global monitor_clients
+    sid = cast(str, getattr(request, "sid", ""))
+    with monitor_clients_lock:
+        sess_key = monitor_sid_to_session.pop(sid, None)
+        if sess_key and monitor_session_to_sid.get(sess_key) == sid:
+            del monitor_session_to_sid[sess_key]
+        monitor_clients = max(0, monitor_clients - 1)
 
 
 @socketio.on("update")
@@ -1057,7 +1344,8 @@ def handle_update(data):
                 dsp_control["reset"] = True
             if restart_hits:
                 request_audio_restart(", ".join(restart_hits))
-        save_config()
+        _bump_ui_revision()
+        save_config(debounce=True)
 
 
 @socketio.on("control")
@@ -1070,12 +1358,14 @@ def handle_control(data):
             mpx_state["device_in_idx"] = int(data.get("dev_in", mpx_state["device_in_idx"]))
         mpx_state["running"] = True
         rds_state["running"] = True
+        _bump_ui_revision()
         save_config()
         logger.info("StereoFool: ON AIR requested")
         if not launch_audio_thread(capture_seconds=capture_seconds_cli):
             logger.info("StereoFool: audio already running")
     else:
         stop_audio_thread(timeout=1.5)
+        _bump_ui_revision()
         save_config()
         logger.info("StereoFool: OFF AIR requested")
 

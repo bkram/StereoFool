@@ -2,12 +2,37 @@
 
 ## 0.5
 
-- Windows audio host API preference now favors DirectSound (MME remains available).
-- Startup now normalizes saved device indices to valid devices, avoiding bad/stale selections.
-- RDS default strings synced with shipped `stereofool.ini`.
-- Monitoring device labels/values swapped.
-- README: added a Windows note about launching with higher priority on low-end systems.
-- Help tab updated to match the current DSP chain order.
+- Audio callback and UI contention reduced:
+  - moved meter/scope aggregation off the callback path into a telemetry worker.
+  - optimized callback allocations and hot-path math for lower CPU usage.
+  - added cached template rendering and UI cache invalidation to reduce reload overhead.
+- Buffering and contention hardening:
+  - configurable `INTERFACES.blocksize` integrated into runtime and UI (Interfaces > Audio Engine).
+  - monitor output now uses prefill/rebuffer behavior to reduce underrun artifacts.
+  - input fallback reader now trims backlog to keep latency bounded under CPU spikes.
+- Monitor/output safety:
+  - when monitor output device matches MPX output device, MPX output is auto-disabled for that run.
+  - monitor UI fields now keep fixed placeholders and no longer collapse when empty.
+- Websocket/reload resilience:
+  - monitor emits target authenticated monitor clients only.
+  - reconnect handling replaces stale session sockets to reduce rapid-refresh churn.
+  - monitor payload loop skips work when no UI clients are connected.
+- Host API and interface robustness:
+  - `STEREOFOOL_HOSTAPI` now supports alias matching (`wasapi`, `wdmks`, etc.) with strict override behavior.
+  - startup still normalizes stale device indices to valid devices.
+  - monitor/device labels in monitoring view corrected.
+- Config persistence reliability:
+  - debounced config writes added for UI updates.
+  - config write path serialized and hardened against writer-thread failure.
+- Diagnostics:
+  - added periodic and final totals for stream status flags (underflow/overflow/priming).
+  - added monitor queue drop/underrun counters and input backlog trim counters.
+- Widener behavior:
+  - level compensation changed to static mix compensation to avoid gain pumping artifacts.
+- Documentation:
+  - README updated to version 0.5 and expanded with Windows PortAudio binary instructions.
+  - README now includes buffering guidance and notes that rapid browser refresh can still cause brief glitches in single-process mode.
+  - Help text aligned with current DSP chain.
 
 ## 0.4
 

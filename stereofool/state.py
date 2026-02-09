@@ -80,6 +80,7 @@ monitor_data: dict[str, Any] = {
     "device_out_name": "",
     "device_in_name": "",
 }
+monitor_lock = threading.Lock()
 
 mpx_state: dict[str, Any] = {
     "running": False,
@@ -140,6 +141,7 @@ mpx_state: dict[str, Any] = {
     "monitor_enabled": False,
     "monitor_device_idx": -1,
     "monitor_rate_hz": 48000,
+    "blocksize": 4096,
 }
 
 meter_state: dict[str, float] = {

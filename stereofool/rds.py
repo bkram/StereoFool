@@ -7,7 +7,7 @@ import numpy as np
 from scipy import signal as dsp_signal
 
 from stereofool.constants import BITRATE, G_POLY, OFFSETS, RDS_FREQ
-from stereofool.state import monitor_data, rds_state, resolved_cache
+from stereofool.state import monitor_data, monitor_lock, rds_state, resolved_cache
 
 EBU_LATIN_MAP = {
     "é": "e",
@@ -401,7 +401,8 @@ class RDSScheduler:
                 self.ps_sequence = [(10, "RDS_PRO ")]
             dur, txt = self.ps_sequence[self.ps_seq_idx % len(self.ps_sequence)]
             txt = (txt or "").ljust(8)[:8]
-            monitor_data["ps"] = txt
+            with monitor_lock:
+                monitor_data["ps"] = txt
             if (time.time() - self.ps_seq_start_time) >= dur:
                 self.ps_seq_idx += 1
                 self.ps_seq_start_time, self.ps_ptr = time.time(), 0
@@ -512,7 +513,8 @@ class RDSScheduler:
                     t_name = "Title" if t[0] == 1 else "Artist"
                     content = display_clean[t[1] : t[1] + t[2]]
                     tag_str.append(f"{t_name}: {content}")
-                monitor_data["rt_plus_info"] = " | ".join(tag_str)
+                with monitor_lock:
+                    monitor_data["rt_plus_info"] = " | ".join(tag_str)
             if sig != self.last_rt_content:
                 self.rt_ptr, self.last_rt_content = 0, sig
             clean = (
@@ -522,7 +524,8 @@ class RDSScheduler:
                 if rds_state["rt_centered"]
                 else raw.ljust(limit)
             )
-            monitor_data["rt"] = clean
+            with monitor_lock:
+                monitor_data["rt"] = clean
             v = g_ver
             bpg = 2 if v == 1 else 4
             if self.rt_ptr * bpg >= len(clean) or (
@@ -586,7 +589,8 @@ class RDSScheduler:
             if not self.lps_sequence or raw != self.lps_sequence[0][1].strip():
                 self.lps_sequence = self.parse_smart(raw, 32, rds_state["lps_centered"])
             dur, txt = self.lps_sequence[self.lps_seq_idx % len(self.lps_sequence)]
-            monitor_data["lps"] = txt + ("\r" if rds_state["lps_cr"] else "")
+            with monitor_lock:
+                monitor_data["lps"] = txt + ("\r" if rds_state["lps_cr"] else "")
             if (time.time() - self.lps_seq_start_time) >= dur:
                 self.lps_seq_idx += 1
                 self.lps_seq_start_time, self.lps_ptr = time.time(), 0
@@ -620,7 +624,8 @@ class RDSScheduler:
             if not self.ptyn_sequence or raw != self.ptyn_sequence[0][1].strip():
                 self.ptyn_sequence = self.parse_smart(raw, 8, rds_state["ptyn_centered"])
             dur, txt = self.ptyn_sequence[self.ptyn_seq_idx % len(self.ptyn_sequence)]
-            monitor_data["ptyn"] = txt
+            with monitor_lock:
+                monitor_data["ptyn"] = txt
             if (time.time() - self.ptyn_seq_start_time) >= dur:
                 self.ptyn_seq_idx += 1
                 self.ptyn_seq_start_time, self.ptyn_ptr = time.time(), 0

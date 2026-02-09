@@ -1,6 +1,9 @@
 import math
+import queue
 import threading
 import logging
+import time
+from collections import Counter
 
 import numpy as np
 import sounddevice as sd
@@ -14,7 +17,7 @@ logger = logging.getLogger("stereofool")
 
 
 class AudioInputReader:
-    def __init__(self, device_idx, sample_rate, dtype):
+    def __init__(self, device_idx, sample_rate, dtype, blocksize=BLOCKSIZE):
         self.device_idx = device_idx
         self.sample_rate = sample_rate
         self.dtype = np.dtype(dtype)
@@ -23,6 +26,14 @@ class AudioInputReader:
         self.lock = threading.Lock()
         self.stream = None
         self.running = False
+        self._last_status_log = 0.0
+        self._last_status_summary_log = 0.0
+        self._status_counts: Counter[str] = Counter()
+        self.blocksize = max(1, int(blocksize))
+        self.target_buffer_frames = max(self.blocksize * 6, int(self.sample_rate * 0.12))
+        self.max_buffer_frames = max(self.target_buffer_frames * 4, self.blocksize * 12)
+        self.max_buffer_bytes = self.max_buffer_frames * 2 * self.bytes_per_sample
+        self.trimmed_frames = 0
 
     def start(self):
         if self.device_idx is None or self.device_idx < 0:
@@ -31,7 +42,7 @@ class AudioInputReader:
         self.stream = sd.InputStream(
             device=self.device_idx,
             samplerate=self.sample_rate,
-            blocksize=BLOCKSIZE,
+            blocksize=self.blocksize,
             channels=2,
             latency="high",
             callback=self._callback,
@@ -47,15 +58,38 @@ class AudioInputReader:
             except Exception:
                 pass
             self.stream = None
+        if self._status_counts:
+            logger.warning(
+                "StereoFool: input reader status totals: %s",
+                ", ".join(f"{k}={v}" for k, v in sorted(self._status_counts.items())),
+            )
+        if self.trimmed_frames:
+            logger.warning("StereoFool: input reader trimmed %s backlog frames", self.trimmed_frames)
 
     def _callback(self, indata, frames, _time_info, _status):
         if not self.running:
             return
+        if _status:
+            self._accumulate_status(_status)
+            now = time.monotonic()
+            if now - self._last_status_log >= 1.0:
+                logger.warning("StereoFool: input reader status: %s", _status)
+                self._last_status_log = now
+            if now - self._last_status_summary_log >= 5.0 and self._status_counts:
+                logger.warning(
+                    "StereoFool: input reader status totals: %s",
+                    ", ".join(f"{k}={v}" for k, v in sorted(self._status_counts.items())),
+                )
+                self._last_status_summary_log = now
         with self.lock:
             self.buffer.extend(indata.astype(self.dtype, copy=False).tobytes())
-            max_len = self.sample_rate * 2 * self.bytes_per_sample * 5
-            if len(self.buffer) > max_len:
-                del self.buffer[: len(self.buffer) - max_len]
+            if len(self.buffer) > self.max_buffer_bytes:
+                frame_bytes = 2 * self.bytes_per_sample
+                trim_frames = (len(self.buffer) - self.max_buffer_bytes) // frame_bytes
+                if trim_frames > 0:
+                    trim_bytes = trim_frames * frame_bytes
+                    del self.buffer[:trim_bytes]
+                    self.trimmed_frames += trim_frames
 
     def buffered_frames(self):
         with self.lock:
@@ -64,6 +98,15 @@ class AudioInputReader:
     def read_frames(self, frames):
         needed = frames * 2 * self.bytes_per_sample
         with self.lock:
+            frame_bytes = 2 * self.bytes_per_sample
+            buffered_frames = len(self.buffer) // frame_bytes
+            if buffered_frames > self.max_buffer_frames:
+                drop_frames = buffered_frames - self.target_buffer_frames
+                if drop_frames > 0:
+                    drop_bytes = drop_frames * frame_bytes
+                    del self.buffer[:drop_bytes]
+                    self.trimmed_frames += drop_frames
+                    self._status_counts["backlog_trim"] += 1
             if len(self.buffer) >= needed:
                 chunk = bytes(self.buffer[:needed])
                 del self.buffer[:needed]
@@ -75,10 +118,34 @@ class AudioInputReader:
         data = np.frombuffer(chunk, dtype=self.dtype).reshape(frames, 2).copy()
         return data
 
+    def _accumulate_status(self, status):
+        status_map = {
+            "input_overflow": "in_overflow",
+            "input_underflow": "in_underflow",
+            "output_overflow": "out_overflow",
+            "output_underflow": "out_underflow",
+            "priming_output": "priming_output",
+        }
+        seen_flag = False
+        for attr, key in status_map.items():
+            try:
+                if bool(getattr(status, attr)):
+                    self._status_counts[key] += 1
+                    seen_flag = True
+            except Exception:
+                continue
+        if not seen_flag:
+            self._status_counts[str(status)] += 1
+
 
 class FMEngine:
     def __init__(
-        self, sample_rate, capture_callback=None, monitor_callback=None, monitor_rate=48000
+        self,
+        sample_rate,
+        capture_callback=None,
+        monitor_callback=None,
+        monitor_rate=48000,
+        blocksize=BLOCKSIZE,
     ):
         self.sample_rate = sample_rate
         self.dtype = np.float32
@@ -90,6 +157,14 @@ class FMEngine:
         self.capture_callback = capture_callback
         self.monitor_callback = monitor_callback
         self.monitor_rate = int(monitor_rate)
+        self.telemetry_interval_s = 0.05
+        self._last_telemetry_enqueue = 0.0
+        self.telemetry_queue = queue.Queue(maxsize=2)
+        self.telemetry_stop = threading.Event()
+        self.telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
+        self.telemetry_thread.start()
+        self._time_cache: dict[tuple[int, int], np.ndarray] = {}
+        self._zero_cache: dict[int, np.ndarray] = {}
         self.lookahead_buffer = None
         self.lookahead_samples = 0
         self.lookahead_gain = 1.0
@@ -122,6 +197,172 @@ class FMEngine:
         self.rds = RDSSubcarrier(self.sample_rate)
         self.rds_enabled = bool(mpx_state.get("en_rds"))
         self.logged_input_fallback = False
+        self._last_status_log = 0.0
+        self._last_status_summary_log = 0.0
+        self._status_counts: Counter[str] = Counter()
+        self.blocksize = max(1, int(blocksize))
+
+    def _log_stream_status(self, status, label):
+        if not status:
+            return
+        self._accumulate_status(label, status)
+        now = time.monotonic()
+        if now - self._last_status_log >= 1.0:
+            logger.warning("StereoFool: %s stream status: %s", label, status)
+            self._last_status_log = now
+        if now - self._last_status_summary_log >= 5.0 and self._status_counts:
+            logger.warning(
+                "StereoFool: stream status totals: %s",
+                ", ".join(f"{k}={v}" for k, v in sorted(self._status_counts.items())),
+            )
+            self._last_status_summary_log = now
+
+    def _accumulate_status(self, label, status):
+        status_map = {
+            "input_overflow": "in_overflow",
+            "input_underflow": "in_underflow",
+            "output_overflow": "out_overflow",
+            "output_underflow": "out_underflow",
+            "priming_output": "priming_output",
+        }
+        seen_flag = False
+        for attr, key in status_map.items():
+            try:
+                if bool(getattr(status, attr)):
+                    self._status_counts[f"{label}:{key}"] += 1
+                    seen_flag = True
+            except Exception:
+                continue
+        if not seen_flag:
+            self._status_counts[f"{label}:{status}"] += 1
+
+    def _get_time_base(self, frames, sample_rate):
+        key = (int(frames), int(sample_rate))
+        cached = self._time_cache.get(key)
+        if cached is None:
+            cached = np.arange(frames, dtype=self.dtype) / float(sample_rate)
+            self._time_cache[key] = cached
+        return cached
+
+    def _get_zeros(self, length):
+        n = int(length)
+        cached = self._zero_cache.get(n)
+        if cached is None:
+            cached = np.zeros(n, dtype=self.dtype)
+            self._zero_cache[n] = cached
+        return cached.copy()
+
+    def close(self, timeout=0.5):
+        self.telemetry_stop.set()
+        if self.telemetry_thread.is_alive():
+            self.telemetry_thread.join(timeout=timeout)
+        if self._status_counts:
+            logger.warning(
+                "StereoFool: stream status totals: %s",
+                ", ".join(f"{k}={v}" for k, v in sorted(self._status_counts.items())),
+            )
+
+    def _enqueue_telemetry(self, item):
+        try:
+            self.telemetry_queue.put_nowait(item)
+            return
+        except queue.Full:
+            pass
+        try:
+            self.telemetry_queue.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            self.telemetry_queue.put_nowait(item)
+        except queue.Full:
+            pass
+
+    def _telemetry_loop(self):
+        while not self.telemetry_stop.is_set() or not self.telemetry_queue.empty():
+            try:
+                item = self.telemetry_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                input_rms = float(item["input_rms"])
+                input_peak = float(item["input_peak"])
+                input_pre_rms = float(item["input_pre_rms"])
+                input_pre_peak = float(item["input_pre_peak"])
+                mpx_rms = float(item["mpx_rms"])
+                mpx_peak = float(item["mpx_peak"])
+                limiter_active = bool(item["limiter_active"])
+                preemph_limit_enabled = bool(item["preemph_limit_enabled"])
+                preemph_limit_active = bool(item["preemph_limit_active"])
+                composite_clip_enabled = bool(item["composite_clip_enabled"])
+                composite_clip_active = bool(item["composite_clip_active"])
+                scope_left = item["scope_left"]
+                scope_right = item["scope_right"]
+                mpx_pre_gain = item["mpx_pre_gain"]
+                proc_frames = int(item["proc_frames"])
+
+                output_rms = float(np.sqrt(np.mean(mpx_pre_gain**2))) if mpx_pre_gain.size else 0.0
+                output_peak = float(np.max(np.abs(mpx_pre_gain))) if mpx_pre_gain.size else 0.0
+
+                if (
+                    scope_left is not None
+                    and scope_right is not None
+                    and scope_left.size
+                    and scope_right.size
+                ):
+                    input_scope = (scope_left + scope_right) * 0.5
+                    left_vu = float(np.sqrt(np.mean(scope_left**2)))
+                    right_vu = float(np.sqrt(np.mean(scope_right**2)))
+                    left_rms = left_vu
+                    right_rms = right_vu
+                else:
+                    input_scope = np.zeros(proc_frames, dtype=self.dtype)
+                    left_vu = 0.0
+                    right_vu = 0.0
+                    left_rms = 0.0
+                    right_rms = 0.0
+
+                out_scope = mpx_pre_gain
+                scope_points = 128
+                in_step = max(1, int(len(input_scope) / scope_points))
+                out_step = max(1, int(len(out_scope) / scope_points))
+                input_wave = input_scope[::in_step][:scope_points].astype(np.float32)
+                mpx_wave = out_scope[::out_step][:scope_points].astype(np.float32)
+                with wave_lock:
+                    wave_state["input_wave"] = input_wave.tolist()
+                    wave_state["mpx_wave"] = mpx_wave.tolist()
+
+                with meter_lock:
+                    meter_state["input_rms"] = meter_state["input_rms"] * 0.9 + input_rms * 0.1
+                    meter_state["input_rms_l"] = meter_state["input_rms_l"] * 0.9 + left_rms * 0.1
+                    meter_state["input_rms_r"] = meter_state["input_rms_r"] * 0.9 + right_rms * 0.1
+                    meter_state["mpx_rms"] = meter_state["mpx_rms"] * 0.9 + mpx_rms * 0.1
+                    meter_state["input_peak"] = max(meter_state["input_peak"] * 0.98, input_peak)
+                    meter_state["mpx_peak"] = max(meter_state["mpx_peak"] * 0.98, mpx_peak)
+                    meter_state["input_vu"] = meter_state["input_vu"] * 0.95 + input_rms * 0.05
+                    meter_state["input_vu_l"] = meter_state["input_vu_l"] * 0.95 + left_vu * 0.05
+                    meter_state["input_vu_r"] = meter_state["input_vu_r"] * 0.95 + right_vu * 0.05
+                    meter_state["mpx_vu"] = meter_state["mpx_vu"] * 0.95 + mpx_rms * 0.05
+                    meter_state["input_pre_rms"] = (
+                        meter_state["input_pre_rms"] * 0.9 + input_pre_rms * 0.1
+                    )
+                    meter_state["input_pre_peak"] = max(
+                        meter_state["input_pre_peak"] * 0.98, input_pre_peak
+                    )
+                    meter_state["input_pre_vu"] = (
+                        meter_state["input_pre_vu"] * 0.95 + input_pre_rms * 0.05
+                    )
+                    meter_state["output_rms"] = meter_state["output_rms"] * 0.9 + output_rms * 0.1
+                    meter_state["output_peak"] = max(meter_state["output_peak"] * 0.98, output_peak)
+                    meter_state["output_vu"] = meter_state["output_vu"] * 0.95 + output_rms * 0.05
+                    meter_state["limiter_active"] = limiter_active
+                    meter_state["multiband_enabled"] = bool(mpx_state.get("multiband_enabled"))
+                    meter_state["multiband_active"] = bool(mpx_state.get("multiband_enabled"))
+                    meter_state["preemph_limit_enabled"] = preemph_limit_enabled
+                    meter_state["preemph_limit_active"] = preemph_limit_active
+                    meter_state["composite_clip_enabled"] = composite_clip_enabled
+                    meter_state["composite_clip_active"] = composite_clip_active
+            except Exception:
+                continue
 
     def _resolve_processing_rate(self):
         raw = mpx_state.get("processing_rate_hz", 0)
@@ -540,6 +781,7 @@ class FMEngine:
         density_side = (width * 2.0) - 1.0
         density_mid = (center * 2.0) - 1.0
         wet = mix * 0.5
+        level_comp = 1.0 / (1.0 + wet) if wet > 0.0 else 1.0
         offset = (density_side - density_mid) / 2.0
         if offset > 0:
             offset = math.sin(offset)
@@ -597,8 +839,8 @@ class FMEngine:
                 p[count + 2048] = p[count] = side
                 side = (p[count + near] * near_level) + (p[count + far] * far_level)
             count -= 1
-            out_l[i] = (dry_l * (1.0 - wet)) + ((mid + side) * wet)
-            out_r[i] = (dry_r * (1.0 - wet)) + ((mid - side) * wet)
+            out_l[i] = ((dry_l * (1.0 - wet)) + ((mid + side) * wet)) * level_comp
+            out_r[i] = ((dry_r * (1.0 - wet)) + ((mid - side) * wet)) * level_comp
         self.wide_count = count
         return out_l.astype(self.dtype, copy=False), out_r.astype(self.dtype, copy=False)
 
@@ -776,15 +1018,15 @@ class FMEngine:
             g = math.gcd(self.sample_rate, proc_rate)
             down = self.sample_rate // g
             up = proc_rate // g
-        t = (np.arange(frames, dtype=self.dtype) / self.sample_rate) + self.phase
-        tone_t = (np.arange(proc_frames, dtype=self.dtype) / proc_rate) + self.tone_phase
+        t = self._get_time_base(frames, self.sample_rate) + self.phase
         pilot = np.sin(2 * np.pi * PILOT_FREQ * t) * level
         input_rms = 0.0
         input_peak = 0.0
         input_pre_rms = 0.0
         input_pre_peak = 0.0
         indata_stereo = None
-        processed = None
+        scope_left = None
+        scope_right = None
         if indata is not None and indata.shape[0] == frames:
             if indata.shape[1] >= 2:
                 indata_stereo = indata[:, :2]
@@ -816,9 +1058,16 @@ class FMEngine:
                     left, right = self._apply_widener(left, right)
                 else:
                     left, right = self._apply_lpf(left, right)
-                processed = np.column_stack((left, right))
-                input_rms = float(np.sqrt(np.mean(processed**2))) if processed.size else 0.0
-                input_peak = float(np.max(np.abs(processed))) if processed.size else 0.0
+                if left.size and right.size:
+                    input_rms = float(
+                        np.sqrt((np.mean(left**2) + np.mean(right**2)) * 0.5)
+                    )
+                    input_peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
+                else:
+                    input_rms = 0.0
+                    input_peak = 0.0
+                scope_left = left
+                scope_right = right
                 baseband = (left + right) * 0.5 * sum_level
                 diff = (right - left) * 0.5 * diff_level
             else:
@@ -826,7 +1075,10 @@ class FMEngine:
                     if self.audio_in:
                         self.audio_in.stop()
                     self.audio_in = AudioInputReader(
-                        mpx_state["device_in_idx"], self.sample_rate, self.dtype
+                        mpx_state["device_in_idx"],
+                        self.sample_rate,
+                        self.dtype,
+                        blocksize=self.blocksize,
                     )
                     self.audio_in.start()
                     if not self.logged_input_fallback:
@@ -836,8 +1088,8 @@ class FMEngine:
                         self.logged_input_fallback = True
                 prebuffer_frames = int(PREBUFFER_SECONDS * self.sample_rate)
                 if self.audio_in.buffered_frames() < prebuffer_frames:
-                    baseband = np.zeros(proc_frames, dtype=self.dtype)
-                    diff = np.zeros(proc_frames, dtype=self.dtype)
+                    baseband = self._get_zeros(proc_frames)
+                    diff = self._get_zeros(proc_frames)
                 else:
                     stereo = self.audio_in.read_frames(frames)
                     input_pre_rms = float(np.sqrt(np.mean(stereo**2))) if stereo.size else 0.0
@@ -859,20 +1111,30 @@ class FMEngine:
                         left, right = self._apply_widener(left, right)
                     else:
                         left, right = self._apply_lpf(left, right)
-                    processed = np.column_stack((left, right))
-                    input_rms = float(np.sqrt(np.mean(processed**2))) if processed.size else 0.0
-                    input_peak = float(np.max(np.abs(processed))) if processed.size else 0.0
+                    if left.size and right.size:
+                        input_rms = float(
+                            np.sqrt((np.mean(left**2) + np.mean(right**2)) * 0.5)
+                        )
+                        input_peak = max(
+                            float(np.max(np.abs(left))), float(np.max(np.abs(right)))
+                        )
+                    else:
+                        input_rms = 0.0
+                        input_peak = 0.0
+                    scope_left = left
+                    scope_right = right
                     baseband = (left + right) * 0.5 * sum_level
                     diff = (right - left) * 0.5 * diff_level
 
         else:
+            tone_t = self._get_time_base(proc_frames, proc_rate) + self.tone_phase
             tone = np.sin(2 * np.pi * tone_freq * tone_t)
             mode = mpx_state.get("test_tone_mode", "mono")
             if mode == "left":
                 left = tone * sum_level
-                right = np.zeros(proc_frames, dtype=self.dtype)
+                right = self._get_zeros(proc_frames)
             elif mode == "right":
-                left = np.zeros(proc_frames, dtype=self.dtype)
+                left = self._get_zeros(proc_frames)
                 right = tone * sum_level
             elif mode == "stereo":
                 left = tone * sum_level
@@ -883,10 +1145,12 @@ class FMEngine:
             if input_gain != 1.0:
                 left = left * input_gain
                 right = right * input_gain
-            input_pre_rms = float(np.sqrt(np.mean(np.column_stack((left, right)) ** 2)))
-            input_pre_peak = (
-                float(np.max(np.abs(np.column_stack((left, right))))) if proc_frames else 0.0
-            )
+            if left.size and right.size:
+                input_pre_rms = float(np.sqrt((np.mean(left**2) + np.mean(right**2)) * 0.5))
+                input_pre_peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
+            else:
+                input_pre_rms = 0.0
+                input_pre_peak = 0.0
             if not bypass:
                 self._refresh_hpf()
                 self._refresh_hf_trim()
@@ -898,9 +1162,14 @@ class FMEngine:
                 left, right = self._apply_widener(left, right)
             else:
                 left, right = self._apply_lpf(left, right)
-            processed = np.column_stack((left, right))
-            input_rms = float(np.sqrt(np.mean(processed**2))) if processed.size else 0.0
-            input_peak = float(np.max(np.abs(processed))) if processed.size else 0.0
+            if left.size and right.size:
+                input_rms = float(np.sqrt((np.mean(left**2) + np.mean(right**2)) * 0.5))
+                input_peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
+            else:
+                input_rms = 0.0
+                input_peak = 0.0
+            scope_left = left
+            scope_right = right
             baseband = (left + right) * 0.5
             diff = (right - left) * 0.5
 
@@ -1015,74 +1284,48 @@ class FMEngine:
                 pass
         if self.monitor_callback:
             try:
-                subcarrier = np.sin(2 * np.pi * (2 * PILOT_FREQ) * t).astype(self.dtype)
-                mon = self._monitor_demod(mpx_pre_gain, subcarrier)
+                mon = self._monitor_demod(mpx_pre_gain, subcarrier.astype(self.dtype, copy=False))
                 if mon is not None:
                     self.monitor_callback(mon)
             except Exception:
                 pass
-        output_rms = float(np.sqrt(np.mean(mpx_pre_gain**2))) if mpx_pre_gain.size else 0.0
-        output_peak = float(np.max(np.abs(mpx_pre_gain))) if mpx_pre_gain.size else 0.0
 
-        if processed is not None and processed.size:
-            input_scope = np.mean(processed, axis=1)
-            left_vu = float(np.sqrt(np.mean(processed[:, 0] ** 2))) if processed.size else 0.0
-            right_vu = float(np.sqrt(np.mean(processed[:, 1] ** 2))) if processed.size else 0.0
-            left_rms = left_vu
-            right_rms = right_vu
-        else:
-            input_scope = np.zeros(proc_frames, dtype=self.dtype)
-            left_vu = 0.0
-            right_vu = 0.0
-            left_rms = 0.0
-            right_rms = 0.0
-        out_scope = mpx_pre_gain
-        scope_points = 128
-        in_step = max(1, int(len(input_scope) / scope_points))
-        out_step = max(1, int(len(out_scope) / scope_points))
-        input_wave = input_scope[::in_step][:scope_points].astype(np.float32)
-        mpx_wave = out_scope[::out_step][:scope_points].astype(np.float32)
-        with wave_lock:
-            wave_state["input_wave"] = input_wave.tolist()
-            wave_state["mpx_wave"] = mpx_wave.tolist()
-
-        with meter_lock:
-            meter_state["input_rms"] = meter_state["input_rms"] * 0.9 + input_rms * 0.1
-            meter_state["input_rms_l"] = meter_state["input_rms_l"] * 0.9 + left_rms * 0.1
-            meter_state["input_rms_r"] = meter_state["input_rms_r"] * 0.9 + right_rms * 0.1
-            meter_state["mpx_rms"] = meter_state["mpx_rms"] * 0.9 + mpx_rms * 0.1
-            meter_state["input_peak"] = max(meter_state["input_peak"] * 0.98, input_peak)
-            meter_state["mpx_peak"] = max(meter_state["mpx_peak"] * 0.98, mpx_peak)
-            meter_state["input_vu"] = meter_state["input_vu"] * 0.95 + input_rms * 0.05
-            meter_state["input_vu_l"] = meter_state["input_vu_l"] * 0.95 + left_vu * 0.05
-            meter_state["input_vu_r"] = meter_state["input_vu_r"] * 0.95 + right_vu * 0.05
-            meter_state["mpx_vu"] = meter_state["mpx_vu"] * 0.95 + mpx_rms * 0.05
-            meter_state["input_pre_rms"] = meter_state["input_pre_rms"] * 0.9 + input_pre_rms * 0.1
-            meter_state["input_pre_peak"] = max(
-                meter_state["input_pre_peak"] * 0.98, input_pre_peak
+        now = time.monotonic()
+        if now - self._last_telemetry_enqueue >= self.telemetry_interval_s:
+            self._enqueue_telemetry(
+                {
+                    "input_rms": input_rms,
+                    "input_peak": input_peak,
+                    "input_pre_rms": input_pre_rms,
+                    "input_pre_peak": input_pre_peak,
+                    "mpx_rms": mpx_rms,
+                    "mpx_peak": mpx_peak,
+                    "limiter_active": limiter_active,
+                    "preemph_limit_enabled": preemph_limit_enabled,
+                    "preemph_limit_active": preemph_limit_active,
+                    "composite_clip_enabled": composite_clip_enabled,
+                    "composite_clip_active": composite_clip_active,
+                    "scope_left": scope_left,
+                    "scope_right": scope_right,
+                    "mpx_pre_gain": mpx_pre_gain,
+                    "proc_frames": proc_frames,
+                }
             )
-            meter_state["input_pre_vu"] = meter_state["input_pre_vu"] * 0.95 + input_pre_rms * 0.05
-            meter_state["output_rms"] = meter_state["output_rms"] * 0.9 + output_rms * 0.1
-            meter_state["output_peak"] = max(meter_state["output_peak"] * 0.98, output_peak)
-            meter_state["output_vu"] = meter_state["output_vu"] * 0.95 + output_rms * 0.05
-            meter_state["limiter_active"] = limiter_active
-            meter_state["multiband_enabled"] = bool(mpx_state.get("multiband_enabled"))
-            meter_state["multiband_active"] = bool(mpx_state.get("multiband_enabled"))
-            meter_state["preemph_limit_enabled"] = preemph_limit_enabled
-            meter_state["preemph_limit_active"] = preemph_limit_active
-            meter_state["composite_clip_enabled"] = composite_clip_enabled
-            meter_state["composite_clip_active"] = composite_clip_active
+            self._last_telemetry_enqueue = now
 
         self.phase = (self.phase + (frames / self.sample_rate)) % 1.0
         self.tone_phase = (self.tone_phase + (frames / self.sample_rate)) % 1.0
         self.pan_phase = (self.pan_phase + (frames / self.sample_rate)) % 1.0
         if mpx_state.get("output_enabled", True):
-            outdata[:] = np.column_stack((mpx, mpx))
+            outdata[:, 0] = mpx
+            outdata[:, 1] = mpx
         else:
-            outdata[:] = np.zeros((frames, 2), dtype=self.dtype)
+            outdata.fill(0.0)
 
     def callback_output(self, outdata, frames, _time_info, _status):
+        self._log_stream_status(_status, "output")
         self._process_frame(outdata, frames, None)
 
     def callback_duplex(self, indata, outdata, frames, _time_info, _status):
+        self._log_stream_status(_status, "duplex")
         self._process_frame(outdata, frames, indata)

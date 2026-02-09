@@ -1,6 +1,6 @@
 # StereoFool
 
-Version: 0.4
+Version: 0.5
 
 StereoFool is a Python app that generates an FM composite MPX signal with RDS and serves a
 browser-based control panel. It synthesizes pilot/RDS, muxes stereo audio sources, and sends
@@ -80,6 +80,28 @@ pip install -r requirements.txt
 python stereofool/app.py
 ```
 
+### Windows: Use `spatialaudio/portaudio-binaries`
+
+If the default PortAudio bundled with your Python/sounddevice install has host-API issues
+(for example WASAPI or WDM-KS behavior), you can test an alternate PortAudio DLL build.
+
+1. Download a Windows release asset from
+   [spatialaudio/portaudio-binaries](https://github.com/spatialaudio/portaudio-binaries/releases).
+2. Extract it and copy the DLL you want to test into a local folder, for example:
+   `.\third_party\portaudio\portaudio.dll`
+3. In PowerShell, prepend that folder to `PATH` before starting Python:
+
+```powershell
+$env:PATH = "$PWD\third_party\portaudio;$env:PATH"
+python -c "import sounddevice as sd; print(sd.get_portaudio_version()); print([a['name'] for a in sd.query_hostapis()])"
+python stereofool/app.py
+```
+
+Notes:
+- Run StereoFool from the same shell session where `PATH` was updated.
+- This method is non-destructive; remove that `PATH` override to return to the default DLL.
+- Use `STEREOFOOL_HOSTAPI` to restrict backend selection during testing (example: `wasapi`, `wdmks`, `directsound`, `mme`).
+
 On Windows, on low-end systems, higher priority may improve stability:
 
 ```cmd
@@ -115,7 +137,21 @@ Config sections:
 Key environment variables:
 
 - `STEREOFOOL_SECRET`: override the Flask session secret
-- `STEREOFOOL_HOSTAPI`: comma-separated list of host APIs to prefer (e.g. `Core Audio` or `ALSA`)
+- `STEREOFOOL_HOSTAPI`: comma-separated host API filter (e.g. `wasapi`, `wdmks`, `Core Audio`, `ALSA`)
+
+### Buffering and Web Reload Behavior
+
+- `INTERFACES.blocksize` controls audio callback buffer size. You can also set this from the
+  Interfaces pane (`Audio Engine > Block Size`).
+- Larger block sizes reduce CPU pressure and dropouts, but increase latency.
+- Smaller block sizes reduce latency, but are more sensitive to CPU contention.
+- Suggested starting points:
+  - fast systems: `2048` or `4096`
+  - older/slower systems: `8192` or `16384`
+
+The web UI and audio engine run in the same Python process. During heavy browser activity
+(especially repeated fast refresh/F5), brief audio glitches can still occur on slower systems.
+This is a known limitation of single-process real-time DSP + web serving.
 
 ## Reference documents
 

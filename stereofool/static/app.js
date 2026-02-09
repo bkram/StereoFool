@@ -58,6 +58,9 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
     function updateMonitorRate(value) {
         socket.emit('update', { monitor_rate_hz: Number(value) });
     }
+    function updateBlocksize(value) {
+        socket.emit('update', { blocksize: Number(value) });
+    }
     function updateWavRecordPath(val) {
         socket.emit('update', { wav_record_path: val });
     }
@@ -274,7 +277,11 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         if (inputMeterR) inputMeterR.style.width = `${Math.round(meterScale(inputLevelR) * 100)}%`;
         if (mpxMeter) mpxMeter.style.width = `${Math.round(meterScale(mpxLevel) * 100)}%`;
         if (modMeter) modMeter.style.width = `${Math.round(modPct * 100)}%`;
-        const toDb = (v) => v > 1e-6 ? (20 * Math.log10(v)).toFixed(1) : '-inf';
+        const toDb = (v) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return '--';
+            return n > 1e-6 ? (20 * Math.log10(n)).toFixed(1) : '-inf';
+        };
         if (inputDb) inputDb.textContent = `${toDb(inputLevel)} dBFS`;
         if (mpxDb) mpxDb.textContent = `${toDb(mpxLevel)} dBFS`;
         if (inputPeak) inputPeak.textContent = `${toDb(inputPk)} pk`;
@@ -296,7 +303,7 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
             const el = document.getElementById(id);
             if (!el) return;
             if (v === undefined || v === null || v === '') {
-                el.innerText = ' ';
+                el.innerText = '—';
                 return;
             }
             el.innerText = v;
@@ -307,11 +314,6 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         setText('live_ptyn', data.ptyn);
         setText('live_af', data.af);
         setText('live_rt_plus', data.rt_plus_info);
-        const rtPlusWrap = document.getElementById('live_rt_plus')?.parentElement;
-        if (rtPlusWrap) {
-            const hasRtPlus = Boolean(data.rt_plus_info);
-            rtPlusWrap.style.display = hasRtPlus ? 'block' : 'none';
-        }
         setText('live_pi', data.pi);
         setText('live_pty', ptyList[data.pty_idx] || "None");
         if (data.device_out_name || data.device_in_name) {
@@ -320,8 +322,8 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
             setText('live_device_out', inName);
             setText('live_device_in', outName);
         } else {
-            setText('live_device_out', ' ');
-            setText('live_device_in', ' ');
+            setText('live_device_out', '—');
+            setText('live_device_in', '—');
         }
         if (typeof data.limiter_active !== 'undefined') {
             setText('live_limiter', data.limiter_active ? 'Limiting' : 'Idle');

@@ -156,7 +156,7 @@ body.app-body {
     border: 1px solid #333;
     border-radius: 4px;
     margin-bottom: 15px;
-    overflow: hidden;
+    overflow: visible;
 }
 
 .section-header {

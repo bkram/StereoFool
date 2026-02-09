@@ -145,6 +145,26 @@ MPX_HTML = r"""
                     </div>
                 </div>
                 <div class="section">
+                    <div class="section-header">Audio Engine</div>
+                    <div class="section-body">
+                        <div>
+                            <label>Block Size <span class="help-tip" data-tip="Higher values reduce CPU load and dropouts but increase latency. Restart required.">?</span></label>
+                            <select id="mpx_blocksize" onchange="updateBlocksize(this.value)">
+                                <option value="512" {% if state.blocksize == 512 %}selected{% endif %}>512</option>
+                                <option value="1024" {% if state.blocksize == 1024 %}selected{% endif %}>1024</option>
+                                <option value="2048" {% if state.blocksize == 2048 %}selected{% endif %}>2048</option>
+                                <option value="4096" {% if state.blocksize == 4096 %}selected{% endif %}>4096</option>
+                                <option value="8192" {% if state.blocksize == 8192 %}selected{% endif %}>8192</option>
+                                <option value="16384" {% if state.blocksize == 16384 %}selected{% endif %}>16384</option>
+                                {% if state.blocksize not in [512, 1024, 2048, 4096, 8192, 16384] %}
+                                <option value="{{state.blocksize}}" selected>{{state.blocksize}}</option>
+                                {% endif %}
+                            </select>
+                            <div class="text-[11px] text-gray-400 mt-1">Higher values improve stability on slower systems.</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="section">
                     <div class="section-header">Source</div>
                     <div class="section-body">
                         <div>
@@ -798,26 +818,26 @@ MPX_HTML = r"""
                                  </div>
                                  <div>
                                      <label>PI</label>
-                                     <div class="live-display sub text-center text-yellow-300" id="live_pi"></div>
+                                     <div class="live-display sub text-center text-yellow-300" id="live_pi">—</div>
                                  </div>
                                  <div>
                                      <label>PTY</label>
-                                     <div class="live-display sub text-center" id="live_pty"></div>
+                                     <div class="live-display sub text-center" id="live_pty">—</div>
                                  </div>
                                  <div>
                                      <label>PTYN</label>
-                                     <div class="live-display sub" id="live_ptyn"></div>
+                                     <div class="live-display sub" id="live_ptyn">—</div>
                                  </div>
                              </div>
 
                              <div>
                                  <label class="flex justify-between"><span>RT+ Status</span> <span class="text-xs text-gray-400">AID: 4BD7 (Group 11A)</span></label>
-                                 <div class="live-display sub text-orange-300" id="live_rt_plus"></div>
+                                 <div class="live-display sub text-orange-300" id="live_rt_plus">—</div>
                              </div>
 
                             <div>
                                 <label>Long PS (Group 15)</label>
-                                <div class="live-display sub" id="live_lps"></div>
+                                <div class="live-display sub" id="live_lps">—</div>
                             </div>
                             <div>
                                 <label>RadioText (RT)</label>
@@ -832,11 +852,11 @@ MPX_HTML = r"""
                             <div class="grid grid-cols-2 gap-2">
                             <div>
                                 <label>Input Device</label>
-                                <div class="live-display sub" id="live_device_out"> </div>
+                                <div class="live-display sub" id="live_device_out">—</div>
                             </div>
                             <div>
                                 <label>Output Device</label>
-                                <div class="live-display sub" id="live_device_in"> </div>
+                                <div class="live-display sub" id="live_device_in">—</div>
                             </div>
                             </div>
                             <div>
