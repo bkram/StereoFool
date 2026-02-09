@@ -145,6 +145,26 @@ MPX_HTML = r"""
                     </div>
                 </div>
                 <div class="section">
+                    <div class="section-header">Audio Engine</div>
+                    <div class="section-body">
+                        <div>
+                            <label>Block Size <span class="help-tip" data-tip="Higher values reduce CPU load and dropouts but increase latency. Restart required.">?</span></label>
+                            <select id="mpx_blocksize" onchange="updateBlocksize(this.value)">
+                                <option value="512" {% if state.blocksize == 512 %}selected{% endif %}>512</option>
+                                <option value="1024" {% if state.blocksize == 1024 %}selected{% endif %}>1024</option>
+                                <option value="2048" {% if state.blocksize == 2048 %}selected{% endif %}>2048</option>
+                                <option value="4096" {% if state.blocksize == 4096 %}selected{% endif %}>4096</option>
+                                <option value="8192" {% if state.blocksize == 8192 %}selected{% endif %}>8192</option>
+                                <option value="16384" {% if state.blocksize == 16384 %}selected{% endif %}>16384</option>
+                                {% if state.blocksize not in [512, 1024, 2048, 4096, 8192, 16384] %}
+                                <option value="{{state.blocksize}}" selected>{{state.blocksize}}</option>
+                                {% endif %}
+                            </select>
+                            <div class="text-[11px] text-gray-400 mt-1">Higher values improve stability on slower systems.</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="section">
                     <div class="section-header">Source</div>
                     <div class="section-body">
                         <div>
@@ -798,26 +818,26 @@ MPX_HTML = r"""
                                  </div>
                                  <div>
                                      <label>PI</label>
-                                     <div class="live-display sub text-center text-yellow-300" id="live_pi"></div>
+                                     <div class="live-display sub text-center text-yellow-300" id="live_pi">—</div>
                                  </div>
                                  <div>
                                      <label>PTY</label>
-                                     <div class="live-display sub text-center" id="live_pty"></div>
+                                     <div class="live-display sub text-center" id="live_pty">—</div>
                                  </div>
                                  <div>
                                      <label>PTYN</label>
-                                     <div class="live-display sub" id="live_ptyn"></div>
+                                     <div class="live-display sub" id="live_ptyn">—</div>
                                  </div>
                              </div>
 
                              <div>
                                  <label class="flex justify-between"><span>RT+ Status</span> <span class="text-xs text-gray-400">AID: 4BD7 (Group 11A)</span></label>
-                                 <div class="live-display sub text-orange-300" id="live_rt_plus"></div>
+                                 <div class="live-display sub text-orange-300" id="live_rt_plus">—</div>
                              </div>
 
                             <div>
                                 <label>Long PS (Group 15)</label>
-                                <div class="live-display sub" id="live_lps"></div>
+                                <div class="live-display sub" id="live_lps">—</div>
                             </div>
                             <div>
                                 <label>RadioText (RT)</label>
@@ -831,12 +851,12 @@ MPX_HTML = r"""
                         <div class="section-body">
                             <div class="grid grid-cols-2 gap-2">
                             <div>
-                                <label>Output Device</label>
-                                <div class="live-display sub" id="live_device_out"> </div>
+                                <label>Input Device</label>
+                                <div class="live-display sub" id="live_device_out">—</div>
                             </div>
                             <div>
-                                <label>Input Device</label>
-                                <div class="live-display sub" id="live_device_in"> </div>
+                                <label>Output Device</label>
+                                <div class="live-display sub" id="live_device_in">—</div>
                             </div>
                             </div>
                             <div>
@@ -910,14 +930,14 @@ MPX_HTML = r"""
                     <div class="section">
                         <div class="section-header">Scopes</div>
                         <div class="section-body" style="display: block;">
-                            <div style="display: flex; gap: 16px; flex-wrap: nowrap;">
-                                <div style="flex: 1 1 0; min-width: 0;">
+                            <div class="scope-row">
+                                <div class="scope-panel">
                                     <label>Stereo Input Scope</label>
-                                    <canvas id="scope_input" width="360" height="120" class="w-full bg-black/70 border border-gray-700 rounded"></canvas>
+                                    <canvas id="scope_input" width="360" height="120" class="scope-canvas w-full bg-black/70 border border-gray-700 rounded"></canvas>
                                 </div>
-                                <div style="flex: 1 1 0; min-width: 0;">
+                                <div class="scope-panel">
                                     <label>MPX Output Scope</label>
-                                    <canvas id="scope_mpx" width="360" height="120" class="w-full bg-black/70 border border-gray-700 rounded"></canvas>
+                                    <canvas id="scope_mpx" width="360" height="120" class="scope-canvas w-full bg-black/70 border border-gray-700 rounded"></canvas>
                                 </div>
                             </div>
                         </div>
@@ -928,45 +948,49 @@ MPX_HTML = r"""
                     <div class="section">
                         <div class="section-header">Monitor Audio Path</div>
                         <div class="section-body">
-                            <div class="text-[11px] text-gray-400 mb-2">Demodulated monitor signal flow.</div>
-                            <div class="bg-black/50 border border-gray-700 rounded px-3 py-2 text-[11px] text-gray-200 leading-relaxed">
-                                MPX pre-gain
-                                &gt; L+R low-pass 15 kHz
-                                &gt; L-R band-pass 23-53 kHz
-                                &gt; 38 kHz demod
-                                &gt; L-R low-pass 15 kHz
-                                &gt; stereo decode
-                                &gt; de-emphasis
-                                &gt; resample
-                                &gt; monitor out
-                            </div>
+                            <div class="text-xs text-gray-400 mb-2">Demodulated monitor signal flow.</div>
+                            <ul class="bg-black/50 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 leading-relaxed list-disc pl-5">
+                                <li>MPX pre-gain</li>
+                                <li>L+R low-pass (15 kHz)</li>
+                                <li>L-R band-pass (23-53 kHz)</li>
+                                <li>38 kHz demod</li>
+                                <li>L-R low-pass (15 kHz)</li>
+                                <li>Stereo decode</li>
+                                <li>De-emphasis</li>
+                                <li>Resample</li>
+                                <li>Monitor out</li>
+                            </ul>
                         </div>
                     </div>
                     <div class="section">
                         <div class="section-header">MPX + RDS Chain</div>
                         <div class="section-body">
-                            <div class="text-[11px] text-gray-400 mb-2">Main stereo MPX chain (simplified).</div>
-                            <div class="bg-black/50 border border-gray-700 rounded px-3 py-2 text-[11px] text-gray-200 leading-relaxed">
-                                Source input or tone
-                                &gt; input gain
-                                &gt; HPF + LPF + HF trim + pilot notch
-                                &gt; AGC
-                                &gt; multiband
-                                &gt; audio limiter
-                                &gt; L+R / L-R
-                                &gt; pre-emphasis
-                                &gt; pre-emphasis limiter
-                                &gt; M/S clamp
-                                &gt; 38 kHz DSB + band-pass
-                                &gt; L+R + DSB sum
-                                &gt; audio MPX LPF
-                                &gt; composite clip / MPX limiter
-                                &gt; deviation scale
-                                &gt; pilot + RDS add
-                                &gt; audio headroom trim
-                                &gt; DC block + notch
-                                &gt; output gain
-                            </div>
+                            <div class="text-xs text-gray-400 mb-2">Main stereo MPX chain (simplified).</div>
+                            <ul class="bg-black/50 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 leading-relaxed list-disc pl-5">
+                                <li>Source input or tone</li>
+                                <li>Input gain</li>
+                                <li>HPF</li>
+                                <li>LPF</li>
+                                <li>HF trim</li>
+                                <li>Pilot notch</li>
+                                <li>Multiband (optional)</li>
+                                <li>Stereo widen (optional)</li>
+                                <li>LPF (post widen)</li>
+                                <li>L+R / L-R</li>
+                                <li>Pre-emphasis</li>
+                                <li>Pre-emphasis limiter (optional)</li>
+                                <li>Safety gain (post pre-emphasis)</li>
+                                <li>38 kHz DSB + band-pass</li>
+                                <li>L+R + DSB sum</li>
+                                <li>Audio MPX LPF</li>
+                                <li>Composite clip (optional)</li>
+                                <li>MPX lookahead limiter (optional)</li>
+                                <li>Deviation scale</li>
+                                <li>Pilot + RDS add</li>
+                                <li>Audio headroom trim</li>
+                                <li>DC block + notch</li>
+                                <li>Output gain</li>
+                            </ul>
                         </div>
                     </div>
                 </div>

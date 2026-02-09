@@ -18,7 +18,7 @@ from stereofool.audio import FMEngine
 from stereofool.constants import BLOCKSIZE, DEFAULT_SAMPLE_RATE, RDS_FREQ
 from stereofool.state import mpx_state, rds_default_state, rds_state
 
-from analyze_mpx import analyze_array
+from analyze_mpx import _bandpass_stats, _dbfs, _plot_spectrum, analyze_array
 
 
 TOGGLES = [
@@ -186,6 +186,86 @@ def _rds_baseband_rms(data, sample_rate, rds_freq, lp_hz=5000.0):
     return float(np.sqrt(np.mean(i_sig**2 + q_sig**2)))
 
 
+def _guard_band_report(data, sample_rate, composite_rms):
+    bands = [
+        ("audio_guard_15-18.5k", 15000.0, 18500.0),
+        ("pilot_guard_20-23k", 20000.0, 23000.0),
+        ("stereo_guard_53-54k", 53000.0, 54000.0),
+        ("hf_guard_60-90k", 60000.0, min(sample_rate / 2.0, 90000.0)),
+    ]
+    report = []
+    for name, lo, hi in bands:
+        if hi <= lo + 1.0:
+            continue
+        rms, peak = _bandpass_stats(data, sample_rate, lo, hi)
+        dbc = _dbfs(rms / composite_rms) if composite_rms > 0 else -120.0
+        report.append((name, lo, hi, rms, peak, dbc))
+    return report
+
+
+def _print_guard_report(guard_report):
+    warn = False
+    for name, lo, hi, rms, peak, dbc in guard_report:
+        if dbc > -35.0:
+            warn = True
+        print(
+            "{}: {:.0f}-{:.0f} Hz RMS {:.6f} ({:.2f} dBc), peak {:.6f}".format(
+                name, lo, hi, rms, dbc, peak
+            )
+        )
+    print("Guard band check: {}".format("WARN" if warn else "OK"))
+
+
+def _write_single_wav(path, sample_rate, data):
+    from scipy.io import wavfile
+
+    pcm = np.clip(data, -1.0, 1.0)
+    wavfile.write(path, sample_rate, (pcm * 32767.0).astype(np.int16))
+
+
+def _run_inspect(
+    sample_rate,
+    duration,
+    warmup,
+    processing_rate_hz,
+    base_mpx,
+    base_rds,
+    wav_path,
+    plot_path,
+):
+    _reset_state(base_mpx, base_rds)
+    toggles = {key: bool(base_mpx.get(key, False)) for key in TOGGLES}
+    _apply_case_settings(toggles, True, processing_rate_hz)
+    data = _render_mpx(sample_rate, duration, warmup, "stereo")
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_single_wav(wav_path, sample_rate, data)
+    print(f"Wrote WAV: {wav_path}")
+
+    metrics = analyze_array(sample_rate, data, nperseg=32768)
+    print("Composite RMS: {:.6f} ({:.2f} dBFS)".format(metrics["rms"], _dbfs(metrics["rms"])))
+    print(
+        "Pilot 19 kHz RMS: {:.6f} ({:.2f} dBFS)".format(
+            metrics["pilot_rms"], _dbfs(metrics["pilot_rms"])
+        )
+    )
+    print(
+        "Stereo band RMS (23-53 kHz): {:.6f} ({:.2f} dBFS)".format(
+            metrics["stereo_rms"], _dbfs(metrics["stereo_rms"])
+        )
+    )
+    print(
+        "RDS band RMS (54-60 kHz): {:.6f} ({:.2f} dBFS)".format(
+            metrics["rds_rms"], _dbfs(metrics["rds_rms"])
+        )
+    )
+    guard_report = _guard_band_report(data, sample_rate, metrics["rms"])
+    _print_guard_report(guard_report)
+
+    if plot_path:
+        return _plot_spectrum(metrics, plot_path)
+    return 0
+
+
 def _check_metrics(metrics, tone_mode):
     errors = []
     if not np.isfinite(metrics["peak"]) or not np.isfinite(metrics["rms"]):
@@ -230,6 +310,14 @@ def main():
     parser.add_argument("--keep-wavs", action="store_true")
     parser.add_argument("--outdir", type=str, default="captures/matrix_wavs")
     parser.add_argument("--single-wav", type=str, default=None)
+    parser.add_argument(
+        "--plot", type=str, default=None, help="Write PNG spectrum plot for --single-wav"
+    )
+    parser.add_argument("--inspect", action="store_true", help="Run suite + single WAV inspection")
+    parser.add_argument("--inspect-wav", type=str, default=None, help="WAV path for --inspect")
+    parser.add_argument(
+        "--inspect-plot", type=str, default=None, help="PNG spectrum path for --inspect"
+    )
     args = parser.parse_args()
 
     sample_rate = int(args.sample_rate)
@@ -260,17 +348,27 @@ def main():
     if not processing_rates:
         processing_rates = [0]
 
+    if args.inspect:
+        inspect_wav = (
+            Path(args.inspect_wav) if args.inspect_wav else Path("captures/inspect/inspect_mpx.wav")
+        )
+        inspect_plot = (
+            Path(args.inspect_plot)
+            if args.inspect_plot
+            else Path("captures/inspect/inspect_spectrum.png")
+        )
+
     if args.single_wav:
         out_path = Path(args.single_wav)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         _reset_state(base_mpx, base_rds)
         _apply_case_settings({key: False for key in TOGGLES}, True, processing_rates[0])
         data = _render_mpx(sample_rate, args.duration, args.warmup, "stereo")
-        from scipy.io import wavfile
-
-        pcm = np.clip(data, -1.0, 1.0)
-        wavfile.write(out_path, sample_rate, (pcm * 32767.0).astype(np.int16))
+        _write_single_wav(out_path, sample_rate, data)
         print(f"Wrote WAV: {out_path}")
+        if args.plot:
+            report = analyze_array(sample_rate, data, nperseg=32768)
+            return _plot_spectrum(report, args.plot)
         return 0
 
     report_file = report_path.open("w", encoding="utf-8")
@@ -325,8 +423,24 @@ def main():
                     pcm = np.clip(data, -1.0, 1.0)
                     wavfile.write(wav_path, sample_rate, (pcm * 32767.0).astype(np.int16))
 
-    failures = sorted(set(failures))
     report_file.close()
+
+    if args.inspect:
+        print("\nRunning inspection pass...")
+        inspect_code = _run_inspect(
+            sample_rate,
+            args.duration,
+            args.warmup,
+            processing_rates[0],
+            base_mpx,
+            base_rds,
+            inspect_wav,
+            inspect_plot,
+        )
+        if inspect_code:
+            return inspect_code
+
+    failures = sorted(set(failures))
 
     print(f"Cases: {total_cases}")
     print(f"Report: {report_path}")

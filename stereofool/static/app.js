@@ -58,6 +58,9 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
     function updateMonitorRate(value) {
         socket.emit('update', { monitor_rate_hz: Number(value) });
     }
+    function updateBlocksize(value) {
+        socket.emit('update', { blocksize: Number(value) });
+    }
     function updateWavRecordPath(val) {
         socket.emit('update', { wav_record_path: val });
     }
@@ -208,17 +211,11 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         }
     }
 
-    socket.on('connect', () => {
-        const hb = document.getElementById('heartbeat');
-        if (hb) hb.style.opacity = '1';
-    });
+    let lastMonitorUpdateMs = 0;
+    let monitorPollBusy = false;
 
-    socket.on('disconnect', () => {
-        const hb = document.getElementById('heartbeat');
-        if (hb) hb.style.opacity = '0.2';
-    });
-
-    socket.on('monitor', (data) => {
+    function applyMonitorData(data) {
+        lastMonitorUpdateMs = Date.now();
         const hb = document.getElementById('heartbeat');
         if (hb) hb.style.opacity = hb.style.opacity === '0.3' ? '1' : '0.3';
         running = data.running;
@@ -274,7 +271,11 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         if (inputMeterR) inputMeterR.style.width = `${Math.round(meterScale(inputLevelR) * 100)}%`;
         if (mpxMeter) mpxMeter.style.width = `${Math.round(meterScale(mpxLevel) * 100)}%`;
         if (modMeter) modMeter.style.width = `${Math.round(modPct * 100)}%`;
-        const toDb = (v) => v > 1e-6 ? (20 * Math.log10(v)).toFixed(1) : '-inf';
+        const toDb = (v) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return '--';
+            return n > 1e-6 ? (20 * Math.log10(n)).toFixed(1) : '-inf';
+        };
         if (inputDb) inputDb.textContent = `${toDb(inputLevel)} dBFS`;
         if (mpxDb) mpxDb.textContent = `${toDb(mpxLevel)} dBFS`;
         if (inputPeak) inputPeak.textContent = `${toDb(inputPk)} pk`;
@@ -296,7 +297,7 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
             const el = document.getElementById(id);
             if (!el) return;
             if (v === undefined || v === null || v === '') {
-                el.innerText = ' ';
+                el.innerText = '—';
                 return;
             }
             el.innerText = v;
@@ -307,21 +308,16 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         setText('live_ptyn', data.ptyn);
         setText('live_af', data.af);
         setText('live_rt_plus', data.rt_plus_info);
-        const rtPlusWrap = document.getElementById('live_rt_plus')?.parentElement;
-        if (rtPlusWrap) {
-            const hasRtPlus = Boolean(data.rt_plus_info);
-            rtPlusWrap.style.display = hasRtPlus ? 'block' : 'none';
-        }
         setText('live_pi', data.pi);
         setText('live_pty', ptyList[data.pty_idx] || "None");
         if (data.device_out_name || data.device_in_name) {
             const outName = data.device_out_name || 'None';
             const inName = data.device_in_name || 'None';
-            setText('live_device_out', outName);
-            setText('live_device_in', inName);
+            setText('live_device_out', inName);
+            setText('live_device_in', outName);
         } else {
-            setText('live_device_out', ' ');
-            setText('live_device_in', ' ');
+            setText('live_device_out', '—');
+            setText('live_device_in', '—');
         }
         if (typeof data.limiter_active !== 'undefined') {
             setText('live_limiter', data.limiter_active ? 'Limiting' : 'Idle');
@@ -353,7 +349,41 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
             setText('live_rds_carrier', data.rds_carrier ? 'On' : 'Off');
         }
         updateDeviationLabels();
+    }
+
+    async function pollMonitorFallback() {
+        if (monitorPollBusy) return;
+        if ((Date.now() - lastMonitorUpdateMs) < 1500) return;
+        monitorPollBusy = true;
+        try {
+            const res = await fetch('/monitor_snapshot', {
+                method: 'GET',
+                credentials: 'same-origin',
+                cache: 'no-store',
+            });
+            if (res.ok) {
+                const data = await res.json();
+                applyMonitorData(data);
+            }
+        } catch (e) {
+            // Ignore fallback fetch errors; websocket may recover.
+        } finally {
+            monitorPollBusy = false;
+        }
+    }
+
+    socket.on('connect', () => {
+        const hb = document.getElementById('heartbeat');
+        if (hb) hb.style.opacity = '1';
     });
+
+    socket.on('disconnect', () => {
+        const hb = document.getElementById('heartbeat');
+        if (hb) hb.style.opacity = '0.2';
+    });
+
+    socket.on('monitor', applyMonitorData);
+    setInterval(pollMonitorFallback, 1000);
 
     function updateRTVisibility() {
         const manual = document.getElementById('rt_manual_buffers');

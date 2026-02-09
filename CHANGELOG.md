@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.5
+
+- Audio callback and UI contention reduced:
+  - moved meter/scope aggregation off the callback path into a telemetry worker.
+  - optimized callback allocations and hot-path math for lower CPU usage.
+  - added cached template rendering and UI cache invalidation to reduce reload overhead.
+- Buffering and contention hardening:
+  - configurable `INTERFACES.blocksize` integrated into runtime and UI (Interfaces > Audio Engine).
+  - monitor output now uses prefill/rebuffer behavior to reduce underrun artifacts.
+  - input fallback reader now trims backlog to keep latency bounded under CPU spikes.
+- Monitor/output safety:
+  - when monitor output device matches MPX output device, MPX output is auto-disabled for that run.
+  - monitor UI fields now keep fixed placeholders and no longer collapse when empty.
+  - monitoring scopes now use fixed-size canvases with centered layout for consistent rendering and lower browser draw cost.
+- Websocket/reload resilience:
+  - monitor emits target authenticated monitor clients only.
+  - reconnect handling replaces stale session sockets to reduce rapid-refresh churn.
+  - monitor payload loop skips work when no UI clients are connected.
+  - added `/monitor_snapshot` authenticated JSON endpoint and frontend fallback polling when websocket monitor frames stall.
+  - web runtime standardized on Flask-SocketIO `threading` mode for consistent UI behavior.
+- Host API and interface robustness:
+  - `STEREOFOOL_HOSTAPI` now supports alias matching (`wasapi`, `wdmks`, etc.) with strict override behavior.
+  - startup still normalizes stale device indices to valid devices.
+  - monitor/device labels in monitoring view corrected.
+- Config persistence reliability:
+  - debounced config writes added for UI updates.
+  - config write path serialized and hardened against writer-thread failure.
+- Startup/runtime structure:
+  - startup flow refactored into `main()` with focused helpers for CLI parsing, config bootstrap, device logging, and server launch.
+  - config bootstrap now uses `pathlib.Path` for clearer file handling.
+- Diagnostics:
+  - added periodic and final totals for stream status flags (underflow/overflow/priming).
+  - added monitor queue drop/underrun counters and input backlog trim counters.
+- Widener behavior:
+  - level compensation changed to static mix compensation to avoid gain pumping artifacts.
+- Documentation:
+  - README updated to version 0.5 and expanded with Windows PortAudio binary instructions.
+  - README now includes buffering guidance and notes that rapid browser refresh can still cause brief glitches in single-process mode.
+  - Help text aligned with current DSP chain.
+
 ## 0.4
 
 - Removed AGC and input limiter from the processing chain and UI.
