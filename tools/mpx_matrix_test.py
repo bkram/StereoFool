@@ -95,6 +95,8 @@ def _apply_case_settings(toggles, rds_on, processing_rate_hz):
     mpx_state["sum_level"] = 0.9
     mpx_state["diff_level"] = 0.9
     mpx_state["input_gain_db"] = 0.0
+    # Keep matrix expectations independent from runtime output trim in config.
+    mpx_state["output_gain_db"] = 0.0
     mpx_state["mpx_deviation_khz"] = MAX_DEVIATION_KHZ
     rds_state["rds_level"] = 2.0
     mpx_state["processing_rate_hz"] = int(processing_rate_hz)

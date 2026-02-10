@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.6
+
+- Added DSP/web process isolation: audio engine now runs in a dedicated worker process with command/telemetry IPC.
+- Allowlist behavior fixed: configured `allow_subnets` are additive, while localhost (`127.0.0.0/8`, `::1/128`) remains always allowed.
+- Monitoring scopes now use fixed-size canvases with centered layout for consistent rendering.
+- Monitoring meters now use faster ballistic bar updates plus configurable sticky peak hold/fall and reset controls.
+- UI parameter updates are now coalesced and applied on a fixed DSP control tick to reduce live-update churn under heavy web activity.
+- Added `Orbass`: adaptive low-end enhancement with harmonic bass support, inserted before multiband in the DSP chain.
+- Added built-in multiband genre presets (3-band and 5-band) for one-click baseline tuning.
+- Added multiband preset intensity trim (`Light` / `Normal` / `Heavy`) for faster coarse tuning.
+- Lookahead limiter path upgraded to true delayed lookahead processing with per-stage sample-rate-correct timing.
+- Multiband crossover network rebuilt around LR4 low-pass stages with complementary remainder splitting to keep unity recombination and reduce tonal/level drift.
+- Dynamics startup behavior hardened: AGC and multiband detector envelopes now warm-start from program level to avoid loud-then-soft settling.
+- Multiband dynamics upgraded with soft-knee compression, optional program-dependent release scaling, and cross-band envelope linking for steadier spectral loudness.
+- Added Processing UI controls for multiband knee, band-link strength, and program-dependent release.
+- Genre presets now include tuned advanced multiband defaults (knee/link/release behavior) per format.
+- Fixed multiband detector timing at high sample rates by correcting attack/release coefficients for control-rate decimation; reduced release-scaling range to prevent long-term level sag.
+- Rebuilt multiband compression around a feed-forward dB-domain model (RMS-linked detector, soft-knee gain computer, attack/release gain-reduction ballistics, and linked sidechain control) to eliminate long-run fade behavior.
+- Upgraded multiband sidechain/dynamics to enterprise-style behavior with persistent true-RMS detector memory per band and dual-stage program-dependent release ballistics (fast+slow blend).
+- Retuned 3-band/5-band multiband presets and baseline defaults toward broadcast-style processing (higher band-link, smoother knee, slower LF recovery) for behavior closer to enterprise processors.
+- Hardened separate-input fallback path with adaptive clock-drift correction and hold-last-sample underrun fill, reducing long-run level dropouts when input/output devices are not clock-locked.
+- Pre-emphasis drive guard is now only active with explicit pre-emphasis limiting enabled; this prevents hidden long-run level riding when protection stages are disabled.
+- Absolute full-scale safety handling no longer applies slow gain riding when optional protection is off; it now uses direct hard clipping as a transparent last-resort guard against runaway fades.
+- Startup/runtime flow refactored around `main()` helpers and worker lifecycle supervision.
+- Restored CLI `--length` capture-complete auto-exit behavior and removed legacy in-process audio runtime path from web app.
+- Version and docs updated to 0.6.
+- DSP processing order aligned closer to broadcast processor flow with explicit audio-domain staging and MPX-domain finishing.
+- Added wideband AGC stage and pre-emphasis-aware HF control stage with persistent runtime parameters.
+- Protection path updated for smoother behavior: linked sum/diff lookahead control, separate pre-emphasis limiter oversample state per path, and softer headroom gain attack.
+- MPX cleanup placement corrected: DC block and notch now run in MPX-audio path before pilot/RDS injection.
+- Help tab signal-chain documentation updated to match runtime processing order.
+- Auth expiry UX improved: monitor snapshot/settings `401` now redirect the UI to `/login`, including socket connect-auth failures.
+- Added `Audio Priority Profile` in Interfaces (`normal`, `high`, `realtime-attempt`) with macOS worker/audio-thread priority application and safe fallback logging.
+
 ## 0.5
 
 - Audio callback and UI contention reduced:

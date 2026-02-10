@@ -3,25 +3,22 @@ import configparser
 import hashlib
 import ipaddress
 import logging
+import multiprocessing as mp
 import os
 import queue
 import signal
 import sys
 import threading
 import time
-import wave
-from collections import deque
 from pathlib import Path
 from typing import Any, Mapping, Sequence, TypedDict, cast
 
 if __package__ in (None, ""):
     sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-import numpy as np
 import sounddevice as sd
 from flask import Flask, jsonify, request, redirect, session, url_for
-from flask_socketio import SocketIO, disconnect, join_room
-from scipy import signal as dsp_signal
+from flask_socketio import SocketIO, join_room
 
 from stereofool.constants import (
     BLOCKSIZE,
@@ -38,16 +35,14 @@ from stereofool.state import (
     mpx_state,
     rds_default_state,
     rds_state,
-    resolved_cache,
     wave_lock,
     wave_state,
 )
-from stereofool.audio import FMEngine
-from stereofool.rds import parse_text_source
+from stereofool.audio_worker import worker_main as audio_worker_main
 from stereofool.ui import LOGIN_HTML, MPX_HTML
 
 
-APP_VERSION = "0.5"
+APP_VERSION = "0.6"
 app = Flask(__name__)
 CONFIG_FILE = "stereofool.ini"
 app.secret_key = os.environ.get("STEREOFOOL_SECRET", os.urandom(24).hex())
@@ -82,10 +77,18 @@ RESTART_KEYS = {
     "monitor_enabled",
     "monitor_device_idx",
     "monitor_rate_hz",
+    "audio_priority_profile",
     "output_enabled",
 }
 PROCESSING_RESET_KEYS = {
     "multiband_enabled",
+    "multiband_mode",
+    "multiband_low_hz",
+    "multiband_high_hz",
+    "multiband_x1_hz",
+    "multiband_x2_hz",
+    "multiband_x3_hz",
+    "multiband_x4_hz",
     "stereo_widen_enabled",
     "preemphasis_limit_enabled",
     "composite_clip_enabled",
@@ -93,8 +96,11 @@ PROCESSING_RESET_KEYS = {
     "limit_lookahead_enabled",
     "processing_bypass",
 }
-audio_thread_lock = threading.Lock()
-audio_thread: threading.Thread | None = None
+audio_worker_lock = threading.Lock()
+audio_worker_process: Any | None = None
+audio_command_queue: Any | None = None
+audio_telemetry_queue: Any | None = None
+audio_worker_ready = threading.Event()
 restart_lock = threading.Lock()
 restart_state = {"pending": False}
 capture_seconds_cli: float | None = None
@@ -105,8 +111,6 @@ config_file_lock = threading.Lock()
 monitor_clients_lock = threading.Lock()
 monitor_clients = 0
 monitor_room = "monitor_clients"
-monitor_sid_to_session: dict[str, str] = {}
-monitor_session_to_sid: dict[str, str] = {}
 ui_cache_lock = threading.Lock()
 ui_state_revision = 0
 ui_cache = {"key": None, "html": ""}
@@ -117,203 +121,8 @@ PREFERRED_HOSTAPIS = {
     "linux": ["ALSA", "PulseAudio", "JACK"],
 }
 MONITOR_EMIT_INTERVAL = 0.1
-MONITOR_WAVE_UPDATE_EVERY = 2
+MONITOR_WAVE_UPDATE_EVERY = 1
 MONITOR_META_UPDATE_EVERY = 5
-
-
-class WavCapture:
-    def __init__(self, path, source_rate, target_rate=DEFAULT_SAMPLE_RATE):
-        self.path = path
-        self.source_rate = int(source_rate)
-        self.target_rate = int(target_rate)
-        self.queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=12)
-        self.stop_event = threading.Event()
-        self.thread = threading.Thread(target=self._writer_loop, daemon=True)
-        self.dropped = 0
-
-    def start(self):
-        self.thread.start()
-
-    def push(self, data):
-        if self.stop_event.is_set():
-            return
-        try:
-            chunk = np.asarray(data, dtype=np.float32)
-            self.queue.put_nowait(chunk.copy())
-        except queue.Full:
-            self.dropped += 1
-
-    def stop(self, timeout=1.0):
-        self.stop_event.set()
-        self.thread.join(timeout=timeout)
-        if self.dropped:
-            logger.info("StereoFool: WAV capture dropped %s blocks", self.dropped)
-
-    def _writer_loop(self):
-        try:
-            with wave.open(self.path, "wb") as wav:
-                wav.setnchannels(1)
-                wav.setsampwidth(2)
-                wav.setframerate(self.target_rate)
-                while not self.stop_event.is_set() or not self.queue.empty():
-                    try:
-                        chunk = self.queue.get(timeout=0.2)
-                    except queue.Empty:
-                        continue
-                    if self.source_rate != self.target_rate:
-                        chunk = dsp_signal.resample_poly(chunk, self.target_rate, self.source_rate)
-                    chunk = np.clip(chunk, -1.0, 1.0)
-                    pcm = (chunk * 32767.0).astype(np.int16)
-                    wav.writeframes(pcm.tobytes())
-        except Exception as exc:
-            logger.warning("StereoFool: WAV capture error: %s", exc)
-
-
-class MonitorOutput:
-    def __init__(self, device_idx, sample_rate, blocksize=BLOCKSIZE):
-        self.device_idx = device_idx
-        self.sample_rate = int(sample_rate)
-        self.blocksize = max(1, int(blocksize))
-        self._last_status_log = 0.0
-        self._last_status_summary_log = 0.0
-        self._status_counts: dict[str, int] = {}
-        self.prefill_frames = max(self.blocksize * 3, 2048)
-        self.max_buffer_frames = max(self.blocksize * 16, self.prefill_frames * 2)
-        self.buffered_frames = 0
-        self.buffer_lock = threading.Lock()
-        self.chunks: deque[np.ndarray] = deque()
-        self.chunk_offset = 0
-        self.stream = None
-        self.waiting_prefill = True
-        self.queue_drop_frames = 0
-        self.queue_underruns = 0
-
-    def start(self):
-        if self.device_idx is None or self.device_idx < 0:
-            return
-        self.stream = sd.OutputStream(
-            device=self.device_idx,
-            samplerate=self.sample_rate,
-            blocksize=self.blocksize,
-            channels=2,
-            latency="high",
-            callback=self._callback,
-        )
-        self.stream.start()
-
-    def stop(self):
-        if self.stream:
-            try:
-                self.stream.stop()
-                self.stream.close()
-            except Exception:
-                pass
-            self.stream = None
-        if self._status_counts:
-            logger.warning(
-                "StereoFool: monitor stream status totals: %s",
-                ", ".join(f"{k}={v}" for k, v in sorted(self._status_counts.items())),
-            )
-        if self.queue_drop_frames:
-            logger.warning("StereoFool: monitor queue dropped %s frames", self.queue_drop_frames)
-        if self.queue_underruns:
-            logger.warning("StereoFool: monitor queue underruns %s", self.queue_underruns)
-
-    def push(self, data):
-        if self.stream is None:
-            return
-        try:
-            chunk = np.asarray(data, dtype=np.float32)
-            if chunk.ndim == 1:
-                chunk = np.column_stack((chunk, chunk))
-            if chunk.shape[1] != 2:
-                return
-            with self.buffer_lock:
-                self.chunks.append(chunk.copy())
-                self.buffered_frames += chunk.shape[0]
-                if self.buffered_frames > self.max_buffer_frames:
-                    drop = self.buffered_frames - self.max_buffer_frames
-                    dropped = 0
-                    while self.chunks and drop > 0:
-                        head = self.chunks[0]
-                        remaining = head.shape[0] - self.chunk_offset
-                        if drop < remaining:
-                            self.chunk_offset += drop
-                            self.buffered_frames -= drop
-                            dropped += drop
-                            drop = 0
-                        else:
-                            drop -= remaining
-                            self.buffered_frames -= remaining
-                            dropped += remaining
-                            self.chunks.popleft()
-                            self.chunk_offset = 0
-                    if dropped > 0:
-                        self.queue_drop_frames += dropped
-                        self._status_counts["queue_drop"] = self._status_counts.get("queue_drop", 0) + 1
-        except Exception:
-            return
-
-    def _callback(self, outdata, frames, _time_info, _status):
-        if _status:
-            self._accumulate_status(_status)
-            now = time.monotonic()
-            if now - self._last_status_log >= 1.0:
-                logger.warning("StereoFool: monitor stream status: %s", _status)
-                self._last_status_log = now
-            if now - self._last_status_summary_log >= 5.0 and self._status_counts:
-                logger.warning(
-                    "StereoFool: monitor stream status totals: %s",
-                    ", ".join(f"{k}={v}" for k, v in sorted(self._status_counts.items())),
-                )
-                self._last_status_summary_log = now
-        out = np.zeros((frames, 2), dtype=np.float32)
-        with self.buffer_lock:
-            if self.waiting_prefill and self.buffered_frames >= self.prefill_frames:
-                self.waiting_prefill = False
-        if self.waiting_prefill:
-            outdata[:] = out
-            return
-        filled = 0
-        with self.buffer_lock:
-            while filled < frames and self.chunks:
-                head = self.chunks[0]
-                start = self.chunk_offset
-                available = head.shape[0] - start
-                take = min(available, frames - filled)
-                out[filled : filled + take] = head[start : start + take]
-                filled += take
-                self.buffered_frames -= take
-                if take < available:
-                    self.chunk_offset += take
-                else:
-                    self.chunks.popleft()
-                    self.chunk_offset = 0
-        if filled < frames:
-            self.queue_underruns += 1
-            self._status_counts["queue_underrun"] = self._status_counts.get("queue_underrun", 0) + 1
-            self.waiting_prefill = True
-        outdata[:] = out
-
-    def _accumulate_status(self, status):
-        status_map = {
-            "input_overflow": "in_overflow",
-            "input_underflow": "in_underflow",
-            "output_overflow": "out_overflow",
-            "output_underflow": "out_underflow",
-            "priming_output": "priming_output",
-        }
-        seen_flag = False
-        for attr, key in status_map.items():
-            try:
-                if bool(getattr(status, attr)):
-                    self._status_counts[key] = self._status_counts.get(key, 0) + 1
-                    seen_flag = True
-            except Exception:
-                continue
-        if not seen_flag:
-            key = str(status)
-            self._status_counts[key] = self._status_counts.get(key, 0) + 1
 
 
 def _normalize_hostapi_name(name):
@@ -802,9 +611,171 @@ def save_config(debounce=False):
     config_save_event.set()
 
 
+def _queue_put_latest(work_queue: Any, item: Any) -> bool:
+    try:
+        work_queue.put_nowait(item)
+        return True
+    except queue.Full:
+        try:
+            work_queue.get_nowait()
+        except Exception:
+            return False
+        try:
+            work_queue.put_nowait(item)
+            return True
+        except Exception:
+            return False
+    except Exception:
+        return False
+
+
+def _start_audio_worker_process() -> None:
+    global audio_worker_process, audio_command_queue, audio_telemetry_queue
+    with audio_worker_lock:
+        if audio_worker_process and audio_worker_process.is_alive():
+            return
+        ctx = mp.get_context("spawn")
+        command_q = ctx.Queue(maxsize=1024)
+        telemetry_q = ctx.Queue(maxsize=8)
+        proc = ctx.Process(
+            target=audio_worker_main,
+            args=(command_q, telemetry_q),
+            name="stereofool-audio-worker",
+            daemon=True,
+        )
+        proc.start()
+        audio_worker_process = proc
+        audio_command_queue = command_q
+        audio_telemetry_queue = telemetry_q
+        audio_worker_ready.set()
+
+
+def _shutdown_audio_worker_process(timeout: float = 1.0) -> None:
+    global audio_worker_process, audio_command_queue, audio_telemetry_queue
+    with audio_worker_lock:
+        proc = audio_worker_process
+        command_q = audio_command_queue
+    if command_q is not None:
+        _queue_put_latest(command_q, {"type": "shutdown"})
+    if proc and proc.is_alive():
+        proc.join(timeout=timeout)
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(timeout=0.5)
+    with audio_worker_lock:
+        audio_worker_process = None
+        audio_command_queue = None
+        audio_telemetry_queue = None
+
+
+def _send_audio_command(command: Mapping[str, Any]) -> bool:
+    _start_audio_worker_process()
+    with audio_worker_lock:
+        command_q = audio_command_queue
+    if command_q is None:
+        return False
+    return _queue_put_latest(command_q, dict(command))
+
+
+def _sync_audio_worker_state() -> None:
+    _send_audio_command(
+        {
+            "type": "sync_state",
+            "mpx": dict(mpx_state),
+            "rds": dict(rds_state),
+        }
+    )
+
+
+def _apply_audio_telemetry(payload: Mapping[str, Any]) -> None:
+    if capture_seconds_cli is not None and bool(payload.get("capture_complete", False)):
+        logger.info("StereoFool: capture complete, exiting")
+        os._exit(0)
+    running = bool(payload.get("running", False))
+    mpx_state["running"] = running
+    rds_state["running"] = running
+
+    monitor_keys = (
+        "ps",
+        "rt",
+        "lps",
+        "ptyn",
+        "af",
+        "pi",
+        "pty_idx",
+        "rt_plus_info",
+        "heartbeat",
+        "pilot_generated",
+        "sample_rate",
+        "device_out_name",
+        "device_in_name",
+        "rds_carrier",
+    )
+    meter_keys = (
+        "input_rms",
+        "mpx_rms",
+        "input_peak",
+        "mpx_peak",
+        "input_vu",
+        "input_rms_l",
+        "input_rms_r",
+        "input_vu_l",
+        "input_vu_r",
+        "mpx_vu",
+        "input_pre_rms",
+        "input_pre_peak",
+        "input_pre_vu",
+        "output_rms",
+        "output_peak",
+        "output_vu",
+        "limiter_active",
+        "multiband_enabled",
+        "multiband_active",
+        "preemph_limit_enabled",
+        "preemph_limit_active",
+        "composite_clip_enabled",
+        "composite_clip_active",
+    )
+    with monitor_lock:
+        for key in monitor_keys:
+            if key in payload:
+                monitor_data[key] = payload[key]
+    with meter_lock:
+        for key in meter_keys:
+            if key in payload:
+                meter_state[key] = payload[key]
+    with wave_lock:
+        if "input_wave" in payload and isinstance(payload["input_wave"], list):
+            wave_state["input_wave"] = payload["input_wave"]
+        if "mpx_wave" in payload and isinstance(payload["mpx_wave"], list):
+            wave_state["mpx_wave"] = payload["mpx_wave"]
+
+
+def _audio_telemetry_loop() -> None:
+    while True:
+        if not audio_worker_ready.is_set():
+            time.sleep(0.1)
+            continue
+        with audio_worker_lock:
+            telemetry_q = audio_telemetry_queue
+        if telemetry_q is None:
+            time.sleep(0.1)
+            continue
+        try:
+            payload = telemetry_q.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        except Exception:
+            time.sleep(0.1)
+            continue
+        if isinstance(payload, Mapping):
+            _apply_audio_telemetry(payload)
+
+
 def sig_abort(sig, _frame):
     rds_state["running"] = False
     mpx_state["running"] = False
+    _shutdown_audio_worker_process(timeout=0.8)
     save_config()
     os._exit(0)
 
@@ -812,44 +783,9 @@ def sig_abort(sig, _frame):
 signal.signal(signal.SIGINT, sig_abort)
 
 
-# --- RDS helpers ---
-
-
-def text_updater_loop():
-    while True:
-        if rds_state["running"]:
-            for k in ["ps_dynamic", "ps_long_32", "rt_text", "rt_a", "rt_b", "ptyn"]:
-                if k in rds_state and "\\" in rds_state[k]:
-                    result = parse_text_source(rds_state[k])
-                    if result is not None:
-                        resolved_cache[k] = result
-        time.sleep(4.0)
-
-
 def refresh_monitor_snapshot() -> dict[str, Any]:
     with monitor_lock:
         monitor_data["heartbeat"] = int(time.time() * 1000)
-        if rds_state["running"]:
-            monitor_data["af"] = rds_state["af_list"]
-            monitor_data["pty_idx"] = rds_state["pty"]
-            monitor_data["pi"] = rds_state["pi"]
-            monitor_data["pilot_generated"] = True
-            monitor_data["rds_carrier"] = bool(mpx_state.get("en_rds"))
-        else:
-            monitor_data.update(
-                {
-                    "ps": "OFF AIR",
-                    "rt": "Encoder Stopped",
-                    "lps": "",
-                    "ptyn": "",
-                    "af": "",
-                    "pty_idx": 0,
-                    "rt_plus_info": "",
-                    "pi": "----",
-                    "pilot_generated": False,
-                    "rds_carrier": False,
-                }
-            )
         return dict(monitor_data)
 
 
@@ -881,6 +817,7 @@ def compose_monitor_payload(
             "limiter_active": meter_state["limiter_active"],
             "multiband_enabled": meter_state["multiband_enabled"],
             "multiband_active": meter_state["multiband_active"],
+            "orbass_enabled": bool(mpx_state.get("orbass_enabled")),
             "stereo_widen_enabled": bool(mpx_state.get("stereo_widen_enabled")),
             "preemph_limit_enabled": meter_state["preemph_limit_enabled"],
             "preemph_limit_active": meter_state["preemph_limit_active"],
@@ -921,230 +858,20 @@ def monitor_pusher_loop():
         time.sleep(MONITOR_EMIT_INTERVAL)
 
 
-threading.Thread(target=text_updater_loop, daemon=True).start()
 threading.Thread(target=monitor_pusher_loop, daemon=True).start()
+threading.Thread(target=_audio_telemetry_loop, daemon=True).start()
 threading.Thread(target=_config_writer_loop, daemon=True).start()
 
 
-def run_audio(capture_seconds=None):
-    timed_out = False
-    output_enabled = bool(mpx_state.get("output_enabled", True))
-    sd_out = mpx_state["device_out_idx"]
-    blocksize = resolve_blocksize()
-    if output_enabled and sd_out is not None and sd_out >= 0:
-        sample_rate = select_sample_rate(sd_out, mpx_state.get("device_in_idx", -1))
-    else:
-        output_enabled = False
-        sample_rate = DEFAULT_SAMPLE_RATE
-    if sample_rate != DEFAULT_SAMPLE_RATE:
-        logger.warning("StereoFool: falling back to %s Hz", sample_rate)
-        if sample_rate < 106000:
-            logger.warning(
-                "StereoFool: stereo subcarrier band will be truncated at this sample rate"
-            )
-    capture = None
-    monitor = None
-    if mpx_state.get("wav_record_enabled"):
-        path = str(mpx_state.get("wav_record_path", "mpx_capture.wav")).strip()
-        if path:
-            capture = WavCapture(path, sample_rate, DEFAULT_SAMPLE_RATE)
-            capture.start()
-            logger.info(
-                "StereoFool: WAV capture enabled (%s, %s Hz)",
-                path,
-                DEFAULT_SAMPLE_RATE,
-            )
-    if capture and capture_seconds:
-        logger.info("StereoFool: WAV capture length %s seconds", capture_seconds)
-    monitor_enabled = bool(mpx_state.get("monitor_enabled"))
-    monitor_rate = int(mpx_state.get("monitor_rate_hz", 48000))
-    monitor_device = int(mpx_state.get("monitor_device_idx", -1))
-    if (
-        monitor_enabled
-        and monitor_device >= 0
-        and output_enabled
-        and sd_out is not None
-        and sd_out >= 0
-        and monitor_device == sd_out
-    ):
-        output_enabled = False
-        logger.info(
-            "StereoFool: monitor device matches output device; disabling MPX output for monitor mode"
-        )
-    monitor_blocksize = max(1, int(round(blocksize * (monitor_rate / float(sample_rate)))))
-    if monitor_enabled and monitor_device >= 0:
-        monitor = MonitorOutput(monitor_device, monitor_rate, blocksize=monitor_blocksize)
-        monitor.start()
-        logger.info(
-            "StereoFool: monitor output enabled (device=%s, rate=%s)",
-            monitor_device,
-            monitor_rate,
-        )
-    engine = FMEngine(
-        sample_rate,
-        capture_callback=capture.push if capture else None,
-        monitor_callback=monitor.push if monitor else None,
-        monitor_rate=monitor_rate,
-        blocksize=blocksize,
-    )
-    try:
-        sd_out = mpx_state["device_out_idx"]
-        sd_in = mpx_state.get("device_in_idx", -1)
-        try:
-            devs = sd.query_devices()
-            out_name = (
-                devs[sd_out]["name"]
-                if output_enabled and sd_out is not None and sd_out >= 0
-                else "Disabled"
-            )
-            in_name = devs[sd_in]["name"] if sd_in is not None and sd_in >= 0 else "None"
-        except Exception:
-            out_name = "Unknown"
-            in_name = "Unknown"
-        logger.info(
-            "StereoFool: starting audio (out=%s:%s, in=%s:%s, rate=%s)",
-            sd_out if output_enabled else "off",
-            out_name,
-            sd_in,
-            in_name,
-            sample_rate,
-        )
-        with monitor_lock:
-            monitor_data["sample_rate"] = sample_rate
-            monitor_data["device_out_name"] = out_name
-            monitor_data["device_in_name"] = in_name
-        if not output_enabled:
-            start_time = time.time()
-            if mpx_state.get("source_mode") == "input" and sd_in >= 0:
-                last_status_log = [0.0]
-
-                def _input_only_callback(indata, frames, _time_info, _status):
-                    if _status:
-                        now = time.monotonic()
-                        last = last_status_log[0]
-                        if now - last >= 1.0:
-                            logger.warning(
-                                "StereoFool: input-only stream status: %s", _status
-                            )
-                            last_status_log[0] = now
-                    outdata = np.zeros((frames, 2), dtype=engine.dtype)
-                    engine._process_frame(outdata, frames, indata)
-
-                with sd.InputStream(
-                    device=sd_in,
-                    samplerate=sample_rate,
-                    blocksize=blocksize,
-                    channels=2,
-                    latency="high",
-                    callback=_input_only_callback,
-                ):
-                    while mpx_state["running"]:
-                        if capture_seconds and time.time() - start_time >= capture_seconds:
-                            timed_out = True
-                            mpx_state["running"] = False
-                            rds_state["running"] = False
-                            break
-                        sd.sleep(100)
-            else:
-                block_time = blocksize / float(sample_rate)
-                outdata = np.zeros((blocksize, 2), dtype=engine.dtype)
-                next_tick = time.time()
-                while mpx_state["running"]:
-                    engine._process_frame(outdata, blocksize, None)
-                    if capture_seconds and time.time() - start_time >= capture_seconds:
-                        timed_out = True
-                        mpx_state["running"] = False
-                        rds_state["running"] = False
-                        break
-                    next_tick += block_time
-                    sleep_for = max(0.0, next_tick - time.time())
-                    time.sleep(sleep_for)
-        elif mpx_state.get("source_mode") == "input" and sd_in >= 0:
-            with sd.Stream(
-                device=(sd_in, sd_out),
-                samplerate=sample_rate,
-                blocksize=blocksize,
-                channels=2,
-                latency="high",
-                callback=engine.callback_duplex,
-            ):
-                start_time = time.time()
-                while mpx_state["running"]:
-                    if capture_seconds and time.time() - start_time >= capture_seconds:
-                        timed_out = True
-                        mpx_state["running"] = False
-                        rds_state["running"] = False
-                        break
-                    sd.sleep(100)
-        else:
-            with sd.OutputStream(
-                device=sd_out,
-                samplerate=sample_rate,
-                blocksize=blocksize,
-                channels=2,
-                latency="high",
-                callback=engine.callback_output,
-            ):
-                start_time = time.time()
-                while mpx_state["running"]:
-                    if capture_seconds and time.time() - start_time >= capture_seconds:
-                        timed_out = True
-                        mpx_state["running"] = False
-                        rds_state["running"] = False
-                        break
-                    sd.sleep(100)
-    except Exception as exc:
-        logger.error("Audio Error: %s", exc)
-        mpx_state["running"] = False
-        rds_state["running"] = False
-    finally:
-        logger.info("StereoFool: audio stopped")
-        if engine.audio_in:
-            engine.audio_in.stop()
-        engine.close()
-        if capture:
-            capture.stop()
-        if monitor:
-            monitor.stop()
-    return timed_out
-
-
-def _run_audio_wrapper(capture_seconds=None):
-    timed_out = False
-    try:
-        timed_out = run_audio(capture_seconds=capture_seconds)
-    finally:
-        global audio_thread
-        with audio_thread_lock:
-            audio_thread = None
-        if capture_seconds and timed_out:
-            logger.info("StereoFool: capture complete, exiting")
-            os._exit(0)
-
-
 def launch_audio_thread(capture_seconds=None):
-    global audio_thread
-    with audio_thread_lock:
-        if audio_thread and audio_thread.is_alive():
-            return False
-        audio_thread = threading.Thread(
-            target=_run_audio_wrapper, args=(capture_seconds,), daemon=True
-        )
-        audio_thread.start()
-        return True
+    _sync_audio_worker_state()
+    return _send_audio_command({"type": "start", "capture_seconds": capture_seconds})
 
 
 def stop_audio_thread(timeout=1.0):
-    global audio_thread
     mpx_state["running"] = False
     rds_state["running"] = False
-    with audio_thread_lock:
-        thread = audio_thread
-    if thread and thread.is_alive():
-        thread.join(timeout)
-    with audio_thread_lock:
-        if audio_thread and not audio_thread.is_alive():
-            audio_thread = None
+    _send_audio_command({"type": "stop", "timeout": timeout})
 
 
 def auto_start_if_enabled():
@@ -1164,11 +891,14 @@ def request_audio_restart(reason):
 
     def _restart():
         logger.info("StereoFool: restarting audio (%s)", reason)
-        stop_audio_thread(timeout=1.5)
-        time.sleep(0.2)
-        mpx_state["running"] = True
-        rds_state["running"] = True
-        launch_audio_thread(capture_seconds=capture_seconds_cli)
+        _sync_audio_worker_state()
+        _send_audio_command(
+            {
+                "type": "restart",
+                "reason": reason,
+                "capture_seconds": capture_seconds_cli,
+            }
+        )
         with restart_lock:
             restart_state["pending"] = False
 
@@ -1287,32 +1017,15 @@ def handle_connect():
     global monitor_clients
     if not session.get("auth"):
         return
-    sid = cast(str, getattr(request, "sid", ""))
-    cookie_name = app.config.get("SESSION_COOKIE_NAME", "session")
-    session_cookie = request.cookies.get(cookie_name, "")
-    prior_sid = None
     with monitor_clients_lock:
-        prior_sid = monitor_session_to_sid.get(session_cookie) if session_cookie else None
-        if session_cookie:
-            monitor_session_to_sid[session_cookie] = sid
-            monitor_sid_to_session[sid] = session_cookie
         monitor_clients += 1
     join_room(monitor_room)
-    if prior_sid and prior_sid != sid:
-        try:
-            disconnect(sid=prior_sid)
-        except Exception:
-            pass
 
 
 @socketio.on("disconnect")
 def handle_disconnect():
     global monitor_clients
-    sid = cast(str, getattr(request, "sid", ""))
     with monitor_clients_lock:
-        sess_key = monitor_sid_to_session.pop(sid, None)
-        if sess_key and monitor_session_to_sid.get(sess_key) == sid:
-            del monitor_session_to_sid[sess_key]
         monitor_clients = max(0, monitor_clients - 1)
 
 
@@ -1320,6 +1033,7 @@ def handle_disconnect():
 def handle_update(data):
     if not session.get("auth"):
         return
+    prev_mpx_state = dict(mpx_state)
     changed = False
     changes = {}
     for key, val in data.items():
@@ -1376,8 +1090,54 @@ def handle_update(data):
         if changes:
             logger.info("UI update: %s", changes)
             restart_hits = sorted(set(changes).intersection(RESTART_KEYS))
-            if set(changes).intersection(PROCESSING_RESET_KEYS):
+            rds_updates = {k: v for k, v in changes.items() if k in rds_state}
+            mpx_updates = {k: v for k, v in changes.items() if k in mpx_state}
+            orbass_keys = {"orbass_enabled", "orbass_amount", "orbass_freq_hz", "orbass_harmonics"}
+            orbass_changed = sorted(set(mpx_updates).intersection(orbass_keys))
+            orbass_profile_jump = False
+            if orbass_changed:
+                amount_jump = False
+                freq_jump = False
+                harm_jump = False
+                try:
+                    if "orbass_amount" in mpx_updates:
+                        amount_jump = (
+                            abs(float(mpx_updates["orbass_amount"]) - float(prev_mpx_state["orbass_amount"]))
+                            >= 0.12
+                        )
+                    if "orbass_freq_hz" in mpx_updates:
+                        freq_jump = (
+                            abs(float(mpx_updates["orbass_freq_hz"]) - float(prev_mpx_state["orbass_freq_hz"]))
+                            >= 8.0
+                        )
+                    if "orbass_harmonics" in mpx_updates:
+                        harm_jump = (
+                            abs(
+                                float(mpx_updates["orbass_harmonics"])
+                                - float(prev_mpx_state["orbass_harmonics"])
+                            )
+                            >= 0.12
+                        )
+                except Exception:
+                    pass
+                orbass_profile_jump = (
+                    len(orbass_changed) >= 3
+                    or ("orbass_enabled" in orbass_changed and len(orbass_changed) >= 2)
+                    or amount_jump
+                    or freq_jump
+                    or harm_jump
+                )
+            if rds_updates or mpx_updates:
+                _send_audio_command(
+                    {
+                        "type": "update_state",
+                        "rds": rds_updates,
+                        "mpx": mpx_updates,
+                    }
+                )
+            if set(changes).intersection(PROCESSING_RESET_KEYS) or orbass_profile_jump:
                 dsp_control["reset"] = True
+                _send_audio_command({"type": "dsp_reset"})
             if restart_hits:
                 request_audio_restart(", ".join(restart_hits))
         _bump_ui_revision()
@@ -1487,6 +1247,7 @@ def run_web_server() -> None:
 
 def main() -> int:
     global CONFIG_FILE
+    mp.freeze_support()
     args = parse_cli_args()
     if args.config:
         CONFIG_FILE = args.config
@@ -1496,8 +1257,13 @@ def main() -> int:
     apply_cli_overrides(args)
     log_available_devices()
     normalize_device_indices()
+    _start_audio_worker_process()
+    _sync_audio_worker_state()
     auto_start_if_enabled()
-    run_web_server()
+    try:
+        run_web_server()
+    finally:
+        _shutdown_audio_worker_process(timeout=1.0)
     return 0
 
 

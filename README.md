@@ -1,10 +1,11 @@
 # StereoFool
 
-Version: 0.5
+Version: 0.6
 
 StereoFool is a Python app that generates an FM composite MPX signal with RDS and serves a
 browser-based control panel. It synthesizes pilot/RDS, muxes stereo audio sources, and sends
-the resulting MPX to a local audio output device.
+the resulting MPX to a local audio output device. In 0.6, the audio engine runs in a dedicated
+worker process separate from the web UI process.
 
 The name StereoFool is a pun on the great commercial tool StereoTool.
 
@@ -23,23 +24,28 @@ The UI uses a single, unified navigation structure with sections aligned to a br
 - Interfaces
 - Processing
 - Levels
-- RDS Program
+- RDS
 - RDS Advanced
 - Monitoring
 - Settings
 
 ## Features
 
+- Audio engine and web server process isolation (separate worker + IPC state/telemetry)
 - Real-time MPX generation with pilot, stereo sum/diff, and optional RDS subcarrier
 - RDS encoder with PS/RT/PTY/CT/AF and optional RT+ support
 - RDS subcarrier phase-locked to the pilot with EN 50067 biphase shaping (experimental)
 - Optional EN 50067-style RDS group scheduling preset (overrides manual sequence)
 - Input audio from sound device or test tone
-- Low-cut filter, HF trim, pilot notch
-- Optional lookahead limiter and soft clipper with 2x oversampling
-- Multiband compressor based on SimpleMultiBandComp
-- Optional stereo widener based on Airwindows Wider
+- Input gain plus optional audio-domain processing: wideband AGC, HPF, LPF, HF trim, pilot notch
+- Orbass low enhancer (with profile presets)
+- Multiband compressor (3-band or 5-band) with configurable knee, link, and program-dependent release
+- Optional stereo widener (width/center/mix)
+- Pre-emphasis (50/75 us), optional pre-emphasis HF control, optional pre-emphasis limiter
+- Optional lookahead limiting and composite clipping for MPX protection
+- MPX cleanup controls: audio-MPX LPF, MPX DC block, optional notch
 - Web UI (Flask + Socket.IO) for live control, scopes, and monitoring
+- Monitor meter sticky-peak mode (hold/fall/reset in UI)
 - Persisted settings in `stereofool.ini`
 
 ## Compatibility
@@ -54,6 +60,7 @@ The UI uses a single, unified navigation structure with sections aligned to a br
 - Python 3.10+
 - PortAudio-compatible audio backend (Core Audio/ALSA/PulseAudio/JACK)
 - Packages in `requirements.txt`
+- Flask-SocketIO runs in `threading` mode in this project (no gevent/eventlet dependency)
 - A 192 kHz-capable audio interface for MPX output
 - Input devices can be 48 kHz (the app handles conversion)
 - For experimentation, use a virtual audio loopback so another app can feed StereoFool (e.g., BlackHole on macOS, VB-Audio Virtual Cable on Windows).
@@ -114,6 +121,13 @@ Default login (if not overridden in `stereofool.ini` or Settings):
 - Username: `admin`
 - Password: `pass`
 
+## Runtime architecture
+
+- The Flask web app process handles login, UI routes, and Socket.IO transport.
+- A dedicated audio worker process runs the DSP/audio callbacks.
+- State changes are sent from web to worker via command queue; meter/wave/monitor telemetry is sent back via telemetry queue.
+- This separation reduces UI reload/request impact on audio continuity versus the older single-process design.
+
 ## Configuration
 
 Settings are stored in `stereofool.ini` and loaded on startup. The UI updates settings live and
@@ -128,8 +142,8 @@ python stereofool/app.py --config custom.ini
 Config sections:
 
 - `SYSTEM`: server settings (e.g., `port`)
-- `SYSTEM` also supports `allow_subnets` (comma-separated CIDR list). Defaults to localhost (127.0.0.0/8, ::1/128).
-- `INTERFACES`: device indices, source mode, and capture settings
+- `SYSTEM` also supports `allow_subnets` (comma-separated CIDR list). Custom entries are additive; localhost (127.0.0.0/8, ::1/128) is always allowed.
+- `INTERFACES`: device indices, source mode, monitor settings, block size, and audio priority profile
 - `MPX`: MPX processing and levels
 - `RDS`: program data and RDS settings
 - `AUTH`: username and hashed password
@@ -148,26 +162,30 @@ Key environment variables:
 - Suggested starting points:
   - fast systems: `2048` or `4096`
   - older/slower systems: `8192` or `16384`
+- `INTERFACES.audio_priority_profile` (`normal`, `high`, `realtime-attempt`) can improve stability on busy systems.
 
-The web UI and audio engine run in the same Python process. During heavy browser activity
-(especially repeated fast refresh/F5), brief audio glitches can still occur on slower systems.
-This is a known limitation of single-process real-time DSP + web serving.
+The web UI and audio engine are process-isolated in 0.6, so browser reload traffic usually has
+less direct impact on audio. Under heavy OS-level CPU or driver contention, brief glitches can
+still occur; increase block size and/or priority profile when needed.
 
-## Reference documents
+## Knowledge sources and references
 
-Implementation notes and standards references live under `documents/`:
+Implementation notes and standards references live under `documents/`. External sources used in
+this project and docs:
 
 - EN 50067 and IEC 62106 parts for RDS
 - ITU-R BS.450-4 for FM stereo MPX characteristics
 - RadioText Plus overview (RT+)
+- PortAudio Windows binaries (for host-API troubleshooting): https://github.com/spatialaudio/portaudio-binaries
+- SimpleMultiBandComp reference (historical compressor inspiration): https://github.com/matkatmusic/SimpleMultiBandComp
+- Airwindows Wider reference (historical widener inspiration): https://github.com/airwindows/airwindows
 
 ## RDS/MPX notes
 
 - RDS carrier frequency is config-only; the UI exposes carrier level and program data.
 - The standards schedule toggle applies EN 50067-style repetition rates; LPS is non-standard.
 - Composite deviation and pilot level are not calibrated; verify levels before on-air use.
-- Multiband compression is based on matkatmusic/SimpleMultiBandComp (band-splitting + compressor behavior): https://github.com/matkatmusic/SimpleMultiBandComp
-- Stereo widening is based on Airwindows Wider: https://github.com/airwindows/airwindows
+- Current multiband and widener implementations are integrated in-project DSP blocks.
 
 ## Calibration (WAV workflow)
 

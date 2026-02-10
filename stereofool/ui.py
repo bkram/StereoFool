@@ -162,6 +162,15 @@ MPX_HTML = r"""
                             </select>
                             <div class="text-[11px] text-gray-400 mt-1">Higher values improve stability on slower systems.</div>
                         </div>
+                        <div>
+                            <label>Audio Priority Profile <span class="help-tip" data-tip="MacOS-only process/thread priority hints. Restart required.">?</span></label>
+                            <select id="mpx_audio_priority_profile" onchange="updateAudioPriorityProfile(this.value)">
+                                <option value="normal" {% if state.audio_priority_profile == 'normal' %}selected{% endif %}>Normal</option>
+                                <option value="high" {% if state.audio_priority_profile == 'high' %}selected{% endif %}>High</option>
+                                <option value="realtime-attempt" {% if state.audio_priority_profile == 'realtime-attempt' %}selected{% endif %}>Realtime Attempt</option>
+                            </select>
+                            <div class="text-[11px] text-gray-400 mt-1">Safe fallback to normal if unsupported or denied.</div>
+                        </div>
                     </div>
                 </div>
                 <div class="section">
@@ -264,11 +273,110 @@ MPX_HTML = r"""
                     </div>
                 </div>
                 <div class="section">
+                    <div class="section-header">Orbass Low Enhancer</div>
+                    <div class="section-body">
+                        <div class="flex items-center gap-2">
+                            <label>Enable Orbass <span class="help-tip" data-tip="Adaptive low-end enhancer with harmonic support. Inserted before multiband to keep bass controlled.">?</span></label>
+                            <input type="checkbox" class="toggle-checkbox" id="mpx_orbass_enabled" {% if state.orbass_enabled %}checked{% endif %} onchange="updateOrbassEnabled(this.checked)">
+                        </div>
+                        <div>
+                            <label>Presets</label>
+                            <div class="preset-grid">
+                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('disco')">Disco Drive</button>
+                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('acoustic')">Acoustic Warm</button>
+                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('urban')">Urban Punch</button>
+                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('rock')">Rock Body</button>
+                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('talk')">Talk Safe</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label>Amount</label>
+                            <div class="slider-container">
+                                <input type="range" min="0" max="1" step="0.01" id="mpx_orbass_amount" value="{{state.orbass_amount}}" oninput="updateOrbassAmount(this.value)">
+                                <div class="slider-val" id="mpx_orbass_amount_val">{{state.orbass_amount}}</div>
+                            </div>
+                        </div>
+                        <div>
+                            <label>Bass Focus (Hz)</label>
+                            <div class="slider-container">
+                                <input type="range" min="45" max="220" step="1" id="mpx_orbass_freq_hz" value="{{state.orbass_freq_hz}}" oninput="updateOrbassFreq(this.value)">
+                                <div class="slider-val" id="mpx_orbass_freq_val">{{state.orbass_freq_hz|int}}</div>
+                            </div>
+                        </div>
+                        <div>
+                            <label>Harmonics</label>
+                            <div class="slider-container">
+                                <input type="range" min="0" max="1" step="0.01" id="mpx_orbass_harmonics" value="{{state.orbass_harmonics}}" oninput="updateOrbassHarmonics(this.value)">
+                                <div class="slider-val" id="mpx_orbass_harmonics_val">{{state.orbass_harmonics}}</div>
+                            </div>
+                            <div class="text-[11px] text-gray-400 mt-1">Adds upper bass harmonics to keep bass audible on small speakers.</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="section">
                     <div class="section-header">Multiband Dynamics</div>
                     <div class="section-body">
                         <div class="flex items-center gap-2">
                             <label>Multiband Compressor <span class="rec-badge">Recommended</span><span class="help-tip" data-tip="Adds density by compressing lows/mids/highs separately.">?</span></label>
                             <input type="checkbox" class="toggle-checkbox" id="mpx_multiband_enabled" {% if state.multiband_enabled %}checked{% endif %} onchange="updateMultibandEnabled(this.checked)">
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2">
+                            <div>
+                                <label>Band Mode <span class="help-tip" data-tip="3-band is lighter CPU. 5-band is denser and closer to enterprise processors.">?</span></label>
+                                <select id="mpx_multiband_mode" onchange="updateMultibandMode(this.value)">
+                                    <option value="3" {% if state.multiband_mode|int == 3 %}selected{% endif %}>3-Band (Default)</option>
+                                    <option value="5" {% if state.multiband_mode|int == 5 %}selected{% endif %}>5-Band (Dense)</option>
+                                </select>
+                            </div>
+                            <div class="text-[11px] text-gray-400 mt-5">5-band uses 4 split points (defaults: 80 / 320 / 1200 / 5000 Hz).</div>
+                        </div>
+                        <div>
+                            <label>3-Band Music Presets</label>
+                            <div class="preset-grid">
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_chr')">3B CHR/EDM</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_rock')">3B Rock</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_ac')">3B AC/Pop</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_country')">3B Country</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_talk')">3B Talk</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label>5-Band Music Presets</label>
+                            <div class="preset-grid">
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_chr')">5B CHR/EDM</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_rock')">5B Rock</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_ac')">5B AC/Pop</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_classic')">5B Classical/Jazz</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_talk')">5B Talk</button>
+                            </div>
+                        </div>
+                        <div>
+                            <label>Preset Intensity <span class="help-tip" data-tip="Scales how aggressively presets apply compression. Light is gentler, Heavy is denser.">?</span></label>
+                            <select id="mpx_mb_preset_intensity">
+                                <option value="light">Light</option>
+                                <option value="normal" selected>Normal</option>
+                                <option value="heavy">Heavy</option>
+                            </select>
+                        </div>
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                            <div>
+                                <label>Knee (dB) <span class="help-tip" data-tip="Soft-knee width around threshold. Higher values sound smoother and less abrupt.">?</span></label>
+                                <div class="slider-container">
+                                    <input type="range" min="0" max="12" step="0.5" id="mpx_mb_knee_db" value="{{state.multiband_knee_db}}" oninput="updateMultibandKnee(this.value)">
+                                    <div class="slider-val" id="mpx_mb_knee_val">{{state.multiband_knee_db}}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <label>Band Link <span class="help-tip" data-tip="Links band envelopes to reduce spectral pumping. 0 = independent, 1 = strongly linked.">?</span></label>
+                                <div class="slider-container">
+                                    <input type="range" min="0" max="1" step="0.01" id="mpx_mb_link_strength" value="{{state.multiband_link_strength}}" oninput="updateMultibandLinkStrength(this.value)">
+                                    <div class="slider-val" id="mpx_mb_link_val">{{state.multiband_link_strength}}</div>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2 mt-4">
+                                <label>Program-Dependent Release <span class="help-tip" data-tip="Release adapts to crest factor for steadier loudness on mixed material.">?</span></label>
+                                <input type="checkbox" class="toggle-checkbox" id="mpx_mb_release_pd" {% if state.multiband_release_program_dependent %}checked{% endif %} onchange="updateMultibandReleaseProgramDependent(this.checked)">
+                            </div>
                         </div>
                         <div class="section-subheader">Per-band</div>
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
@@ -859,14 +967,42 @@ MPX_HTML = r"""
                                 <div class="live-display sub" id="live_device_in">—</div>
                             </div>
                             </div>
+                            <div class="monitor-peak-controls">
+                                <div class="flex items-center gap-2">
+                                    <label>Sticky Peaks</label>
+                                    <input type="checkbox" class="toggle-checkbox" id="monitor_sticky_peaks">
+                                    <span class="text-[10px] text-gray-500">Hold markers and text peaks with timed falloff.</span>
+                                </div>
+                                <div class="monitor-peak-config">
+                                    <label for="monitor_peak_hold_ms">Hold</label>
+                                    <select id="monitor_peak_hold_ms">
+                                        <option value="500">0.5 s</option>
+                                        <option value="1000">1.0 s</option>
+                                        <option value="1500" selected>1.5 s</option>
+                                        <option value="2000">2.0 s</option>
+                                        <option value="3000">3.0 s</option>
+                                    </select>
+                                    <label for="monitor_peak_fall_dbps">Fall</label>
+                                    <select id="monitor_peak_fall_dbps">
+                                        <option value="8">8 dB/s</option>
+                                        <option value="12">12 dB/s</option>
+                                        <option value="18" selected>18 dB/s</option>
+                                        <option value="24">24 dB/s</option>
+                                        <option value="30">30 dB/s</option>
+                                    </select>
+                                    <button type="button" class="mini-btn" id="monitor_peak_reset">Reset Peaks</button>
+                                </div>
+                            </div>
                             <div>
-                                <label>Input Level (Post Gain)</label>
+                                <label>Input Level (Post Gain) <span class="help-tip" data-tip="Suggested: keep normal program around -18 to -12 dBFS RMS, with peaks typically below -6 dBFS to preserve processing headroom.">?</span></label>
                                 <div class="meter-row">
                                     <div class="meter">
                                         <div class="meter-fill" id="mpx_input_meter_l"></div>
+                                        <div class="meter-hold" id="mpx_input_hold_l"></div>
                                     </div>
                                     <div class="meter">
                                         <div class="meter-fill" id="mpx_input_meter_r"></div>
+                                        <div class="meter-hold" id="mpx_input_hold_r"></div>
                                     </div>
                                     <div class="meter-db" id="mpx_input_db">-inf dBFS</div>
                                     <div class="meter-peak" id="mpx_input_peak">-inf pk</div>
@@ -875,18 +1011,24 @@ MPX_HTML = r"""
                                 </div>
                             </div>
                             <div>
-                                <label>MPX Level</label>
+                                <label>MPX Level <span class="help-tip" data-tip="Suggested: run close to target without hard limiting all the time. Keep sustained peaks near 0 dBFS equivalent and avoid frequent over-peak behavior.">?</span></label>
                                 <div class="meter-row">
-                                    <div class="meter"><div class="meter-fill" id="mpx_mpx_meter"></div></div>
+                                    <div class="meter">
+                                        <div class="meter-fill" id="mpx_mpx_meter"></div>
+                                        <div class="meter-hold" id="mpx_mpx_hold"></div>
+                                    </div>
                                     <div class="meter-db" id="mpx_mpx_db">-inf dBFS</div>
                                     <div class="meter-peak" id="mpx_mpx_peak">-inf pk</div>
                                     <div class="meter-peak" id="mpx_mpx_vu">-inf VU</div>
                                 </div>
                             </div>
                             <div>
-                                <label>Modulation (kHz)</label>
+                                <label>Modulation (kHz) <span class="help-tip" data-tip="Suggested FM target: loud passages around 65-75 kHz, occasional peaks near your legal limit. Avoid sustained operation above licensed deviation.">?</span></label>
                                 <div class="meter-row">
-                                    <div class="meter"><div class="meter-fill" id="modulation_meter"></div></div>
+                                    <div class="meter">
+                                        <div class="meter-fill" id="modulation_meter"></div>
+                                        <div class="meter-hold" id="modulation_hold"></div>
+                                    </div>
                                 <div class="meter-db" id="modulation_khz">0.0 kHz</div>
                                 <div class="meter-peak text-gray-400">0-100 kHz</div>
                             </div>
@@ -919,6 +1061,10 @@ MPX_HTML = r"""
                                 <div>
                                     <label>Multiband</label>
                                     <div class="live-display sub text-center" id="live_multiband">Off</div>
+                                </div>
+                                <div>
+                                    <label>Orbass</label>
+                                    <div class="live-display sub text-center" id="live_orbass">Off</div>
                                 </div>
                                 <div>
                                     <label>Widener</label>
@@ -969,26 +1115,28 @@ MPX_HTML = r"""
                             <ul class="bg-black/50 border border-gray-700 rounded px-3 py-2 text-sm text-gray-200 leading-relaxed list-disc pl-5">
                                 <li>Source input or tone</li>
                                 <li>Input gain</li>
+                                <li>Wideband AGC (optional)</li>
                                 <li>HPF</li>
                                 <li>LPF</li>
                                 <li>HF trim</li>
                                 <li>Pilot notch</li>
+                                <li>Orbass (optional)</li>
                                 <li>Multiband (optional)</li>
                                 <li>Stereo widen (optional)</li>
-                                <li>LPF (post widen)</li>
                                 <li>L+R / L-R</li>
                                 <li>Pre-emphasis</li>
+                                <li>Pre-emphasis HF control (optional)</li>
+                                <li>Lookahead limiter (optional)</li>
                                 <li>Pre-emphasis limiter (optional)</li>
                                 <li>Safety gain (post pre-emphasis)</li>
                                 <li>38 kHz DSB + band-pass</li>
                                 <li>L+R + DSB sum</li>
                                 <li>Audio MPX LPF</li>
-                                <li>Composite clip (optional)</li>
-                                <li>MPX lookahead limiter (optional)</li>
-                                <li>Deviation scale</li>
-                                <li>Pilot + RDS add</li>
-                                <li>Audio headroom trim</li>
                                 <li>DC block + notch</li>
+                                <li>Composite clip (optional)</li>
+                                <li>Deviation scale</li>
+                                <li>Audio headroom trim</li>
+                                <li>Pilot + RDS add</li>
                                 <li>Output gain</li>
                             </ul>
                         </div>

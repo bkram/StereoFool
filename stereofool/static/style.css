@@ -344,13 +344,27 @@ input[type="range"] {
     border-radius: 2px;
     overflow: hidden;
     flex: 1;
+    position: relative;
 }
 
 .meter-fill {
     height: 100%;
     background: linear-gradient(90deg, #22c55e, #eab308, #ef4444);
     width: 0%;
-    transition: width 0.1s;
+    transition: none;
+}
+
+.meter-hold {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: #fde047;
+    box-shadow: 0 0 4px rgba(253, 224, 71, 0.8);
+    opacity: 0;
+    left: 0%;
+    pointer-events: none;
+    transition: opacity 0.1s linear;
 }
 
 .meter-row {
@@ -371,6 +385,52 @@ input[type="range"] {
     text-align: right;
     font-size: 10px;
     color: #f97316;
+}
+
+.monitor-peak-controls {
+    display: grid;
+    gap: 6px;
+}
+
+.monitor-peak-config {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    font-size: 10px;
+    color: #9ca3af;
+}
+
+.monitor-peak-config select {
+    min-width: 80px;
+    background: #000;
+    border: 1px solid #333;
+    color: #ddd;
+    padding: 3px 6px;
+    border-radius: 2px;
+}
+
+.mini-btn {
+    padding: 4px 8px;
+    border: 1px solid #444;
+    border-radius: 2px;
+    background: #111;
+    color: #ddd;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+}
+
+.mini-btn:hover {
+    border-color: #fbbf24;
+    color: #fff;
+}
+
+.preset-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
 }
 
 .live-display {
