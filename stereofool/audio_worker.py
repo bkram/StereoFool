@@ -803,10 +803,6 @@ def compose_worker_payload(
             "multiband_active": meter_state["multiband_active"],
             "orbass_enabled": bool(mpx_state.get("orbass_enabled")),
             "stereo_widen_enabled": bool(mpx_state.get("stereo_widen_enabled")),
-            "preemph_limit_enabled": meter_state["preemph_limit_enabled"],
-            "preemph_limit_active": meter_state["preemph_limit_active"],
-            "composite_clip_enabled": meter_state["composite_clip_enabled"],
-            "composite_clip_active": meter_state["composite_clip_active"],
             "capture_complete": capture_complete_event.is_set(),
         }
     payload["input_wave"] = list(input_wave)

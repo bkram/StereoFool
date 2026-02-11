@@ -3,7 +3,7 @@ import queue
 import threading
 import logging
 import time
-from collections import Counter
+from collections import Counter, deque
 from typing import Any, cast
 
 import numpy as np
@@ -68,9 +68,13 @@ class AudioInputReader:
                 ", ".join(f"{k}={v}" for k, v in sorted(self._status_counts.items())),
             )
         if self.trimmed_frames:
-            logger.warning("StereoFool: input reader trimmed %s backlog frames", self.trimmed_frames)
+            logger.warning(
+                "StereoFool: input reader trimmed %s backlog frames", self.trimmed_frames
+            )
         if self.underfilled_frames:
-            logger.warning("StereoFool: input reader underfilled %s frames", self.underfilled_frames)
+            logger.warning(
+                "StereoFool: input reader underfilled %s frames", self.underfilled_frames
+            )
         if self.drift_correction_events:
             logger.info(
                 "StereoFool: input reader applied %s drift-correction resamples",
@@ -129,7 +133,9 @@ class AudioInputReader:
             self.underfilled_frames += max(0, missing_frames)
             if missing_frames > 0:
                 self._status_counts["reader_underfill"] += 1
-                filler = np.tile(self.last_frame, (missing_frames, 1)).astype(self.dtype, copy=False)
+                filler = np.tile(self.last_frame, (missing_frames, 1)).astype(
+                    self.dtype, copy=False
+                )
                 chunk += filler.tobytes()
         data = np.frombuffer(chunk, dtype=self.dtype).reshape(frames, 2).copy()
         if data.shape[0] > 0:
@@ -251,15 +257,14 @@ class FMEngine:
         self.lookahead_audio_pair_buffer = None
         self.lookahead_audio_pair_samples = 0
         self.lookahead_audio_pair_gain = 1.0
-        self.lookahead_preemph_pair_buffer = None
-        self.lookahead_preemph_pair_samples = 0
-        self.lookahead_preemph_pair_gain = 1.0
+        self.lookahead_audio_pair_hold = 0
         self.lookahead_mpx_buffer = None
         self.lookahead_mpx_samples = 0
         self.lookahead_mpx_gain = 1.0
-        self.lookahead_composite_buffer = None
-        self.lookahead_composite_samples = 0
-        self.lookahead_composite_gain = 1.0
+        self.lookahead_mpx_hold = 0
+        self.audio_headroom_hold = 0
+        self.composite_limit_hold = 0
+        self.composite_safety_hold = 0
 
     def _log_stream_status(self, status, label):
         if not status:
@@ -372,17 +377,18 @@ class FMEngine:
                 mpx_rms = float(item["mpx_rms"])
                 mpx_peak = float(item["mpx_peak"])
                 limiter_active = bool(item["limiter_active"])
-                preemph_limit_enabled = bool(item["preemph_limit_enabled"])
-                preemph_limit_active = bool(item["preemph_limit_active"])
-                composite_clip_enabled = bool(item["composite_clip_enabled"])
-                composite_clip_active = bool(item["composite_clip_active"])
                 scope_left = item["scope_left"]
                 scope_right = item["scope_right"]
                 mpx_pre_gain = item["mpx_pre_gain"]
+                mpx_post_gain = item.get("mpx_post_gain", mpx_pre_gain)
                 proc_frames = int(item["proc_frames"])
 
-                output_rms = float(np.sqrt(np.mean(mpx_pre_gain**2))) if mpx_pre_gain.size else 0.0
-                output_peak = float(np.max(np.abs(mpx_pre_gain))) if mpx_pre_gain.size else 0.0
+                output_rms = (
+                    float(np.sqrt(np.mean(mpx_post_gain**2))) if mpx_post_gain.size else 0.0
+                )
+                output_peak = (
+                    float(np.max(np.abs(mpx_post_gain))) if mpx_post_gain.size else 0.0
+                )
 
                 if (
                     scope_left is not None
@@ -413,7 +419,10 @@ class FMEngine:
                     wave_state["mpx_wave"] = mpx_wave.tolist()
 
                 with meter_lock:
-                    def _smooth_meter(current: float, target: float, rise: float, fall: float) -> float:
+
+                    def _smooth_meter(
+                        current: float, target: float, rise: float, fall: float
+                    ) -> float:
                         alpha = rise if target >= current else fall
                         return (current * (1.0 - alpha)) + (target * alpha)
 
@@ -455,17 +464,15 @@ class FMEngine:
                     meter_state["output_rms"] = _smooth_meter(
                         float(meter_state["output_rms"]), output_rms, rise=0.35, fall=0.14
                     )
-                    meter_state["output_peak"] = max(meter_state["output_peak"] * 0.965, output_peak)
+                    meter_state["output_peak"] = max(
+                        meter_state["output_peak"] * 0.965, output_peak
+                    )
                     meter_state["output_vu"] = _smooth_meter(
                         float(meter_state["output_vu"]), output_rms, rise=0.42, fall=0.12
                     )
                     meter_state["limiter_active"] = limiter_active
                     meter_state["multiband_enabled"] = bool(mpx_state.get("multiband_enabled"))
                     meter_state["multiband_active"] = bool(mpx_state.get("multiband_enabled"))
-                    meter_state["preemph_limit_enabled"] = preemph_limit_enabled
-                    meter_state["preemph_limit_active"] = preemph_limit_active
-                    meter_state["composite_clip_enabled"] = composite_clip_enabled
-                    meter_state["composite_clip_active"] = composite_clip_active
             except Exception:
                 continue
 
@@ -527,8 +534,14 @@ class FMEngine:
         self.mb_sc_low = 1e-9
         self.mb_sc_mid = 1e-9
         self.mb_sc_high = 1e-9
+        self.mb_makeup_low = 1.0
+        self.mb_makeup_mid = 1.0
+        self.mb_makeup_high = 1.0
+        self.mb_makeup_global = 1.0
+        self.mb_user_makeup_gain = 1.0
         self.mb5_env = [0.0] * 5
         self.mb5_sc = [1e-9] * 5
+        self.mb5_makeup = [1.0] * 5
         self._init_wideband_agc()
         self._init_orbass()
         self._init_preemphasis_hf_control()
@@ -536,9 +549,7 @@ class FMEngine:
         self.widen_mid_gain = 1.0
         self.widen_mix = 1.0
         self.composite_limit_gain = 1.0
-        self.composite_clip_trim_gain = 1.0
         self.composite_safety_gain = 1.0
-        self.preemph_drive_gain = 1.0
         self._init_multiband_filters()
 
     def _init_wideband_agc(self):
@@ -549,26 +560,39 @@ class FMEngine:
         self.orbass_freq_hz = 95.0
         self.orbass_amount_target = 0.35
         self.orbass_harmonics_target = 0.35
+        self.orbass_drive_target = 1.0
+        self.orbass_density_target = 0.65
+        self.orbass_subharmonics_target = 0.35
         self.orbass_amount = self.orbass_amount_target
         self.orbass_harmonics = self.orbass_harmonics_target
-        self.orbass_target_ratio = 0.33
-        self.orbass_ratio_deadband = 0.04
+        self.orbass_drive = self.orbass_drive_target
+        self.orbass_density = self.orbass_density_target
+        self.orbass_subharmonics = self.orbass_subharmonics_target
+        self.orbass_target_ratio = 0.42
+        self.orbass_ratio_deadband = 0.05
         self.orbass_ratio_est = self.orbass_target_ratio
         self.orbass_mix = 0.0
+        self.orbass_sub_mix = 0.0
         self.orbass_adaptive_target = 0.0
         self.orbass_adaptive_gain = 0.0
         self.orbass_level_est = 1e-3
         self.orbass_hold_seconds = 0.12
         self.orbass_hold_remaining = 0.0
         self.orbass_makeup_gain = 1.0
+        self.orbass_sub_phase = 0
+        self.orbass_sub_prev_sample = 0.0
         self.orbass_lpf_sos = np.array([[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]], dtype=self.dtype)
         self.orbass_hpf_sos = np.array([[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]], dtype=self.dtype)
         self.orbass_harm_lpf_sos = np.array([[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]], dtype=self.dtype)
+        self.orbass_sub_bp_sos = np.array([[1.0, 0.0, 0.0, 1.0, 0.0, 0.0]], dtype=self.dtype)
         self.orbass_lpf_zi = (dsp_signal.sosfilt_zi(self.orbass_lpf_sos) * 0).astype(self.dtype)
         self.orbass_hpf_zi = (dsp_signal.sosfilt_zi(self.orbass_hpf_sos) * 0).astype(self.dtype)
-        self.orbass_harm_lpf_zi = (
-            dsp_signal.sosfilt_zi(self.orbass_harm_lpf_sos) * 0
-        ).astype(self.dtype)
+        self.orbass_harm_lpf_zi = (dsp_signal.sosfilt_zi(self.orbass_harm_lpf_sos) * 0).astype(
+            self.dtype
+        )
+        self.orbass_sub_bp_zi = (dsp_signal.sosfilt_zi(self.orbass_sub_bp_sos) * 0).astype(
+            self.dtype
+        )
         self._refresh_orbass(force=True)
 
     def _init_preemphasis_hf_control(self):
@@ -642,8 +666,14 @@ class FMEngine:
         self.mb5_lp4_zi_r = (dsp_signal.sosfilt_zi(self.mb5_lp4_sos) * 0).astype(self.dtype)
         self.mb5_hp4_zi_l = (dsp_signal.sosfilt_zi(self.mb5_hp4_sos) * 0).astype(self.dtype)
         self.mb5_hp4_zi_r = (dsp_signal.sosfilt_zi(self.mb5_hp4_sos) * 0).astype(self.dtype)
+        self.mb_makeup_low = 1.0
+        self.mb_makeup_mid = 1.0
+        self.mb_makeup_high = 1.0
+        self.mb_makeup_global = 1.0
+        self.mb_user_makeup_gain = 1.0
         self.mb5_env = [0.0] * 5
         self.mb5_sc = [1e-9] * 5
+        self.mb5_makeup = [1.0] * 5
 
     def _refresh_multiband_filters(self):
         desired_mode = 3
@@ -675,7 +705,9 @@ class FMEngine:
 
     def _linkwitz_riley_sos(self, freq_hz: float) -> tuple[np.ndarray, np.ndarray]:
         lp2_raw = dsp_signal.butter(2, float(freq_hz), btype="low", fs=self.proc_rate, output="sos")
-        hp2_raw = dsp_signal.butter(2, float(freq_hz), btype="high", fs=self.proc_rate, output="sos")
+        hp2_raw = dsp_signal.butter(
+            2, float(freq_hz), btype="high", fs=self.proc_rate, output="sos"
+        )
         lp2 = np.asarray(lp2_raw, dtype=self.dtype)
         hp2 = np.asarray(hp2_raw, dtype=self.dtype)
         lp4 = np.concatenate((lp2, lp2), axis=0).astype(self.dtype, copy=False)
@@ -683,15 +715,54 @@ class FMEngine:
         return lp4, hp4
 
     def _init_monitor_filters(self):
+        nyquist = (self.sample_rate * 0.5) - 200.0
         self.mon_lpf_sos = dsp_signal.butter(
             6, 15000.0, btype="low", fs=self.sample_rate, output="sos"
         )
         self.mon_lpf_zi = (dsp_signal.sosfilt_zi(self.mon_lpf_sos) * 0).astype(self.dtype)
         self.mon_lpf_zi_diff = (dsp_signal.sosfilt_zi(self.mon_lpf_sos) * 0).astype(self.dtype)
+        mon_bpf_high = min(52000.0, nyquist)
+        if mon_bpf_high <= 24000.0:
+            mon_bpf_high = min(53000.0, nyquist)
+        if mon_bpf_high <= 23000.0:
+            mon_bpf_high = 23050.0
         self.mon_bpf_sos = dsp_signal.butter(
-            6, [23000.0, 53000.0], btype="bandpass", fs=self.sample_rate, output="sos"
+            6, [23000.0, mon_bpf_high], btype="bandpass", fs=self.sample_rate, output="sos"
         )
         self.mon_bpf_zi = (dsp_signal.sosfilt_zi(self.mon_bpf_sos) * 0).astype(self.dtype)
+        # Pre-demod RF cleanup to avoid audible pilot/RDS leakage in monitor output on silence.
+        if nyquist > (PILOT_FREQ + 100.0):
+            self.mon_rf_pilot_b, self.mon_rf_pilot_a = dsp_signal.iirnotch(
+                PILOT_FREQ, 18.0, fs=self.sample_rate
+            )
+            self.mon_rf_pilot_zi = (
+                dsp_signal.lfilter_zi(self.mon_rf_pilot_b, self.mon_rf_pilot_a) * 0
+            ).astype(self.dtype)
+        else:
+            self.mon_rf_pilot_b = np.array([1.0], dtype=self.dtype)
+            self.mon_rf_pilot_a = np.array([1.0], dtype=self.dtype)
+            self.mon_rf_pilot_zi = np.zeros(0, dtype=self.dtype)
+        rds_freq = 57000.0
+        if nyquist > (rds_freq + 100.0):
+            self.mon_rf_rds_b, self.mon_rf_rds_a = dsp_signal.iirnotch(
+                rds_freq, 22.0, fs=self.sample_rate
+            )
+            self.mon_rf_rds_zi = (
+                dsp_signal.lfilter_zi(self.mon_rf_rds_b, self.mon_rf_rds_a) * 0
+            ).astype(self.dtype)
+        else:
+            self.mon_rf_rds_b = np.array([1.0], dtype=self.dtype)
+            self.mon_rf_rds_a = np.array([1.0], dtype=self.dtype)
+            self.mon_rf_rds_zi = np.zeros(0, dtype=self.dtype)
+        self.mon_pilot_notch_b, self.mon_pilot_notch_a = dsp_signal.iirnotch(
+            PILOT_FREQ, 24.0, fs=self.sample_rate
+        )
+        self.mon_pilot_notch_zi_l = (
+            dsp_signal.lfilter_zi(self.mon_pilot_notch_b, self.mon_pilot_notch_a) * 0
+        ).astype(self.dtype)
+        self.mon_pilot_notch_zi_r = (
+            dsp_signal.lfilter_zi(self.mon_pilot_notch_b, self.mon_pilot_notch_a) * 0
+        ).astype(self.dtype)
         self._init_monitor_deemphasis()
 
     def _init_monitor_deemphasis(self):
@@ -720,8 +791,14 @@ class FMEngine:
     def _monitor_demod(self, mpx, subcarrier):
         if not mpx.size:
             return None
-        lpr, self.mon_lpf_zi = dsp_signal.sosfilt(self.mon_lpf_sos, mpx, zi=self.mon_lpf_zi)
-        dsb, self.mon_bpf_zi = dsp_signal.sosfilt(self.mon_bpf_sos, mpx, zi=self.mon_bpf_zi)
+        mon_src, self.mon_rf_pilot_zi = dsp_signal.lfilter(
+            self.mon_rf_pilot_b, self.mon_rf_pilot_a, mpx, zi=self.mon_rf_pilot_zi
+        )
+        mon_src, self.mon_rf_rds_zi = dsp_signal.lfilter(
+            self.mon_rf_rds_b, self.mon_rf_rds_a, mon_src, zi=self.mon_rf_rds_zi
+        )
+        lpr, self.mon_lpf_zi = dsp_signal.sosfilt(self.mon_lpf_sos, mon_src, zi=self.mon_lpf_zi)
+        dsb, self.mon_bpf_zi = dsp_signal.sosfilt(self.mon_bpf_sos, mon_src, zi=self.mon_bpf_zi)
         diff = 2.0 * dsb * subcarrier
         diff, self.mon_lpf_zi_diff = dsp_signal.sosfilt(
             self.mon_lpf_sos, diff, zi=self.mon_lpf_zi_diff
@@ -729,6 +806,13 @@ class FMEngine:
         diff = -diff
         left = lpr + diff
         right = lpr - diff
+        # Remove residual 19 kHz pilot leakage from monitor demod to avoid idle-tone bleed.
+        left, self.mon_pilot_notch_zi_l = dsp_signal.lfilter(
+            self.mon_pilot_notch_b, self.mon_pilot_notch_a, left, zi=self.mon_pilot_notch_zi_l
+        )
+        right, self.mon_pilot_notch_zi_r = dsp_signal.lfilter(
+            self.mon_pilot_notch_b, self.mon_pilot_notch_a, right, zi=self.mon_pilot_notch_zi_r
+        )
         self._refresh_monitor_deemphasis()
         if self.deemphasis_us:
             left, self.de_zi_l = dsp_signal.lfilter(self.de_b, self.de_a, left, zi=self.de_zi_l)
@@ -820,6 +904,105 @@ class FMEngine:
         tau_samples = max(1, int(tau_ms / 1000.0 * sample_rate))
         coeff = np.exp(-frames / tau_samples)
         return (coeff * current) + ((1 - coeff) * target)
+
+    def _forward_peak_curve(
+        self, abs_signal: np.ndarray, window: int, output_len: int
+    ) -> np.ndarray:
+        out_n = max(0, int(output_len))
+        if out_n == 0:
+            return np.zeros(0, dtype=self.dtype)
+        data = np.asarray(abs_signal, dtype=self.dtype)
+        total_n = int(data.shape[0])
+        if total_n == 0:
+            return np.zeros(out_n, dtype=self.dtype)
+        win = max(1, int(window))
+        out = np.empty(out_n, dtype=self.dtype)
+        max_queue: deque[int] = deque()
+        preload = min(total_n, win)
+        for idx in range(preload):
+            val = float(data[idx])
+            while max_queue and val >= float(data[max_queue[-1]]):
+                max_queue.pop()
+            max_queue.append(idx)
+        for i in range(out_n):
+            while max_queue and max_queue[0] < i:
+                max_queue.popleft()
+            if not max_queue:
+                fallback_idx = min(total_n - 1, i)
+                max_queue.append(fallback_idx)
+            out[i] = data[max_queue[0]]
+            next_idx = i + win
+            if next_idx < total_n:
+                next_val = float(data[next_idx])
+                while max_queue and next_val >= float(data[max_queue[-1]]):
+                    max_queue.pop()
+                max_queue.append(next_idx)
+        return out
+
+    def _follow_gain_curve(
+        self,
+        target_curve: np.ndarray,
+        gain_attr: str,
+        hold_attr: str,
+        sample_rate: float,
+        attack_ms: float,
+        release_ms: float,
+        hold_ms: float,
+        min_gain: float = 0.0,
+        max_gain: float = 1.0,
+        program_dependent_release: bool = True,
+    ) -> np.ndarray:
+        if not target_curve.size:
+            return np.zeros(0, dtype=self.dtype)
+        min_gain = float(min(min_gain, max_gain))
+        max_gain = float(max(min_gain, max_gain))
+        control = np.asarray(target_curve, dtype=np.float64)
+        control = np.nan_to_num(control, nan=max_gain, posinf=max_gain, neginf=min_gain)
+        control = np.clip(control, min_gain, max_gain)
+        current = float(np.clip(getattr(self, gain_attr, max_gain), min_gain, max_gain))
+        hold_remaining = int(max(0, getattr(self, hold_attr, 0)))
+        sr = max(1.0, float(sample_rate))
+        if attack_ms <= 0.0:
+            attack_alpha = 0.0
+        else:
+            attack_samples = max(1.0, sr * (float(attack_ms) / 1000.0))
+            attack_alpha = math.exp(-1.0 / attack_samples)
+        release_samples = max(1.0, sr * (max(0.0, float(release_ms)) / 1000.0))
+        release_alpha = math.exp(-1.0 / release_samples)
+        hold_samples = max(0, int(round(sr * (max(0.0, float(hold_ms)) / 1000.0))))
+        gains = np.empty(control.shape[0], dtype=self.dtype)
+        for idx in range(control.shape[0]):
+            target = float(control[idx])
+            if target < current:
+                if attack_alpha <= 0.0:
+                    current = target
+                else:
+                    current = (attack_alpha * current) + ((1.0 - attack_alpha) * target)
+                hold_remaining = hold_samples
+            else:
+                if hold_remaining > 0:
+                    hold_remaining -= 1
+                else:
+                    release_alpha_local = release_alpha
+                    if program_dependent_release:
+                        gain_reduction = max(0.0, 1.0 - current)
+                        if gain_reduction > 1e-6:
+                            release_scale = 1.0 + (5.0 * (gain_reduction**1.35))
+                            release_samples_local = max(1.0, release_samples * release_scale)
+                            release_alpha_local = math.exp(-1.0 / release_samples_local)
+                    current = (release_alpha_local * current) + (
+                        (1.0 - release_alpha_local) * target
+                    )
+            current = min(max_gain, max(min_gain, current))
+            gains[idx] = current
+        setattr(self, gain_attr, current)
+        setattr(self, hold_attr, hold_remaining)
+        return gains
+
+    def _lookahead_timing(self, state_prefix: str) -> tuple[float, float]:
+        if state_prefix == "lookahead_audio_pair":
+            return 140.0, 5.0
+        return 95.0, 4.0
 
     def _apply_lpf(self, left, right):
         left, self.audio_lpf_zi_l = dsp_signal.sosfilt(
@@ -965,18 +1148,32 @@ class FMEngine:
             freq_hz = float(mpx_state.get("orbass_freq_hz", self.orbass_freq_hz))
             amount = float(mpx_state.get("orbass_amount", self.orbass_amount_target))
             harmonics = float(mpx_state.get("orbass_harmonics", self.orbass_harmonics_target))
+            drive = float(mpx_state.get("orbass_drive", self.orbass_drive_target))
+            density = float(mpx_state.get("orbass_density", self.orbass_density_target))
+            subharmonics = float(
+                mpx_state.get("orbass_subharmonics_amount", self.orbass_subharmonics_target)
+            )
         except (TypeError, ValueError):
             return
         freq_hz = max(45.0, min(220.0, freq_hz))
         amount = max(0.0, min(1.0, amount))
         harmonics = max(0.0, min(1.0, harmonics))
+        drive = max(0.0, min(2.5, drive))
+        density = max(0.0, min(1.0, density))
+        subharmonics = max(0.0, min(1.0, subharmonics))
         big_jump = (
             abs(freq_hz - self.orbass_freq_hz) > 8.0
             or abs(amount - self.orbass_amount_target) > 0.12
             or abs(harmonics - self.orbass_harmonics_target) > 0.12
+            or abs(drive - self.orbass_drive_target) > 0.18
+            or abs(density - self.orbass_density_target) > 0.12
+            or abs(subharmonics - self.orbass_subharmonics_target) > 0.12
         )
         self.orbass_amount_target = amount
         self.orbass_harmonics_target = harmonics
+        self.orbass_drive_target = drive
+        self.orbass_density_target = density
+        self.orbass_subharmonics_target = subharmonics
         if big_jump:
             # Preset/profile jumps: clear adaptive memory so we do not keep stale gain bias.
             self.orbass_adaptive_target = 0.0
@@ -985,6 +1182,8 @@ class FMEngine:
             self.orbass_hold_remaining = 0.0
             self.orbass_level_est = 1e-3
             self.orbass_makeup_gain = 1.0
+            self.orbass_sub_phase = 0
+            self.orbass_sub_prev_sample = 0.0
         if not force and abs(freq_hz - self.orbass_freq_hz) < 0.5:
             return
         self.orbass_freq_hz = freq_hz
@@ -994,6 +1193,10 @@ class FMEngine:
         harm_lpf_hz = min(max(280.0, self.orbass_freq_hz * 5.0), nyquist_margin)
         if harm_lpf_hz <= hpf_hz + 20.0:
             harm_lpf_hz = min(hpf_hz + 20.0, nyquist_margin)
+        sub_hi_hz = min(max(45.0, self.orbass_freq_hz * 0.80), nyquist_margin)
+        sub_lo_hz = max(18.0, min(35.0, sub_hi_hz - 8.0))
+        if sub_hi_hz <= sub_lo_hz + 4.0:
+            sub_hi_hz = sub_lo_hz + 4.0
         self.orbass_lpf_sos = dsp_signal.butter(
             2, lpf_hz, btype="low", fs=self.proc_rate, output="sos"
         )
@@ -1003,11 +1206,38 @@ class FMEngine:
         self.orbass_harm_lpf_sos = dsp_signal.butter(
             2, harm_lpf_hz, btype="low", fs=self.proc_rate, output="sos"
         )
+        self.orbass_sub_bp_sos = dsp_signal.butter(
+            2, [sub_lo_hz, sub_hi_hz], btype="bandpass", fs=self.proc_rate, output="sos"
+        )
         self.orbass_lpf_zi = (dsp_signal.sosfilt_zi(self.orbass_lpf_sos) * 0).astype(self.dtype)
         self.orbass_hpf_zi = (dsp_signal.sosfilt_zi(self.orbass_hpf_sos) * 0).astype(self.dtype)
-        self.orbass_harm_lpf_zi = (
-            dsp_signal.sosfilt_zi(self.orbass_harm_lpf_sos) * 0
-        ).astype(self.dtype)
+        self.orbass_harm_lpf_zi = (dsp_signal.sosfilt_zi(self.orbass_harm_lpf_sos) * 0).astype(
+            self.dtype
+        )
+        self.orbass_sub_bp_zi = (dsp_signal.sosfilt_zi(self.orbass_sub_bp_sos) * 0).astype(
+            self.dtype
+        )
+
+    def _orbass_subharmonic_signal(self, low: np.ndarray) -> np.ndarray:
+        if not low.size:
+            return low
+        prev = float(self.orbass_sub_prev_sample)
+        shifted = np.empty_like(low)
+        shifted[0] = prev
+        if low.shape[0] > 1:
+            shifted[1:] = low[:-1]
+        pos_cross = (shifted <= 0.0) & (low > 0.0)
+        toggles = np.cumsum(pos_cross.astype(np.int8), dtype=np.int64)
+        state = (int(self.orbass_sub_phase) + toggles) & 1
+        self.orbass_sub_phase = int((int(self.orbass_sub_phase) + int(toggles[-1])) & 1)
+        self.orbass_sub_prev_sample = float(low[-1])
+        square = np.where(state > 0, 1.0, -1.0).astype(self.dtype, copy=False)
+        envelope = np.sqrt(np.maximum(np.abs(low), 0.0)).astype(self.dtype, copy=False)
+        sub_raw = (square * envelope).astype(self.dtype, copy=False)
+        sub, self.orbass_sub_bp_zi = dsp_signal.sosfilt(
+            self.orbass_sub_bp_sos, sub_raw, zi=self.orbass_sub_bp_zi
+        )
+        return sub.astype(self.dtype, copy=False)
 
     def _apply_orbass(self, left, right):
         if not left.size or not right.size:
@@ -1020,14 +1250,26 @@ class FMEngine:
         self.orbass_mix += ((1.0 if enabled else 0.0) - self.orbass_mix) * alpha
         self.orbass_amount += (self.orbass_amount_target - self.orbass_amount) * alpha
         self.orbass_harmonics += (self.orbass_harmonics_target - self.orbass_harmonics) * alpha
+        self.orbass_drive += (self.orbass_drive_target - self.orbass_drive) * alpha
+        self.orbass_density += (self.orbass_density_target - self.orbass_density) * alpha
+        self.orbass_subharmonics += (
+            self.orbass_subharmonics_target - self.orbass_subharmonics
+        ) * alpha
+        sub_enabled = bool(mpx_state.get("orbass_subharmonics_enabled"))
+        self.orbass_sub_mix += ((1.0 if sub_enabled else 0.0) - self.orbass_sub_mix) * alpha
         wet_mix = max(0.0, min(1.0, self.orbass_mix))
         amount = max(0.0, min(1.0, self.orbass_amount * wet_mix))
         harmonics = max(0.0, min(1.0, self.orbass_harmonics * wet_mix))
-        if amount <= 1e-4 and harmonics <= 1e-4:
+        drive = max(0.0, min(2.5, self.orbass_drive))
+        density = max(0.0, min(1.0, self.orbass_density))
+        subharmonics = max(0.0, min(1.0, self.orbass_subharmonics * self.orbass_sub_mix * wet_mix))
+        if amount <= 1e-4 and harmonics <= 1e-4 and subharmonics <= 1e-4:
             return left, right
         mid = (left + right) * 0.5
         side = (left - right) * 0.5
-        low, self.orbass_lpf_zi = dsp_signal.sosfilt(self.orbass_lpf_sos, mid, zi=self.orbass_lpf_zi)
+        low, self.orbass_lpf_zi = dsp_signal.sosfilt(
+            self.orbass_lpf_sos, mid, zi=self.orbass_lpf_zi
+        )
         full_rms = float(np.sqrt(np.mean(mid * mid))) if mid.size else 0.0
         low_rms = float(np.sqrt(np.mean(low * low))) if low.size else 0.0
         low_ratio = low_rms / max(full_rms, 1e-6)
@@ -1035,8 +1277,8 @@ class FMEngine:
         # Slow ratio tracking keeps Orbass from chasing block-by-block spectral changes.
         ratio_alpha = 1.0 - math.exp(-block_time_s / 0.45)
         self.orbass_ratio_est += (low_ratio - self.orbass_ratio_est) * ratio_alpha
-        target_ratio = self.orbass_target_ratio
-        deadband = self.orbass_ratio_deadband
+        target_ratio = self.orbass_target_ratio + (0.06 * density)
+        deadband = max(0.03, self.orbass_ratio_deadband - (0.015 * density))
         low_enter = max(0.05, target_ratio - deadband)
         high_exit = min(0.9, target_ratio + deadband)
         if self.orbass_ratio_est < low_enter:
@@ -1063,26 +1305,33 @@ class FMEngine:
         adaptive = max(0.0, min(1.0, self.orbass_adaptive_gain))
 
         # Blend fixed enhancement with adaptive boost; static part keeps tonal consistency.
-        boost_gain = 1.0 + (amount * (0.55 + (0.75 * adaptive)))
+        drive_factor = 0.75 + (0.75 * drive)
+        density_factor = 0.62 + (0.95 * density)
+        boost_gain = 1.0 + (amount * drive_factor * density_factor * (0.70 + (0.90 * adaptive)))
         low_boost = low * (boost_gain - 1.0)
-        drive = 1.0 + (amount * 4.0) + (harmonics * 4.0)
-        harmonic_src = np.tanh(low * drive) - np.tanh(low)
+        nl_drive = 1.0 + (drive * (1.6 + (amount * 3.2) + (harmonics * 2.8)))
+        harmonic_src = np.tanh(low * nl_drive) - np.tanh(low * (0.45 + (0.25 * density)))
         harmonic_band, self.orbass_hpf_zi = dsp_signal.sosfilt(
             self.orbass_hpf_sos, harmonic_src, zi=self.orbass_hpf_zi
         )
         harmonic_band, self.orbass_harm_lpf_zi = dsp_signal.sosfilt(
             self.orbass_harm_lpf_sos, harmonic_band, zi=self.orbass_harm_lpf_zi
         )
-        harmonic_gain = harmonics * (0.55 + (0.65 * adaptive))
+        harmonic_gain = harmonics * (0.55 + (0.95 * density)) * (0.75 + (0.85 * adaptive))
         enhancement = low_boost + (harmonic_band * harmonic_gain)
-        enhancement = 0.85 * np.tanh(enhancement / 0.85)
+        if subharmonics > 1e-4:
+            sub_wave = self._orbass_subharmonic_signal(low)
+            sub_gain = subharmonics * (0.45 + (0.75 * density)) * (0.70 + (0.45 * drive))
+            enhancement += sub_wave * sub_gain
+        enh_clip = max(0.62, 0.86 - (0.12 * density))
+        enhancement = enh_clip * np.tanh(enhancement / enh_clip)
         mid_out = mid + enhancement
-        mid_out *= 1.0 / (1.0 + (0.10 * amount))
+        mid_out *= 1.0 / (1.0 + (0.05 * amount) + (0.04 * subharmonics))
         in_mid_rms = float(np.sqrt(np.mean(mid * mid))) if mid.size else 0.0
         out_mid_rms = float(np.sqrt(np.mean(mid_out * mid_out))) if mid_out.size else 0.0
         if out_mid_rms > 1e-7:
-            target_makeup = (in_mid_rms / out_mid_rms) ** 0.6
-            target_makeup = max(0.90, min(1.18, target_makeup))
+            target_makeup = (in_mid_rms / out_mid_rms) ** (0.62 + (0.12 * density))
+            target_makeup = max(0.90, min(1.26 + (0.14 * density), target_makeup))
             self.orbass_makeup_gain = self._smooth_gain(
                 self.orbass_makeup_gain,
                 target_makeup,
@@ -1104,7 +1353,7 @@ class FMEngine:
             float(np.max(np.abs(out_r))) if out_r.size else 0.0,
             1e-6,
         )
-        allowed_peak = in_peak * (1.06 + (0.04 * amount))
+        allowed_peak = in_peak * (1.10 + (0.06 * amount) + (0.08 * subharmonics))
         if out_peak > allowed_peak:
             scale = allowed_peak / out_peak
             out_l = left + ((out_l - left) * scale)
@@ -1114,7 +1363,9 @@ class FMEngine:
     def _apply_preemphasis_hf_control(self, baseband, diff):
         if not baseband.size or not diff.size:
             return baseband, diff
-        if not self.preemphasis_us or not bool(mpx_state.get("preemphasis_hf_control_enabled", False)):
+        if not self.preemphasis_us or not bool(
+            mpx_state.get("preemphasis_hf_control_enabled", False)
+        ):
             if self.preemph_hf_gain < 0.999:
                 self.preemph_hf_gain = self._smooth_gain(
                     self.preemph_hf_gain,
@@ -1187,26 +1438,6 @@ class FMEngine:
             self.dtype, copy=False
         )
 
-    def _apply_preemphasis_drive_guard(self, baseband, diff):
-        if not baseband.size or not diff.size:
-            return baseband, diff
-        peak = max(float(np.max(np.abs(baseband))), float(np.max(np.abs(diff))), 1e-9)
-        target_gain = min(1.0, 0.9 / peak)
-        self.preemph_drive_gain = self._smooth_gain(
-            self.preemph_drive_gain,
-            target_gain,
-            baseband.shape[0],
-            attack_ms=1.5,
-            release_ms=220.0,
-            sample_rate=self.proc_rate,
-        )
-        gain = max(0.70, min(1.0, self.preemph_drive_gain))
-        if gain >= 0.999:
-            return baseband, diff
-        return (baseband * gain).astype(self.dtype, copy=False), (diff * gain).astype(
-            self.dtype, copy=False
-        )
-
     def _process_stereo_audio_domain(self, left, right, proc_frames, bypass):
         if bypass:
             return self._apply_lpf(left, right)
@@ -1251,32 +1482,6 @@ class FMEngine:
         )
         return baseband, diff
 
-    def _apply_composite_clipper(self, mpx, threshold):
-        return self._oversampled_soft_clip(mpx, threshold, "_composite_pad")
-
-    def _oversampled_soft_clip(self, signal, threshold, pad_attr, os_factor=2, pad_len=96):
-        if threshold <= 0 or not signal.size:
-            return signal
-        if os_factor <= 1:
-            return self._apply_threshold_soft_knee(signal, threshold).astype(self.dtype, copy=False)
-        pad = getattr(self, pad_attr, None)
-        if pad is None or pad.shape[0] != pad_len:
-            pad = np.zeros(pad_len, dtype=self.dtype)
-        combined = np.concatenate((pad, signal))
-        target_len = combined.shape[0]
-        up_window = self._get_resample_window(os_factor, 1)
-        down_window = self._get_resample_window(1, os_factor)
-        oversampled = dsp_signal.resample_poly(combined, os_factor, 1, window=up_window)
-        oversampled = self._apply_threshold_soft_knee(oversampled, threshold)
-        resampled = dsp_signal.resample_poly(oversampled, 1, os_factor, window=down_window)
-        if resampled.shape[0] > target_len:
-            resampled = resampled[:target_len]
-        elif resampled.shape[0] < target_len:
-            resampled = np.pad(resampled, (0, target_len - resampled.shape[0]))
-        result = resampled[pad_len:]
-        setattr(self, pad_attr, signal[-pad_len:].copy() if signal.shape[0] >= pad_len else pad)
-        return result.astype(self.dtype, copy=False)
-
     def _apply_audio_mpx_lpf(self, mpx):
         if not mpx.size:
             return mpx
@@ -1286,21 +1491,6 @@ class FMEngine:
             self.audio_mpx_lpf_sos, mpx, zi=self.audio_mpx_lpf_zi
         )
         return mpx
-
-    def _apply_threshold_soft_knee(self, signal: np.ndarray, threshold: float) -> np.ndarray:
-        if threshold <= 0.0:
-            return signal
-        if threshold >= 1.0:
-            return np.clip(signal, -1.0, 1.0)
-        knee = max(1e-6, 1.0 - threshold)
-        abs_sig = np.abs(signal)
-        over = np.maximum(abs_sig - threshold, 0.0)
-        shaped_abs = np.where(
-            abs_sig <= threshold,
-            abs_sig,
-            threshold + (knee * np.tanh(over / knee)),
-        )
-        return np.sign(signal) * shaped_abs
 
     def _compressor_level_db_ctrl(
         self,
@@ -1398,9 +1588,11 @@ class FMEngine:
         else:
             gr_db = gr_ctrl
         gain = np.power(10.0, (-gr_db / 20.0)).astype(self.dtype, copy=False)
-        return (left * gain).astype(self.dtype, copy=False), (
-            right * gain
-        ).astype(self.dtype, copy=False), float(state)
+        return (
+            (left * gain).astype(self.dtype, copy=False),
+            (right * gain).astype(self.dtype, copy=False),
+            float(state),
+        )
 
     def _apply_widener(self, left, right):
         if not bool(mpx_state.get("stereo_widen_enabled")):
@@ -1449,6 +1641,49 @@ class FMEngine:
         crest_db = 20.0 * math.log10(max(peak, 1e-9) / rms)
         return max(0.9, min(1.15, 0.95 + (0.015 * crest_db)))
 
+    def _stereo_rms(self, left: np.ndarray, right: np.ndarray) -> float:
+        if not left.size or not right.size:
+            return 0.0
+        return float(np.sqrt((np.mean(left * left) + np.mean(right * right)) * 0.5))
+
+    def _multiband_makeup_target(
+        self,
+        in_l: np.ndarray,
+        in_r: np.ndarray,
+        out_l: np.ndarray,
+        out_r: np.ndarray,
+        exponent: float,
+        max_gain: float,
+    ) -> float:
+        in_rms = self._stereo_rms(in_l, in_r)
+        out_rms = self._stereo_rms(out_l, out_r)
+        if in_rms <= 1e-7 or out_rms <= 1e-7:
+            return 1.0
+        ratio = in_rms / out_rms
+        if ratio <= 1.0:
+            return 1.0
+        target = ratio ** max(0.0, float(exponent))
+        return max(1.0, min(float(max_gain), target))
+
+    def _multiband_user_makeup_gain(self, frames: int) -> float:
+        try:
+            makeup_db = float(mpx_state.get("multiband_makeup_db", 0.0))
+        except (TypeError, ValueError):
+            makeup_db = 0.0
+        makeup_db = max(-6.0, min(6.0, makeup_db))
+        target_gain = 10 ** (makeup_db / 20.0)
+        self.mb_user_makeup_gain = self._smooth_gain(
+            self.mb_user_makeup_gain,
+            target_gain,
+            frames,
+            attack_ms=90.0,
+            release_ms=220.0,
+            sample_rate=self.proc_rate,
+        )
+        min_gain = 10 ** (-6.0 / 20.0)
+        max_gain = 10 ** (6.0 / 20.0)
+        return max(min_gain, min(max_gain, self.mb_user_makeup_gain))
+
     def _apply_multiband(self, left, right, frames):
         if not bool(mpx_state.get("multiband_enabled")):
             return left, right
@@ -1469,26 +1704,35 @@ class FMEngine:
         link_strength = max(0.0, min(1.0, float(mpx_state.get("multiband_link_strength", 0.22))))
         release_program_dependent = bool(mpx_state.get("multiband_release_program_dependent", True))
         detector_hop = max(1, min(8, int(self.proc_rate // 48000)))
+        user_makeup_gain = self._multiband_user_makeup_gain(left.shape[0])
         if self.mb_mode == 5:
-            b1_l, self.mb5_lp1_zi_l = dsp_signal.sosfilt(self.mb5_lp1_sos, left, zi=self.mb5_lp1_zi_l)
+            b1_l, self.mb5_lp1_zi_l = dsp_signal.sosfilt(
+                self.mb5_lp1_sos, left, zi=self.mb5_lp1_zi_l
+            )
             b1_r, self.mb5_lp1_zi_r = dsp_signal.sosfilt(
                 self.mb5_lp1_sos, right, zi=self.mb5_lp1_zi_r
             )
             rem1_l = left - b1_l
             rem1_r = right - b1_r
-            b2_l, self.mb5_lp2_zi_l = dsp_signal.sosfilt(self.mb5_lp2_sos, rem1_l, zi=self.mb5_lp2_zi_l)
+            b2_l, self.mb5_lp2_zi_l = dsp_signal.sosfilt(
+                self.mb5_lp2_sos, rem1_l, zi=self.mb5_lp2_zi_l
+            )
             b2_r, self.mb5_lp2_zi_r = dsp_signal.sosfilt(
                 self.mb5_lp2_sos, rem1_r, zi=self.mb5_lp2_zi_r
             )
             rem2_l = rem1_l - b2_l
             rem2_r = rem1_r - b2_r
-            b3_l, self.mb5_lp3_zi_l = dsp_signal.sosfilt(self.mb5_lp3_sos, rem2_l, zi=self.mb5_lp3_zi_l)
+            b3_l, self.mb5_lp3_zi_l = dsp_signal.sosfilt(
+                self.mb5_lp3_sos, rem2_l, zi=self.mb5_lp3_zi_l
+            )
             b3_r, self.mb5_lp3_zi_r = dsp_signal.sosfilt(
                 self.mb5_lp3_sos, rem2_r, zi=self.mb5_lp3_zi_r
             )
             rem3_l = rem2_l - b3_l
             rem3_r = rem2_r - b3_r
-            b4_l, self.mb5_lp4_zi_l = dsp_signal.sosfilt(self.mb5_lp4_sos, rem3_l, zi=self.mb5_lp4_zi_l)
+            b4_l, self.mb5_lp4_zi_l = dsp_signal.sosfilt(
+                self.mb5_lp4_sos, rem3_l, zi=self.mb5_lp4_zi_l
+            )
             b4_r, self.mb5_lp4_zi_r = dsp_signal.sosfilt(
                 self.mb5_lp4_sos, rem3_r, zi=self.mb5_lp4_zi_r
             )
@@ -1524,6 +1768,8 @@ class FMEngine:
             ]
             bands_l = [b1_l, b2_l, b3_l, b4_l, b5_l]
             bands_r = [b1_r, b2_r, b3_r, b4_r, b5_r]
+            dry_bands_l = [b1_l, b2_l, b3_l, b4_l, b5_l]
+            dry_bands_r = [b1_r, b2_r, b3_r, b4_r, b5_r]
             release_scales = [1.0] * 5
             if release_program_dependent:
                 release_scales = [
@@ -1540,7 +1786,8 @@ class FMEngine:
             if link_strength > 1e-4:
                 linked = np.maximum.reduce(target_gr)
                 target_gr = [
-                    ((1.0 - link_strength) * target_gr[i]) + (link_strength * linked) for i in range(5)
+                    ((1.0 - link_strength) * target_gr[i]) + (link_strength * linked)
+                    for i in range(5)
                 ]
             for i in range(5):
                 bands_l[i], bands_r[i], self.mb5_env[i] = self._apply_gr_envelope_and_gain(
@@ -1553,8 +1800,60 @@ class FMEngine:
                     detector_hop,
                     release_scale=release_scales[i],
                 )
+            makeup_exp = (0.88, 0.80, 0.72, 0.62, 0.54)
+            makeup_cap = (1.95, 1.85, 1.75, 1.65, 1.55)
+            for i in range(5):
+                target_makeup = self._multiband_makeup_target(
+                    dry_bands_l[i],
+                    dry_bands_r[i],
+                    bands_l[i],
+                    bands_r[i],
+                    makeup_exp[i],
+                    makeup_cap[i],
+                )
+                self.mb5_makeup[i] = self._smooth_gain(
+                    self.mb5_makeup[i],
+                    target_makeup,
+                    left.shape[0],
+                    attack_ms=75.0,
+                    release_ms=260.0,
+                    sample_rate=self.proc_rate,
+                )
+                gain = max(1.0, min(makeup_cap[i], self.mb5_makeup[i]))
+                bands_l[i] = (bands_l[i] * gain).astype(self.dtype, copy=False)
+                bands_r[i] = (bands_r[i] * gain).astype(self.dtype, copy=False)
+            dry_sum_l = (
+                dry_bands_l[0] + dry_bands_l[1] + dry_bands_l[2] + dry_bands_l[3] + dry_bands_l[4]
+            )
+            dry_sum_r = (
+                dry_bands_r[0] + dry_bands_r[1] + dry_bands_r[2] + dry_bands_r[3] + dry_bands_r[4]
+            )
             out_l = bands_l[0] + bands_l[1] + bands_l[2] + bands_l[3] + bands_l[4]
             out_r = bands_r[0] + bands_r[1] + bands_r[2] + bands_r[3] + bands_r[4]
+            protected_path = bool(mpx_state.get("limit_mpx"))
+            global_makeup_cap = 1.28 if protected_path else 1.05
+            global_makeup_exp = 0.72 if protected_path else 0.40
+            target_global_makeup = self._multiband_makeup_target(
+                dry_sum_l,
+                dry_sum_r,
+                out_l,
+                out_r,
+                exponent=global_makeup_exp,
+                max_gain=global_makeup_cap,
+            )
+            self.mb_makeup_global = self._smooth_gain(
+                self.mb_makeup_global,
+                target_global_makeup,
+                left.shape[0],
+                attack_ms=75.0,
+                release_ms=300.0,
+                sample_rate=self.proc_rate,
+            )
+            global_gain = max(1.0, min(global_makeup_cap, self.mb_makeup_global))
+            out_l = (out_l * global_gain).astype(self.dtype, copy=False)
+            out_r = (out_r * global_gain).astype(self.dtype, copy=False)
+            out_l = (out_l * user_makeup_gain).astype(self.dtype, copy=False)
+            out_r = (out_r * user_makeup_gain).astype(self.dtype, copy=False)
             return out_l.astype(self.dtype, copy=False), out_r.astype(self.dtype, copy=False)
 
         low_l, self.mb_lp1_zi_l = dsp_signal.sosfilt(self.mb_lp1_sos, left, zi=self.mb_lp1_zi_l)
@@ -1565,6 +1864,12 @@ class FMEngine:
         mid_r, self.mb_lp2_zi_r = dsp_signal.sosfilt(self.mb_lp2_sos, rem_r, zi=self.mb_lp2_zi_r)
         high_l = rem_l - mid_l
         high_r = rem_r - mid_r
+        dry_low_l = low_l
+        dry_low_r = low_r
+        dry_mid_l = mid_l
+        dry_mid_r = mid_r
+        dry_high_l = high_l
+        dry_high_r = high_r
         rel_scale_low = 1.0
         rel_scale_mid = 1.0
         rel_scale_high = 1.0
@@ -1583,7 +1888,9 @@ class FMEngine:
         )
         target_low = self._compressor_gr_curve_db(level_low_db, threshold_low, ratio_low, knee_db)
         target_mid = self._compressor_gr_curve_db(level_mid_db, threshold_mid, ratio_mid, knee_db)
-        target_high = self._compressor_gr_curve_db(level_high_db, threshold_high, ratio_high, knee_db)
+        target_high = self._compressor_gr_curve_db(
+            level_high_db, threshold_high, ratio_high, knee_db
+        )
         if link_strength > 1e-4:
             linked = np.maximum.reduce([target_low, target_mid, target_high])
             target_low = ((1.0 - link_strength) * target_low) + (link_strength * linked)
@@ -1619,8 +1926,76 @@ class FMEngine:
             detector_hop,
             release_scale=rel_scale_high,
         )
+        target_low_makeup = self._multiband_makeup_target(
+            dry_low_l, dry_low_r, low_l, low_r, exponent=0.84, max_gain=1.85
+        )
+        target_mid_makeup = self._multiband_makeup_target(
+            dry_mid_l, dry_mid_r, mid_l, mid_r, exponent=0.72, max_gain=1.70
+        )
+        target_high_makeup = self._multiband_makeup_target(
+            dry_high_l, dry_high_r, high_l, high_r, exponent=0.58, max_gain=1.55
+        )
+        self.mb_makeup_low = self._smooth_gain(
+            self.mb_makeup_low,
+            target_low_makeup,
+            left.shape[0],
+            attack_ms=75.0,
+            release_ms=260.0,
+            sample_rate=self.proc_rate,
+        )
+        self.mb_makeup_mid = self._smooth_gain(
+            self.mb_makeup_mid,
+            target_mid_makeup,
+            left.shape[0],
+            attack_ms=75.0,
+            release_ms=260.0,
+            sample_rate=self.proc_rate,
+        )
+        self.mb_makeup_high = self._smooth_gain(
+            self.mb_makeup_high,
+            target_high_makeup,
+            left.shape[0],
+            attack_ms=75.0,
+            release_ms=260.0,
+            sample_rate=self.proc_rate,
+        )
+        low_gain = max(1.0, min(1.85, self.mb_makeup_low))
+        mid_gain = max(1.0, min(1.70, self.mb_makeup_mid))
+        high_gain = max(1.0, min(1.55, self.mb_makeup_high))
+        low_l = (low_l * low_gain).astype(self.dtype, copy=False)
+        low_r = (low_r * low_gain).astype(self.dtype, copy=False)
+        mid_l = (mid_l * mid_gain).astype(self.dtype, copy=False)
+        mid_r = (mid_r * mid_gain).astype(self.dtype, copy=False)
+        high_l = (high_l * high_gain).astype(self.dtype, copy=False)
+        high_r = (high_r * high_gain).astype(self.dtype, copy=False)
+        dry_sum_l = dry_low_l + dry_mid_l + dry_high_l
+        dry_sum_r = dry_low_r + dry_mid_r + dry_high_r
         out_l = low_l + mid_l + high_l
         out_r = low_r + mid_r + high_r
+        protected_path = bool(mpx_state.get("limit_mpx"))
+        global_makeup_cap = 1.28 if protected_path else 1.05
+        global_makeup_exp = 0.72 if protected_path else 0.40
+        target_global_makeup = self._multiband_makeup_target(
+            dry_sum_l,
+            dry_sum_r,
+            out_l,
+            out_r,
+            exponent=global_makeup_exp,
+            max_gain=global_makeup_cap,
+        )
+        self.mb_makeup_global = self._smooth_gain(
+            self.mb_makeup_global,
+            target_global_makeup,
+            left.shape[0],
+            attack_ms=75.0,
+            release_ms=300.0,
+            sample_rate=self.proc_rate,
+        )
+        global_gain = max(1.0, min(global_makeup_cap, self.mb_makeup_global))
+        out_l = (out_l * global_gain).astype(self.dtype, copy=False)
+        out_r = (out_r * global_gain).astype(self.dtype, copy=False)
+        out_l = (out_l * user_makeup_gain).astype(self.dtype, copy=False)
+        out_r = (out_r * user_makeup_gain).astype(self.dtype, copy=False)
         return out_l.astype(self.dtype, copy=False), out_r.astype(self.dtype, copy=False)
 
     def _resample(self, data, up, down, target_len):
@@ -1638,29 +2013,38 @@ class FMEngine:
                 resampled = np.pad(resampled, pad_shape)
         return resampled.astype(self.dtype, copy=False)
 
-    def _apply_audio_headroom(self, audio, carriers, threshold):
+    def _apply_audio_headroom(self, audio, carriers, threshold, min_gain=0.0):
         if threshold <= 0 or not audio.size:
             return audio, 1.0
+        min_gain = max(0.0, min(1.0, float(min_gain)))
         abs_audio = np.abs(audio)
-        abs_carriers = np.abs(carriers)
+        if carriers.shape == audio.shape:
+            abs_carriers = np.abs(carriers)
+        else:
+            abs_carriers = np.zeros_like(abs_audio)
         margin = threshold - abs_carriers
-        if np.any(margin <= 0):
-            return audio * 0.0, 0.0
-        mask = abs_audio > 1e-9
-        if not np.any(mask):
-            return audio, 1.0
-        target_gain = float(np.min(margin[mask] / abs_audio[mask]))
-        target_gain = max(0.0, min(1.0, target_gain))
-        # Fast-but-smoothed gain control avoids audible zipper/click artifacts under protection.
-        self.audio_headroom_gain = self._smooth_gain(
-            self.audio_headroom_gain,
-            target_gain,
-            audio.shape[0],
-            attack_ms=1.5,
-            release_ms=80.0,
+        target_curve = np.ones(audio.shape[0], dtype=self.dtype)
+        audio_mask = abs_audio > 1e-9
+        if np.any(audio_mask):
+            safe_margin = np.maximum(margin, 0.0)
+            target_curve[audio_mask] = safe_margin[audio_mask] / abs_audio[audio_mask]
+        if np.any(margin <= 0.0):
+            target_curve[margin <= 0.0] = min_gain
+        target_curve = np.clip(target_curve, min_gain, 1.0)
+        gain_curve = self._follow_gain_curve(
+            target_curve,
+            "audio_headroom_gain",
+            "audio_headroom_hold",
+            sample_rate=float(self.sample_rate),
+            attack_ms=0.45,
+            release_ms=95.0,
+            hold_ms=3.0,
+            min_gain=min_gain,
+            max_gain=1.0,
+            program_dependent_release=True,
         )
-        gain = max(0.0, min(1.0, self.audio_headroom_gain))
-        return audio * gain, gain
+        end_gain = float(gain_curve[-1]) if gain_curve.size else float(self.audio_headroom_gain)
+        return (audio * gain_curve).astype(self.dtype, copy=False), end_gain
 
     def _apply_smoothed_peak_trim(
         self,
@@ -1672,20 +2056,48 @@ class FMEngine:
     ) -> tuple[np.ndarray, bool]:
         if threshold <= 0.0 or not signal.size:
             return signal, False
-        peak = float(np.max(np.abs(signal)))
-        target_gain = min(1.0, threshold / peak) if peak > 1e-9 else 1.0
-        current_gain = float(getattr(self, gain_attr, 1.0))
-        next_gain = self._smooth_gain(
-            current_gain,
-            target_gain,
-            signal.shape[0],
+        abs_signal = np.abs(signal)
+        target_curve = np.ones(signal.shape[0], dtype=self.dtype)
+        mask = abs_signal > 1e-9
+        if np.any(mask):
+            target_curve[mask] = threshold / abs_signal[mask]
+        target_curve = np.clip(target_curve, 0.0, 1.0)
+        hold_attr = f"{gain_attr}_hold"
+        gain_curve = self._follow_gain_curve(
+            target_curve,
+            gain_attr,
+            hold_attr,
+            sample_rate=float(self.sample_rate),
             attack_ms=attack_ms,
             release_ms=release_ms,
-            sample_rate=self.sample_rate,
+            hold_ms=3.0,
+            min_gain=0.0,
+            max_gain=1.0,
+            program_dependent_release=True,
         )
-        setattr(self, gain_attr, next_gain)
-        applied_gain = max(0.0, min(1.0, next_gain))
-        return signal * applied_gain, (target_gain < 0.999 or applied_gain < 0.999)
+        trimmed = (signal * gain_curve).astype(self.dtype, copy=False)
+        active = bool(np.any(gain_curve < 0.999))
+        return trimmed, active
+
+    def _apply_soft_clip_safety(
+        self, signal: np.ndarray, threshold: float
+    ) -> tuple[np.ndarray, bool]:
+        if not signal.size or threshold <= 0.0:
+            return signal, False
+        thr = max(0.5, min(0.999, float(threshold)))
+        abs_signal = np.abs(signal)
+        over = abs_signal > thr
+        if not np.any(over):
+            return signal, False
+        # Keep clip behavior close to threshold while avoiding hard-corner distortion.
+        margin = max(0.004, min(0.03, 0.08 * (1.0 - thr)))
+        out_max = min(1.0, thr + margin)
+        knee = max(1e-4, margin * 0.85)
+        clipped_mag = abs_signal.copy()
+        x = abs_signal[over] - thr
+        clipped_mag[over] = thr + ((out_max - thr) * np.tanh(x / knee))
+        clipped = (np.sign(signal) * clipped_mag).astype(self.dtype, copy=False)
+        return clipped, True
 
     def _reset_dsp_state(self):
         self.mb_env_low = 0.0
@@ -1694,8 +2106,14 @@ class FMEngine:
         self.mb_sc_low = 1e-9
         self.mb_sc_mid = 1e-9
         self.mb_sc_high = 1e-9
+        self.mb_makeup_low = 1.0
+        self.mb_makeup_mid = 1.0
+        self.mb_makeup_high = 1.0
+        self.mb_makeup_global = 1.0
+        self.mb_user_makeup_gain = 1.0
         self.mb5_env = [0.0] * 5
         self.mb5_sc = [1e-9] * 5
+        self.mb5_makeup = [1.0] * 5
         self.agc_gain = 1.0
         self.agc_initialized = False
         self._init_orbass()
@@ -1705,14 +2123,9 @@ class FMEngine:
         self.widen_mid_gain = 1.0
         self.widen_mix = 1.0
         self.composite_limit_gain = 1.0
-        self.composite_clip_trim_gain = 1.0
         self.composite_safety_gain = 1.0
-        self.preemph_drive_gain = 1.0
         self._init_lookahead_state()
         self.audio_headroom_gain = 1.0
-        for name in ("_preemph_sum_pad", "_preemph_diff_pad", "_composite_pad"):
-            if hasattr(self, name):
-                delattr(self, name)
         zi_names = (
             "audio_lpf_zi_l",
             "audio_lpf_zi_r",
@@ -1755,6 +2168,10 @@ class FMEngine:
             "mon_lpf_zi",
             "mon_lpf_zi_diff",
             "mon_bpf_zi",
+            "mon_rf_pilot_zi",
+            "mon_rf_rds_zi",
+            "mon_pilot_notch_zi_l",
+            "mon_pilot_notch_zi_r",
             "de_zi_l",
             "de_zi_r",
             "preemph_hf_sc_zi_sum",
@@ -1768,9 +2185,7 @@ class FMEngine:
                 except Exception:
                     continue
 
-    def _apply_lookahead_limiter_named(
-        self, signal, threshold, state_prefix, sample_rate=None
-    ):
+    def _apply_lookahead_limiter_named(self, signal, threshold, state_prefix, sample_rate=None):
         if threshold <= 0:
             return signal, False
         if sample_rate is None:
@@ -1780,39 +2195,59 @@ class FMEngine:
         except (TypeError, ValueError):
             la_ms = 5.0
         la_ms = max(0.0, min(20.0, la_ms))
-        la_samples = max(1, int(float(sample_rate) * la_ms / 1000.0))
+        la_samples = max(0, int(round(float(sample_rate) * la_ms / 1000.0)))
         samples_attr = f"{state_prefix}_samples"
         buffer_attr = f"{state_prefix}_buffer"
         gain_attr = f"{state_prefix}_gain"
+        hold_attr = f"{state_prefix}_hold"
         current_samples = int(getattr(self, samples_attr, 0))
         buffer_state = getattr(self, buffer_attr, None)
-        if buffer_state is None or la_samples != current_samples:
-            seed = float(signal[0]) if signal.size else 0.0
+        if (
+            buffer_state is None
+            or la_samples != current_samples
+            or int(buffer_state.shape[0]) != la_samples
+        ):
+            if la_samples > 0:
+                seed = float(signal[0]) if signal.size else 0.0
+                seeded = np.full(la_samples, seed, dtype=self.dtype)
+            else:
+                seeded = np.zeros(0, dtype=self.dtype)
             setattr(self, samples_attr, la_samples)
-            setattr(self, buffer_attr, np.full(la_samples, seed, dtype=self.dtype))
+            setattr(self, buffer_attr, seeded)
             setattr(self, gain_attr, 1.0)
+            setattr(self, hold_attr, 0)
             buffer_state = getattr(self, buffer_attr)
-        combined = np.concatenate((buffer_state, signal))
+        signal_arr = np.asarray(signal, dtype=self.dtype)
+        combined = np.concatenate((buffer_state, signal_arr))
         delayed = combined[: signal.shape[0]]
-        # Compute gain from delayed+future content, then apply to delayed program.
-        window_peak = float(np.max(np.abs(combined))) if combined.size else 0.0
-        target_gain = min(1.0, threshold / window_peak) if window_peak > 1e-6 else 1.0
-        attack_ms = 2.0
-        release_ms = 60.0
-        frames = signal.shape[0]
-        gain_state = float(getattr(self, gain_attr, 1.0))
-        gain_state = self._smooth_gain(
-            gain_state,
-            target_gain,
-            frames,
-            attack_ms,
-            release_ms,
-            sample_rate=sample_rate,
+        peaks = self._forward_peak_curve(np.abs(combined), la_samples + 1, signal.shape[0])
+        target_curve = np.ones(signal.shape[0], dtype=self.dtype)
+        peak_mask = peaks > 1e-9
+        if np.any(peak_mask):
+            target_curve[peak_mask] = threshold / peaks[peak_mask]
+        target_curve = np.clip(target_curve, 0.0, 1.0)
+        release_ms, hold_ms = self._lookahead_timing(state_prefix)
+        gain_curve = self._follow_gain_curve(
+            target_curve,
+            gain_attr,
+            hold_attr,
+            sample_rate=float(sample_rate),
+            attack_ms=0.35,
+            release_ms=release_ms,
+            hold_ms=hold_ms,
+            min_gain=0.0,
+            max_gain=1.0,
+            program_dependent_release=True,
         )
-        setattr(self, gain_attr, gain_state)
-        limited = delayed * gain_state
-        setattr(self, buffer_attr, combined[frames : frames + la_samples].copy())
-        return limited.astype(self.dtype, copy=False), (target_gain < 0.999 or gain_state < 0.999)
+        limited = delayed * gain_curve
+        if la_samples > 0:
+            setattr(
+                self, buffer_attr, combined[signal.shape[0] : signal.shape[0] + la_samples].copy()
+            )
+        else:
+            setattr(self, buffer_attr, np.zeros(0, dtype=self.dtype))
+        active = bool(np.any(gain_curve < 0.999))
+        return limited.astype(self.dtype, copy=False), active
 
     def _apply_lookahead_limiter_pair(
         self, signal_a, signal_b, threshold, state_prefix, sample_rate=None
@@ -1826,10 +2261,11 @@ class FMEngine:
         except (TypeError, ValueError):
             la_ms = 5.0
         la_ms = max(0.0, min(20.0, la_ms))
-        la_samples = max(1, int(float(sample_rate) * la_ms / 1000.0))
+        la_samples = max(0, int(round(float(sample_rate) * la_ms / 1000.0)))
         samples_attr = f"{state_prefix}_samples"
         buffer_attr = f"{state_prefix}_buffer"
         gain_attr = f"{state_prefix}_gain"
+        hold_attr = f"{state_prefix}_hold"
         current_samples = int(getattr(self, samples_attr, 0))
         buffer_state = getattr(self, buffer_attr, None)
         if (
@@ -1837,39 +2273,57 @@ class FMEngine:
             or la_samples != current_samples
             or len(buffer_state.shape) != 2
             or buffer_state.shape[1] != 2
+            or buffer_state.shape[0] != la_samples
         ):
-            if signal_a.size:
-                seed_row = np.array([signal_a[0], signal_b[0]], dtype=self.dtype)
+            if la_samples > 0 and signal_a.size:
+                seed_row = np.asarray([signal_a[0], signal_b[0]], dtype=self.dtype)
+                seeded = np.tile(seed_row, (la_samples, 1))
+            elif la_samples > 0:
+                seeded = np.zeros((la_samples, 2), dtype=self.dtype)
             else:
-                seed_row = np.zeros(2, dtype=self.dtype)
+                seeded = np.zeros((0, 2), dtype=self.dtype)
             setattr(self, samples_attr, la_samples)
-            setattr(self, buffer_attr, np.tile(seed_row, (la_samples, 1)))
+            setattr(self, buffer_attr, seeded)
             setattr(self, gain_attr, 1.0)
+            setattr(self, hold_attr, 0)
             buffer_state = getattr(self, buffer_attr)
         block = np.column_stack((signal_a, signal_b)).astype(self.dtype, copy=False)
         combined = np.vstack((buffer_state, block))
         delayed_block = combined[: signal_a.shape[0], :]
-        window_peak = float(np.max(np.abs(combined))) if combined.size else 0.0
-        target_gain = min(1.0, threshold / window_peak) if window_peak > 1e-6 else 1.0
-        attack_ms = 2.0
-        release_ms = 60.0
-        frames = signal_a.shape[0]
-        gain_state = float(getattr(self, gain_attr, 1.0))
-        gain_state = self._smooth_gain(
-            gain_state,
-            target_gain,
-            frames,
-            attack_ms,
-            release_ms,
-            sample_rate=sample_rate,
-        )
-        setattr(self, gain_attr, gain_state)
-        limited_block = delayed_block * gain_state
-        setattr(self, buffer_attr, combined[frames : frames + la_samples].copy())
+        detector = np.max(np.abs(combined), axis=1)
+        peaks = self._forward_peak_curve(detector, la_samples + 1, signal_a.shape[0])
+        target_curve = np.ones(signal_a.shape[0], dtype=self.dtype)
+        peak_mask = peaks > 1e-9
+        if np.any(peak_mask):
+            target_curve[peak_mask] = threshold / peaks[peak_mask]
+        target_curve = np.clip(target_curve, 0.0, 1.0)
+        release_ms, hold_ms = self._lookahead_timing(state_prefix)
+        gain_curve = self._follow_gain_curve(
+            target_curve,
+            gain_attr,
+            hold_attr,
+            sample_rate=float(sample_rate),
+            attack_ms=0.35,
+            release_ms=release_ms,
+            hold_ms=hold_ms,
+            min_gain=0.0,
+            max_gain=1.0,
+            program_dependent_release=True,
+        ).reshape(-1, 1)
+        limited_block = delayed_block * gain_curve
+        if la_samples > 0:
+            setattr(
+                self,
+                buffer_attr,
+                combined[signal_a.shape[0] : signal_a.shape[0] + la_samples].copy(),
+            )
+        else:
+            setattr(self, buffer_attr, np.zeros((0, 2), dtype=self.dtype))
+        active = bool(np.any(gain_curve < 0.999))
         return (
             limited_block[:, 0].astype(self.dtype, copy=False),
             limited_block[:, 1].astype(self.dtype, copy=False),
-            (target_gain < 0.999 or gain_state < 0.999),
+            active,
         )
 
     def _process_frame(self, outdata, frames, indata):
@@ -1907,55 +2361,24 @@ class FMEngine:
             elif indata.shape[1] == 1:
                 indata_stereo = np.column_stack((indata[:, 0], indata[:, 0]))
 
-        if mpx_state.get("source_mode") == "input" and mpx_state.get("device_in_idx", -1) >= 0:
-            if indata_stereo is not None:
+        source_mode = str(mpx_state.get("source_mode", "tone"))
+        if source_mode == "input":
+            if mpx_state.get("device_in_idx", -1) < 0:
                 if self.audio_in:
                     self.audio_in.stop()
                     self.audio_in = None
-                stereo = np.array(indata_stereo, dtype=self.dtype, copy=True)
-                input_pre_rms = float(np.sqrt(np.mean(stereo**2))) if stereo.size else 0.0
-                input_pre_peak = float(np.max(np.abs(stereo))) if stereo.size else 0.0
-                if input_gain != 1.0:
-                    stereo = stereo * input_gain
-                if proc_rate != self.sample_rate:
-                    stereo = self._resample(stereo, up, down, proc_frames)
-                left = stereo[:, 0]
-                right = stereo[:, 1]
-                left, right = self._process_stereo_audio_domain(left, right, proc_frames, bypass)
-                if left.size and right.size:
-                    input_rms = float(
-                        np.sqrt((np.mean(left**2) + np.mean(right**2)) * 0.5)
-                    )
-                    input_peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
-                else:
-                    input_rms = 0.0
-                    input_peak = 0.0
+                left = self._get_zeros(proc_frames)
+                right = self._get_zeros(proc_frames)
                 scope_left = left
                 scope_right = right
-                baseband = (left + right) * 0.5 * sum_level
-                diff = (right - left) * 0.5 * diff_level
+                baseband = self._get_zeros(proc_frames)
+                diff = self._get_zeros(proc_frames)
             else:
-                if not self.audio_in or self.audio_in.device_idx != mpx_state.get("device_in_idx"):
+                if indata_stereo is not None:
                     if self.audio_in:
                         self.audio_in.stop()
-                    self.audio_in = AudioInputReader(
-                        mpx_state["device_in_idx"],
-                        self.sample_rate,
-                        self.dtype,
-                        blocksize=self.blocksize,
-                    )
-                    self.audio_in.start()
-                    if not self.logged_input_fallback:
-                        logger.warning(
-                            "StereoFool: duplex input unavailable, using separate input stream"
-                        )
-                        self.logged_input_fallback = True
-                prebuffer_frames = int(PREBUFFER_SECONDS * self.sample_rate)
-                if self.audio_in.buffered_frames() < prebuffer_frames:
-                    baseband = self._get_zeros(proc_frames)
-                    diff = self._get_zeros(proc_frames)
-                else:
-                    stereo = self.audio_in.read_frames_clock_adaptive(frames)
+                        self.audio_in = None
+                    stereo = np.array(indata_stereo, dtype=self.dtype, copy=True)
                     input_pre_rms = float(np.sqrt(np.mean(stereo**2))) if stereo.size else 0.0
                     input_pre_peak = float(np.max(np.abs(stereo))) if stereo.size else 0.0
                     if input_gain != 1.0:
@@ -1966,12 +2389,8 @@ class FMEngine:
                     right = stereo[:, 1]
                     left, right = self._process_stereo_audio_domain(left, right, proc_frames, bypass)
                     if left.size and right.size:
-                        input_rms = float(
-                            np.sqrt((np.mean(left**2) + np.mean(right**2)) * 0.5)
-                        )
-                        input_peak = max(
-                            float(np.max(np.abs(left))), float(np.max(np.abs(right)))
-                        )
+                        input_rms = float(np.sqrt((np.mean(left**2) + np.mean(right**2)) * 0.5))
+                        input_peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
                     else:
                         input_rms = 0.0
                         input_peak = 0.0
@@ -1979,6 +2398,49 @@ class FMEngine:
                     scope_right = right
                     baseband = (left + right) * 0.5 * sum_level
                     diff = (right - left) * 0.5 * diff_level
+                else:
+                    if not self.audio_in or self.audio_in.device_idx != mpx_state.get("device_in_idx"):
+                        if self.audio_in:
+                            self.audio_in.stop()
+                        self.audio_in = AudioInputReader(
+                            mpx_state["device_in_idx"],
+                            self.sample_rate,
+                            self.dtype,
+                            blocksize=self.blocksize,
+                        )
+                        self.audio_in.start()
+                        if not self.logged_input_fallback:
+                            logger.warning(
+                                "StereoFool: duplex input unavailable, using separate input stream"
+                            )
+                            self.logged_input_fallback = True
+                    prebuffer_frames = int(PREBUFFER_SECONDS * self.sample_rate)
+                    if self.audio_in.buffered_frames() < prebuffer_frames:
+                        baseband = self._get_zeros(proc_frames)
+                        diff = self._get_zeros(proc_frames)
+                    else:
+                        stereo = self.audio_in.read_frames_clock_adaptive(frames)
+                        input_pre_rms = float(np.sqrt(np.mean(stereo**2))) if stereo.size else 0.0
+                        input_pre_peak = float(np.max(np.abs(stereo))) if stereo.size else 0.0
+                        if input_gain != 1.0:
+                            stereo = stereo * input_gain
+                        if proc_rate != self.sample_rate:
+                            stereo = self._resample(stereo, up, down, proc_frames)
+                        left = stereo[:, 0]
+                        right = stereo[:, 1]
+                        left, right = self._process_stereo_audio_domain(
+                            left, right, proc_frames, bypass
+                        )
+                        if left.size and right.size:
+                            input_rms = float(np.sqrt((np.mean(left**2) + np.mean(right**2)) * 0.5))
+                            input_peak = max(float(np.max(np.abs(left))), float(np.max(np.abs(right))))
+                        else:
+                            input_rms = 0.0
+                            input_peak = 0.0
+                        scope_left = left
+                        scope_right = right
+                        baseband = (left + right) * 0.5 * sum_level
+                        diff = (right - left) * 0.5 * diff_level
 
         else:
             tone_t = self._get_time_base(proc_frames, proc_rate) + self.tone_phase
@@ -2022,55 +2484,11 @@ class FMEngine:
         limit_enabled = bool(mpx_state.get("limit_mpx")) and not bypass
         lookahead_enabled = bool(mpx_state.get("limit_lookahead_enabled", True))
         limit_threshold = float(mpx_state.get("limit_threshold", 0.98)) if limit_enabled else 1.0
-        audio_la_active = False
         self._refresh_preemphasis()
         if self.preemphasis_us:
             baseband, diff = self._apply_preemphasis(baseband, diff)
         if not bypass:
             baseband, diff = self._apply_preemphasis_hf_control(baseband, diff)
-        if limit_enabled and lookahead_enabled and limit_threshold > 0:
-            baseband, diff, audio_la_active = self._apply_lookahead_limiter_pair(
-                baseband,
-                diff,
-                limit_threshold,
-                "lookahead_audio_pair",
-                sample_rate=self.proc_rate,
-            )
-        preemph_limit_enabled = bool(mpx_state.get("preemphasis_limit_enabled")) and not bypass
-        preemph_limit_active = False
-        if preemph_limit_enabled:
-            threshold = float(mpx_state.get("preemphasis_limit_threshold", 0.95))
-            preemph_peak = 0.0
-            if baseband.size:
-                preemph_peak = max(preemph_peak, float(np.max(np.abs(baseband))))
-            if diff.size:
-                preemph_peak = max(preemph_peak, float(np.max(np.abs(diff))))
-            preemph_limit_active = preemph_peak > threshold
-            baseband, diff, preemph_pair_active = self._apply_lookahead_limiter_pair(
-                baseband,
-                diff,
-                threshold,
-                "lookahead_preemph_pair",
-                sample_rate=self.proc_rate,
-            )
-            if preemph_peak > threshold and not preemph_pair_active:
-                scale = threshold / max(preemph_peak, 1e-9)
-                baseband = baseband * scale
-                diff = diff * scale
-                preemph_pair_active = True
-            if preemph_pair_active:
-                preemph_limit_active = True
-        if preemph_limit_enabled and not bypass and self.preemphasis_us:
-            baseband, diff = self._apply_preemphasis_drive_guard(baseband, diff)
-        elif self.preemph_drive_gain < 0.999:
-            self.preemph_drive_gain = self._smooth_gain(
-                self.preemph_drive_gain,
-                1.0,
-                baseband.shape[0],
-                attack_ms=40.0,
-                release_ms=80.0,
-                sample_rate=self.proc_rate,
-            )
         if proc_rate != self.sample_rate:
             baseband = self._resample(baseband, down, up, frames)
             diff = self._resample(diff, down, up, frames)
@@ -2105,58 +2523,37 @@ class FMEngine:
         output_gain_db = float(mpx_state.get("output_gain_db", 0.0))
         output_gain_lin = 10 ** (output_gain_db / 20.0) if output_gain_db else 1.0
         threshold = limit_threshold if limit_enabled else 1.0
-        # Reserve headroom for post-MPX output gain to avoid hidden clipping when safety limiters are off.
-        threshold = threshold / max(output_gain_lin, 1e-6)
-        audio_gain = 1.0
-        headroom_needed = bool(limit_enabled or output_gain_lin > 1.0)
-        if threshold > 0 and not bypass and headroom_needed:
-            mpx_audio, audio_gain = self._apply_audio_headroom(mpx_audio, carriers, threshold)
+        if self.audio_headroom_gain < 0.999:
+            self.audio_headroom_gain = self._smooth_gain(
+                self.audio_headroom_gain,
+                1.0,
+                mpx_audio.shape[0],
+                attack_ms=40.0,
+                release_ms=120.0,
+                sample_rate=self.sample_rate,
+            )
 
         mpx = mpx_audio + carriers
+        lookahead_limit_active = False
         composite_limit_active = False
         if limit_enabled and threshold > 0:
             if lookahead_enabled:
-                mpx, composite_limit_active = self._apply_lookahead_limiter_named(
+                mpx, lookahead_limit_active = self._apply_lookahead_limiter_named(
                     mpx,
                     threshold,
                     "lookahead_mpx",
                     sample_rate=self.sample_rate,
                 )
-            else:
-                mpx, composite_limit_active = self._apply_smoothed_peak_trim(
-                    mpx,
-                    threshold,
-                    "composite_limit_gain",
-                    attack_ms=1.5,
-                    release_ms=70.0,
-                )
-
-        composite_clip_enabled = bool(mpx_state.get("composite_clip_enabled")) and not bypass
-        composite_clip_active = False
-        if composite_clip_enabled:
-            comp_threshold = float(mpx_state.get("composite_clip_threshold", 0.98))
-            mpx, clip_trim_active = self._apply_lookahead_limiter_named(
+            # Soft clipper is a separate block and always runs when limiter path is enabled.
+            mpx, composite_limit_active = self._apply_soft_clip_safety(
                 mpx,
-                comp_threshold,
-                "lookahead_composite",
-                sample_rate=self.sample_rate,
+                threshold,
             )
-            pre_clip_peak = float(np.max(np.abs(mpx))) if mpx.size else 0.0
-            if pre_clip_peak > comp_threshold:
-                composite_clip_active = True
-                mpx = mpx * (comp_threshold / max(pre_clip_peak, 1e-9))
-                if pre_clip_peak > (comp_threshold * 1.25):
-                    mpx = self._apply_composite_clipper(mpx, comp_threshold)
-                    clipped_peak = float(np.max(np.abs(mpx))) if mpx.size else 0.0
-                    if clipped_peak > comp_threshold + 1e-4:
-                        mpx = mpx * (comp_threshold / max(clipped_peak, 1e-9))
-            elif clip_trim_active:
-                composite_clip_active = True
 
         # Absolute deviation guard:
         # - If user-enabled protection is active, use smooth safety trim as last resort.
         # - Otherwise, avoid hidden gain riding and only hard-clip any out-of-range samples.
-        has_dynamic_protection = bool(limit_enabled or preemph_limit_enabled or composite_clip_enabled)
+        has_dynamic_protection = bool(limit_enabled)
         if has_dynamic_protection:
             mpx, _ = self._apply_smoothed_peak_trim(
                 mpx,
@@ -2176,9 +2573,7 @@ class FMEngine:
         limiter_active = bool(
             limit_enabled
             and (
-                audio_la_active
-                or preemph_limit_active
-                or audio_gain < 0.999
+                lookahead_limit_active
                 or composite_limit_active
             )
         )
@@ -2187,6 +2582,8 @@ class FMEngine:
         mpx_pre_gain = mpx
         if output_gain_db:
             mpx = mpx * output_gain_lin
+        if mpx.size:
+            mpx = np.clip(mpx, -1.0, 1.0).astype(self.dtype, copy=False)
         if self.capture_callback:
             try:
                 # Capture pre-output gain for accurate calibration.
@@ -2212,13 +2609,10 @@ class FMEngine:
                     "mpx_rms": mpx_rms,
                     "mpx_peak": mpx_peak,
                     "limiter_active": limiter_active,
-                    "preemph_limit_enabled": preemph_limit_enabled,
-                    "preemph_limit_active": preemph_limit_active,
-                    "composite_clip_enabled": composite_clip_enabled,
-                    "composite_clip_active": composite_clip_active,
                     "scope_left": scope_left,
                     "scope_right": scope_right,
                     "mpx_pre_gain": mpx_pre_gain,
+                    "mpx_post_gain": mpx,
                     "proc_frames": proc_frames,
                 }
             )

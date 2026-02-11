@@ -39,10 +39,6 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         socket.emit('update', { mpx_deviation_khz: val });
         updateDeviationLabels();
     }
-    function updateOutputGain(val) {
-        document.getElementById('mpx_output_gain_val').textContent = parseFloat(val).toFixed(1);
-        socket.emit('update', { output_gain_db: val });
-    }
     function updateWavRecordEnabled(enabled) {
         socket.emit('update', { wav_record_enabled: enabled });
     }
@@ -122,6 +118,10 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         document.getElementById('mpx_mb_link_val').textContent = parseFloat(val).toFixed(2);
         socket.emit('update', { multiband_link_strength: parseFloat(val) });
     }
+    function updateMultibandMakeup(val) {
+        document.getElementById('mpx_mb_makeup_val').textContent = parseFloat(val).toFixed(1);
+        socket.emit('update', { multiband_makeup_db: parseFloat(val) });
+    }
     function updateMultibandReleaseProgramDependent(val) {
         socket.emit('update', { multiband_release_program_dependent: val });
     }
@@ -138,13 +138,73 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         document.getElementById('mpx_orbass_harmonics_val').textContent = parseFloat(val).toFixed(2);
         socket.emit('update', { orbass_harmonics: parseFloat(val) });
     }
+    function updateOrbassDrive(val) {
+        document.getElementById('mpx_orbass_drive_val').textContent = parseFloat(val).toFixed(2);
+        socket.emit('update', { orbass_drive: parseFloat(val) });
+    }
+    function updateOrbassDensity(val) {
+        document.getElementById('mpx_orbass_density_val').textContent = parseFloat(val).toFixed(2);
+        socket.emit('update', { orbass_density: parseFloat(val) });
+    }
+    function updateOrbassSubharmonicsEnabled(val) {
+        socket.emit('update', { orbass_subharmonics_enabled: val });
+    }
+    function updateOrbassSubharmonicsAmount(val) {
+        document.getElementById('mpx_orbass_subharmonics_amount_val').textContent = parseFloat(val).toFixed(2);
+        socket.emit('update', { orbass_subharmonics_amount: parseFloat(val) });
+    }
     function applyOrbassPreset(name) {
         const presets = {
-            disco: { orbass_enabled: true, orbass_amount: 0.65, orbass_freq_hz: 78, orbass_harmonics: 0.62 },
-            acoustic: { orbass_enabled: true, orbass_amount: 0.24, orbass_freq_hz: 105, orbass_harmonics: 0.18 },
-            urban: { orbass_enabled: true, orbass_amount: 0.72, orbass_freq_hz: 70, orbass_harmonics: 0.74 },
-            rock: { orbass_enabled: true, orbass_amount: 0.52, orbass_freq_hz: 88, orbass_harmonics: 0.38 },
-            talk: { orbass_enabled: true, orbass_amount: 0.18, orbass_freq_hz: 120, orbass_harmonics: 0.10 },
+            chr: {
+                orbass_enabled: true,
+                orbass_amount: 0.76,
+                orbass_freq_hz: 70,
+                orbass_harmonics: 0.78,
+                orbass_drive: 1.45,
+                orbass_density: 0.86,
+                orbass_subharmonics_enabled: true,
+                orbass_subharmonics_amount: 0.55,
+            },
+            urban: {
+                orbass_enabled: true,
+                orbass_amount: 0.72,
+                orbass_freq_hz: 68,
+                orbass_harmonics: 0.74,
+                orbass_drive: 1.35,
+                orbass_density: 0.82,
+                orbass_subharmonics_enabled: true,
+                orbass_subharmonics_amount: 0.52,
+            },
+            rock: {
+                orbass_enabled: true,
+                orbass_amount: 0.58,
+                orbass_freq_hz: 84,
+                orbass_harmonics: 0.44,
+                orbass_drive: 1.18,
+                orbass_density: 0.72,
+                orbass_subharmonics_enabled: true,
+                orbass_subharmonics_amount: 0.34,
+            },
+            ac: {
+                orbass_enabled: true,
+                orbass_amount: 0.42,
+                orbass_freq_hz: 94,
+                orbass_harmonics: 0.30,
+                orbass_drive: 1.00,
+                orbass_density: 0.66,
+                orbass_subharmonics_enabled: false,
+                orbass_subharmonics_amount: 0.20,
+            },
+            talk: {
+                orbass_enabled: true,
+                orbass_amount: 0.22,
+                orbass_freq_hz: 118,
+                orbass_harmonics: 0.16,
+                orbass_drive: 0.72,
+                orbass_density: 0.55,
+                orbass_subharmonics_enabled: false,
+                orbass_subharmonics_amount: 0.10,
+            },
         };
         const p = presets[name];
         if (!p) return;
@@ -152,16 +212,30 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         const amountEl = document.getElementById('mpx_orbass_amount');
         const freqEl = document.getElementById('mpx_orbass_freq_hz');
         const harmEl = document.getElementById('mpx_orbass_harmonics');
+        const driveEl = document.getElementById('mpx_orbass_drive');
+        const densityEl = document.getElementById('mpx_orbass_density');
+        const subEnableEl = document.getElementById('mpx_orbass_subharmonics_enabled');
+        const subAmountEl = document.getElementById('mpx_orbass_subharmonics_amount');
         const amountValEl = document.getElementById('mpx_orbass_amount_val');
         const freqValEl = document.getElementById('mpx_orbass_freq_val');
         const harmValEl = document.getElementById('mpx_orbass_harmonics_val');
+        const driveValEl = document.getElementById('mpx_orbass_drive_val');
+        const densityValEl = document.getElementById('mpx_orbass_density_val');
+        const subAmountValEl = document.getElementById('mpx_orbass_subharmonics_amount_val');
         if (enEl) enEl.checked = Boolean(p.orbass_enabled);
         if (amountEl) amountEl.value = String(p.orbass_amount);
         if (freqEl) freqEl.value = String(p.orbass_freq_hz);
         if (harmEl) harmEl.value = String(p.orbass_harmonics);
+        if (driveEl) driveEl.value = String(p.orbass_drive);
+        if (densityEl) densityEl.value = String(p.orbass_density);
+        if (subEnableEl) subEnableEl.checked = Boolean(p.orbass_subharmonics_enabled);
+        if (subAmountEl) subAmountEl.value = String(p.orbass_subharmonics_amount);
         if (amountValEl) amountValEl.textContent = Number(p.orbass_amount).toFixed(2);
         if (freqValEl) freqValEl.textContent = `${Math.round(Number(p.orbass_freq_hz))}`;
         if (harmValEl) harmValEl.textContent = Number(p.orbass_harmonics).toFixed(2);
+        if (driveValEl) driveValEl.textContent = Number(p.orbass_drive).toFixed(2);
+        if (densityValEl) densityValEl.textContent = Number(p.orbass_density).toFixed(2);
+        if (subAmountValEl) subAmountValEl.textContent = Number(p.orbass_subharmonics_amount).toFixed(2);
         socket.emit('update', p);
     }
     function applyMultibandPreset(name) {
@@ -268,6 +342,96 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
                 multiband_high_attack_ms: 18,
                 multiband_high_release_ms: 270,
             },
+            '3_urban': {
+                multiband_enabled: true,
+                multiband_mode: 3,
+                multiband_low_hz: 250,
+                multiband_high_hz: 2200,
+                multiband_low_threshold_db: -24,
+                multiband_low_ratio: 2.7,
+                multiband_low_attack_ms: 16,
+                multiband_low_release_ms: 280,
+                multiband_mid_threshold_db: -22,
+                multiband_mid_ratio: 2.4,
+                multiband_mid_attack_ms: 11,
+                multiband_mid_release_ms: 210,
+                multiband_high_threshold_db: -20,
+                multiband_high_ratio: 1.9,
+                multiband_high_attack_ms: 6,
+                multiband_high_release_ms: 145,
+            },
+            '3_dance': {
+                multiband_enabled: true,
+                multiband_mode: 3,
+                multiband_low_hz: 240,
+                multiband_high_hz: 2100,
+                multiband_low_threshold_db: -26,
+                multiband_low_ratio: 2.9,
+                multiband_low_attack_ms: 14,
+                multiband_low_release_ms: 260,
+                multiband_mid_threshold_db: -24,
+                multiband_mid_ratio: 2.6,
+                multiband_mid_attack_ms: 10,
+                multiband_mid_release_ms: 200,
+                multiband_high_threshold_db: -22,
+                multiband_high_ratio: 2.0,
+                multiband_high_attack_ms: 5,
+                multiband_high_release_ms: 135,
+            },
+            '3_news': {
+                multiband_enabled: true,
+                multiband_mode: 3,
+                multiband_low_hz: 360,
+                multiband_high_hz: 3200,
+                multiband_low_threshold_db: -15,
+                multiband_low_ratio: 1.4,
+                multiband_low_attack_ms: 38,
+                multiband_low_release_ms: 480,
+                multiband_mid_threshold_db: -14,
+                multiband_mid_ratio: 1.35,
+                multiband_mid_attack_ms: 30,
+                multiband_mid_release_ms: 390,
+                multiband_high_threshold_db: -13,
+                multiband_high_ratio: 1.25,
+                multiband_high_attack_ms: 22,
+                multiband_high_release_ms: 320,
+            },
+            '3_jazz': {
+                multiband_enabled: true,
+                multiband_mode: 3,
+                multiband_low_hz: 330,
+                multiband_high_hz: 2800,
+                multiband_low_threshold_db: -18,
+                multiband_low_ratio: 1.7,
+                multiband_low_attack_ms: 30,
+                multiband_low_release_ms: 420,
+                multiband_mid_threshold_db: -17,
+                multiband_mid_ratio: 1.55,
+                multiband_mid_attack_ms: 24,
+                multiband_mid_release_ms: 330,
+                multiband_high_threshold_db: -16,
+                multiband_high_ratio: 1.35,
+                multiband_high_attack_ms: 16,
+                multiband_high_release_ms: 250,
+            },
+            '3_classic': {
+                multiband_enabled: true,
+                multiband_mode: 3,
+                multiband_low_hz: 360,
+                multiband_high_hz: 3400,
+                multiband_low_threshold_db: -14,
+                multiband_low_ratio: 1.35,
+                multiband_low_attack_ms: 42,
+                multiband_low_release_ms: 520,
+                multiband_mid_threshold_db: -13,
+                multiband_mid_ratio: 1.3,
+                multiband_mid_attack_ms: 36,
+                multiband_mid_release_ms: 430,
+                multiband_high_threshold_db: -12,
+                multiband_high_ratio: 1.2,
+                multiband_high_attack_ms: 26,
+                multiband_high_release_ms: 340,
+            },
             '5_chr': {
                 multiband_enabled: true,
                 multiband_mode: 5,
@@ -368,6 +532,106 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
                 multiband_high_attack_ms: 22,
                 multiband_high_release_ms: 300,
             },
+            '5_urban': {
+                multiband_enabled: true,
+                multiband_mode: 5,
+                multiband_x1_hz: 75,
+                multiband_x2_hz: 280,
+                multiband_x3_hz: 1100,
+                multiband_x4_hz: 4700,
+                multiband_low_threshold_db: -24,
+                multiband_low_ratio: 2.7,
+                multiband_low_attack_ms: 14,
+                multiband_low_release_ms: 270,
+                multiband_mid_threshold_db: -22,
+                multiband_mid_ratio: 2.3,
+                multiband_mid_attack_ms: 10,
+                multiband_mid_release_ms: 205,
+                multiband_high_threshold_db: -20,
+                multiband_high_ratio: 1.9,
+                multiband_high_attack_ms: 5,
+                multiband_high_release_ms: 140,
+            },
+            '5_dance': {
+                multiband_enabled: true,
+                multiband_mode: 5,
+                multiband_x1_hz: 70,
+                multiband_x2_hz: 260,
+                multiband_x3_hz: 1000,
+                multiband_x4_hz: 4300,
+                multiband_low_threshold_db: -26,
+                multiband_low_ratio: 3.0,
+                multiband_low_attack_ms: 12,
+                multiband_low_release_ms: 250,
+                multiband_mid_threshold_db: -24,
+                multiband_mid_ratio: 2.6,
+                multiband_mid_attack_ms: 9,
+                multiband_mid_release_ms: 190,
+                multiband_high_threshold_db: -22,
+                multiband_high_ratio: 2.1,
+                multiband_high_attack_ms: 4,
+                multiband_high_release_ms: 130,
+            },
+            '5_news': {
+                multiband_enabled: true,
+                multiband_mode: 5,
+                multiband_x1_hz: 110,
+                multiband_x2_hz: 450,
+                multiband_x3_hz: 2100,
+                multiband_x4_hz: 7600,
+                multiband_low_threshold_db: -15,
+                multiband_low_ratio: 1.4,
+                multiband_low_attack_ms: 40,
+                multiband_low_release_ms: 500,
+                multiband_mid_threshold_db: -14,
+                multiband_mid_ratio: 1.35,
+                multiband_mid_attack_ms: 34,
+                multiband_mid_release_ms: 400,
+                multiband_high_threshold_db: -13,
+                multiband_high_ratio: 1.25,
+                multiband_high_attack_ms: 24,
+                multiband_high_release_ms: 320,
+            },
+            '5_jazz': {
+                multiband_enabled: true,
+                multiband_mode: 5,
+                multiband_x1_hz: 95,
+                multiband_x2_hz: 360,
+                multiband_x3_hz: 1600,
+                multiband_x4_hz: 6200,
+                multiband_low_threshold_db: -18,
+                multiband_low_ratio: 1.65,
+                multiband_low_attack_ms: 32,
+                multiband_low_release_ms: 430,
+                multiband_mid_threshold_db: -17,
+                multiband_mid_ratio: 1.5,
+                multiband_mid_attack_ms: 26,
+                multiband_mid_release_ms: 340,
+                multiband_high_threshold_db: -16,
+                multiband_high_ratio: 1.35,
+                multiband_high_attack_ms: 17,
+                multiband_high_release_ms: 260,
+            },
+            '5_oldies': {
+                multiband_enabled: true,
+                multiband_mode: 5,
+                multiband_x1_hz: 90,
+                multiband_x2_hz: 340,
+                multiband_x3_hz: 1450,
+                multiband_x4_hz: 5600,
+                multiband_low_threshold_db: -20,
+                multiband_low_ratio: 1.8,
+                multiband_low_attack_ms: 26,
+                multiband_low_release_ms: 360,
+                multiband_mid_threshold_db: -18,
+                multiband_mid_ratio: 1.7,
+                multiband_mid_attack_ms: 18,
+                multiband_mid_release_ms: 280,
+                multiband_high_threshold_db: -17,
+                multiband_high_ratio: 1.45,
+                multiband_high_attack_ms: 11,
+                multiband_high_release_ms: 210,
+            },
         };
         const base = presets[name];
         if (!base) return;
@@ -377,11 +641,21 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
             '3_ac': { multiband_knee_db: 2.8, multiband_link_strength: 0.44, multiband_release_program_dependent: true },
             '3_country': { multiband_knee_db: 2.6, multiband_link_strength: 0.42, multiband_release_program_dependent: true },
             '3_talk': { multiband_knee_db: 3.8, multiband_link_strength: 0.58, multiband_release_program_dependent: true },
+            '3_urban': { multiband_knee_db: 2.1, multiband_link_strength: 0.38, multiband_release_program_dependent: true },
+            '3_dance': { multiband_knee_db: 1.9, multiband_link_strength: 0.34, multiband_release_program_dependent: true },
+            '3_news': { multiband_knee_db: 4.0, multiband_link_strength: 0.62, multiband_release_program_dependent: true },
+            '3_jazz': { multiband_knee_db: 3.2, multiband_link_strength: 0.52, multiband_release_program_dependent: true },
+            '3_classic': { multiband_knee_db: 4.6, multiband_link_strength: 0.66, multiband_release_program_dependent: true },
             '5_chr': { multiband_knee_db: 1.8, multiband_link_strength: 0.34, multiband_release_program_dependent: true },
             '5_rock': { multiband_knee_db: 2.1, multiband_link_strength: 0.38, multiband_release_program_dependent: true },
             '5_ac': { multiband_knee_db: 2.8, multiband_link_strength: 0.44, multiband_release_program_dependent: true },
             '5_classic': { multiband_knee_db: 4.5, multiband_link_strength: 0.60, multiband_release_program_dependent: true },
             '5_talk': { multiband_knee_db: 4.2, multiband_link_strength: 0.62, multiband_release_program_dependent: true },
+            '5_urban': { multiband_knee_db: 1.9, multiband_link_strength: 0.36, multiband_release_program_dependent: true },
+            '5_dance': { multiband_knee_db: 1.7, multiband_link_strength: 0.32, multiband_release_program_dependent: true },
+            '5_news': { multiband_knee_db: 4.3, multiband_link_strength: 0.64, multiband_release_program_dependent: true },
+            '5_jazz': { multiband_knee_db: 3.4, multiband_link_strength: 0.54, multiband_release_program_dependent: true },
+            '5_oldies': { multiband_knee_db: 3.0, multiband_link_strength: 0.48, multiband_release_program_dependent: true },
         };
         const advanced = advancedProfiles[name] || {};
         const curve = getPresetIntensityCurve();
@@ -434,11 +708,18 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         setValue('mpx_mb_high_release_ms', p.multiband_high_release_ms);
         setValue('mpx_mb_knee_db', Number(p.multiband_knee_db).toFixed(1));
         setValue('mpx_mb_link_strength', Number(p.multiband_link_strength).toFixed(2));
+        if (Object.prototype.hasOwnProperty.call(p, 'multiband_makeup_db')) {
+            setValue('mpx_mb_makeup_db', Number(p.multiband_makeup_db).toFixed(1));
+        }
         setChecked('mpx_mb_release_pd', p.multiband_release_program_dependent);
         const kneeValEl = document.getElementById('mpx_mb_knee_val');
         const linkValEl = document.getElementById('mpx_mb_link_val');
+        const makeupValEl = document.getElementById('mpx_mb_makeup_val');
         if (kneeValEl) kneeValEl.textContent = Number(p.multiband_knee_db).toFixed(1);
         if (linkValEl) linkValEl.textContent = Number(p.multiband_link_strength).toFixed(2);
+        if (makeupValEl && Object.prototype.hasOwnProperty.call(p, 'multiband_makeup_db')) {
+            makeupValEl.textContent = Number(p.multiband_makeup_db).toFixed(1);
+        }
         socket.emit('update', p);
     }
     let widenUpdateTimer = null;
@@ -467,16 +748,6 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
     function updateWidenMix(val) {
         document.getElementById('mpx_widen_mix_val').textContent = parseFloat(val).toFixed(2);
         queueWidenUpdate('stereo_widen_mix', parseFloat(val));
-    }
-    function updatePreemphasisLimiter(val) { socket.emit('update', { preemphasis_limit_enabled: val }); }
-    function updatePreemphasisThreshold(val) {
-        document.getElementById('mpx_preemph_val').textContent = parseFloat(val).toFixed(2);
-        socket.emit('update', { preemphasis_limit_threshold: val });
-    }
-    function updateCompositeClipper(val) { socket.emit('update', { composite_clip_enabled: val }); }
-    function updateCompositeThreshold(val) {
-        document.getElementById('mpx_comp_val').textContent = parseFloat(val).toFixed(2);
-        socket.emit('update', { composite_clip_threshold: val });
     }
     function updateInputGain(val) {
         document.getElementById('mpx_input_gain_val').textContent = parseFloat(val).toFixed(1);
@@ -587,6 +858,8 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
     let lastMeterAnimMs = 0;
     const meterTauRise = 0.018;
     const meterTauFall = 0.11;
+    const levelMeterFloorDb = -36.0;
+    const levelMeterCurve = 0.88;
 
     function clamp01(value) {
         return Math.min(1.0, Math.max(0.0, Number(value) || 0));
@@ -595,6 +868,19 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
     function dbFallFactor(dtMs) {
         const dtSec = Math.max(0, dtMs) / 1000.0;
         return Math.pow(10, -(peakFallDbPerSec * dtSec) / 20.0);
+    }
+
+    function levelMeterScale(value) {
+        const linear = Math.max(1e-9, Number(value) || 0);
+        const db = 20.0 * Math.log10(linear);
+        const norm = clamp01((db - levelMeterFloorDb) / (0.0 - levelMeterFloorDb));
+        return Math.pow(norm, levelMeterCurve);
+    }
+
+    function modulationMeterScale(devKhz, targetKhz) {
+        const dev = Math.max(0.0, Number(devKhz) || 0);
+        const target = Math.max(1.0, Number(targetKhz) || 75.0);
+        return clamp01(dev / target);
     }
 
     function clearHeldState() {
@@ -810,11 +1096,10 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         const devEl = document.getElementById('mpx_deviation_khz');
         const maxDev = devEl ? parseFloat(devEl.value || '75') : 75.0;
         const modDev = mpxPkLive * maxDev;
-        const modPct = Math.min(1.0, Math.max(0.0, modDev / 100.0));
-        const meterScale = (v) => Math.min(1.0, Math.max(0.0, Math.pow(v, 0.5)));
-        const meterInputL = meterScale(inputLevelL);
-        const meterInputR = meterScale(inputLevelR);
-        const meterMpx = meterScale(mpxLevel);
+        const modPct = modulationMeterScale(modDev, maxDev);
+        const meterInputL = levelMeterScale(inputLevelL);
+        const meterInputR = levelMeterScale(inputLevelR);
+        const meterMpx = levelMeterScale(mpxLevel);
         const meterMod = modPct;
         setMeterTarget('mpx_input_meter_l', meterInputL);
         setMeterTarget('mpx_input_meter_r', meterInputR);
@@ -843,6 +1128,7 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
                 modKHz.classList.remove('text-gray-400');
             } else {
                 modKHz.classList.remove('text-red-400');
+                modKHz.classList.add('text-gray-400');
             }
         }
 
@@ -884,12 +1170,6 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
         }
         if (typeof data.stereo_widen_enabled !== 'undefined') {
             setText('live_widener', onOffText(data.stereo_widen_enabled));
-        }
-        if (typeof data.preemph_limit_enabled !== 'undefined') {
-            setText('live_preemph_limit', onOffText(data.preemph_limit_enabled));
-        }
-        if (typeof data.composite_clip_enabled !== 'undefined') {
-            setText('live_composite_clip', onOffText(data.composite_clip_enabled));
         }
         if (Array.isArray(data.input_wave)) {
             drawScope('scope_input', data.input_wave);

@@ -90,8 +90,6 @@ PROCESSING_RESET_KEYS = {
     "multiband_x3_hz",
     "multiband_x4_hz",
     "stereo_widen_enabled",
-    "preemphasis_limit_enabled",
-    "composite_clip_enabled",
     "limit_mpx",
     "limit_lookahead_enabled",
     "processing_bypass",
@@ -731,10 +729,6 @@ def _apply_audio_telemetry(payload: Mapping[str, Any]) -> None:
         "limiter_active",
         "multiband_enabled",
         "multiband_active",
-        "preemph_limit_enabled",
-        "preemph_limit_active",
-        "composite_clip_enabled",
-        "composite_clip_active",
     )
     with monitor_lock:
         for key in monitor_keys:
@@ -819,10 +813,6 @@ def compose_monitor_payload(
             "multiband_active": meter_state["multiband_active"],
             "orbass_enabled": bool(mpx_state.get("orbass_enabled")),
             "stereo_widen_enabled": bool(mpx_state.get("stereo_widen_enabled")),
-            "preemph_limit_enabled": meter_state["preemph_limit_enabled"],
-            "preemph_limit_active": meter_state["preemph_limit_active"],
-            "composite_clip_enabled": meter_state["composite_clip_enabled"],
-            "composite_clip_active": meter_state["composite_clip_active"],
         }
     payload["input_wave"] = list(input_wave)
     payload["mpx_wave"] = list(mpx_wave)
@@ -1092,13 +1082,25 @@ def handle_update(data):
             restart_hits = sorted(set(changes).intersection(RESTART_KEYS))
             rds_updates = {k: v for k, v in changes.items() if k in rds_state}
             mpx_updates = {k: v for k, v in changes.items() if k in mpx_state}
-            orbass_keys = {"orbass_enabled", "orbass_amount", "orbass_freq_hz", "orbass_harmonics"}
+            orbass_keys = {
+                "orbass_enabled",
+                "orbass_amount",
+                "orbass_freq_hz",
+                "orbass_harmonics",
+                "orbass_drive",
+                "orbass_density",
+                "orbass_subharmonics_enabled",
+                "orbass_subharmonics_amount",
+            }
             orbass_changed = sorted(set(mpx_updates).intersection(orbass_keys))
             orbass_profile_jump = False
             if orbass_changed:
                 amount_jump = False
                 freq_jump = False
                 harm_jump = False
+                drive_jump = False
+                density_jump = False
+                sub_amount_jump = False
                 try:
                     if "orbass_amount" in mpx_updates:
                         amount_jump = (
@@ -1118,14 +1120,39 @@ def handle_update(data):
                             )
                             >= 0.12
                         )
+                    if "orbass_drive" in mpx_updates:
+                        drive_jump = (
+                            abs(float(mpx_updates["orbass_drive"]) - float(prev_mpx_state["orbass_drive"]))
+                            >= 0.18
+                        )
+                    if "orbass_density" in mpx_updates:
+                        density_jump = (
+                            abs(
+                                float(mpx_updates["orbass_density"])
+                                - float(prev_mpx_state["orbass_density"])
+                            )
+                            >= 0.12
+                        )
+                    if "orbass_subharmonics_amount" in mpx_updates:
+                        sub_amount_jump = (
+                            abs(
+                                float(mpx_updates["orbass_subharmonics_amount"])
+                                - float(prev_mpx_state["orbass_subharmonics_amount"])
+                            )
+                            >= 0.12
+                        )
                 except Exception:
                     pass
                 orbass_profile_jump = (
                     len(orbass_changed) >= 3
                     or ("orbass_enabled" in orbass_changed and len(orbass_changed) >= 2)
+                    or ("orbass_subharmonics_enabled" in orbass_changed and len(orbass_changed) >= 2)
                     or amount_jump
                     or freq_jump
                     or harm_jump
+                    or drive_jump
+                    or density_jump
+                    or sub_amount_jump
                 )
             if rds_updates or mpx_updates:
                 _send_audio_command(

@@ -40,8 +40,6 @@ def _set_calibration_defaults(config, enable_rds, processing_rate_hz):
     mpx["processing_rate_hz"] = str(processing_rate_hz)
     mpx["agc_enabled"] = "False"
     mpx["multiband_enabled"] = "False"
-    mpx["preemphasis_limit_enabled"] = "False"
-    mpx["composite_clip_enabled"] = "False"
     mpx["limit_mpx"] = "False"
     mpx["limit_lookahead_enabled"] = "False"
     mpx["output_gain_db"] = "0.0"

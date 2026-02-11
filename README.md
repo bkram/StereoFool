@@ -41,8 +41,8 @@ The UI uses a single, unified navigation structure with sections aligned to a br
 - Orbass low enhancer (with profile presets)
 - Multiband compressor (3-band or 5-band) with configurable knee, link, and program-dependent release
 - Optional stereo widener (width/center/mix)
-- Pre-emphasis (50/75 us), optional pre-emphasis HF control, optional pre-emphasis limiter
-- Optional lookahead limiting and composite clipping for MPX protection
+- Pre-emphasis (50/75 us) with optional pre-emphasis HF control
+- Optional lookahead limiting for MPX protection
 - MPX cleanup controls: audio-MPX LPF, MPX DC block, optional notch
 - Web UI (Flask + Socket.IO) for live control, scopes, and monitoring
 - Monitor meter sticky-peak mode (hold/fall/reset in UI)

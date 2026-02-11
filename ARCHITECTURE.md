@@ -29,7 +29,7 @@ Audio input (L/R) @ interface rate (typically 192 kHz output, optional 48 kHz pr
 │
 ├──► Pre-emphasis stage (region specific)
 │    ├── Pre-emphasis 50 µs / 75 µs
-│    └── Pre-emphasis limiter/clipper (OVERSAMPLED)  ← controls HF overshoot
+│    └── Optional pre-emphasis HF control
 │
 ├──► Stereo encoder (phase-coherent)
 │    ├── M = (L+R)/2  → steep LPF ~15.0–15.2 kHz (linear-phase FIR, not “true brickwall”)
@@ -84,10 +84,10 @@ Audio input (L/R) @ interface rate (typically 192 kHz output, optional 48 kHz pr
 - Input gain, low-cut, HF trim, and 15 kHz low-pass + 19 kHz notch on baseband audio.
 - Multiband compression (SimpleMultiBandComp split + JUCE-style compressor).
 - Optional stereo widener (Airwindows Wider).
-- Pre-emphasis + oversampled pre-emphasis limiter.
+- Pre-emphasis + optional HF control.
 - Stereo sum/diff + 38 kHz DSB-SC subcarrier generation.
 - Pilot and RDS subcarrier injection (RDS uses EN 50067 biphase shaping + Gaussian filter).
-- Optional composite clipper and lookahead limiter (2x oversampling).
+- Optional lookahead MPX limiter.
 - MPX DC block and optional notch.
 - Output gain before the soundcard.
 

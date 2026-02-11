@@ -24,8 +24,6 @@ from analyze_mpx import _bandpass_stats, _dbfs, _plot_spectrum, analyze_array
 TOGGLES = [
     "agc_enabled",
     "multiband_enabled",
-    "preemphasis_limit_enabled",
-    "composite_clip_enabled",
     "limit_mpx",
     "limit_lookahead_enabled",
     "mpx_lpf_enabled",
@@ -46,6 +44,7 @@ RDS_FREQ_HZ = 57000.0
 RDS_FREQ_TOL_HZ = 6.0
 PILOT_RMS_MIN = PILOT_MIN / math.sqrt(2.0)
 PILOT_RMS_MAX = PILOT_MAX / math.sqrt(2.0)
+TONE_STABILITY_MAX_CV = 0.03
 
 
 def _reset_state(base_mpx, base_rds):
@@ -205,6 +204,40 @@ def _guard_band_report(data, sample_rate, composite_rms):
     return report
 
 
+def _tone_band_stability(sample_rate, data, tone_mode):
+    if data.size == 0:
+        return 0.0, 0.0
+    if tone_mode == "mono":
+        f_lo, f_hi = 700.0, 1300.0
+    else:
+        f_lo, f_hi = 36000.0, 40000.0
+    nyq = sample_rate * 0.5
+    f_hi = min(f_hi, nyq - 200.0)
+    f_lo = max(20.0, min(f_lo, f_hi - 100.0))
+    sos = dsp_signal.butter(4, [f_lo, f_hi], btype="bandpass", fs=sample_rate, output="sos")
+    filtered = dsp_signal.sosfilt(sos, data)
+    trim = int(sample_rate * 0.05)
+    if filtered.size > trim:
+        filtered = filtered[trim:]
+    win = max(64, int(sample_rate * 0.020))
+    hop = max(1, int(sample_rate * 0.005))
+    if filtered.size < win:
+        return 0.0, 0.0
+    window_rms = []
+    for i in range(0, filtered.size - win + 1, hop):
+        seg = filtered[i : i + win]
+        window_rms.append(float(np.sqrt(np.mean(seg * seg))))
+    if len(window_rms) < 8:
+        return 0.0, 0.0
+    arr = np.asarray(window_rms, dtype=np.float64)
+    mean_rms = float(np.mean(arr))
+    if mean_rms <= 1e-9:
+        return 0.0, 0.0
+    cv = float(np.std(arr) / mean_rms)
+    p95_over_p50 = float(np.percentile(arr, 95) / max(np.percentile(arr, 50), 1e-9) - 1.0)
+    return cv, p95_over_p50
+
+
 def _print_guard_report(guard_report):
     warn = False
     for name, lo, hi, rms, peak, dbc in guard_report:
@@ -268,7 +301,7 @@ def _run_inspect(
     return 0
 
 
-def _check_metrics(metrics, tone_mode):
+def _check_metrics(metrics, tone_mode, toggles):
     errors = []
     if not np.isfinite(metrics["peak"]) or not np.isfinite(metrics["rms"]):
         errors.append("non-finite composite metrics")
@@ -291,6 +324,15 @@ def _check_metrics(metrics, tone_mode):
     rds_freq = float(rds_state.get("rds_freq", RDS_FREQ))
     if abs(rds_freq - RDS_FREQ_HZ) > RDS_FREQ_TOL_HZ:
         errors.append("rds subcarrier frequency out of spec")
+    # Detect audible gain chatter on steady tones in minimal-chain cases.
+    if tone_mode == "mono" and not toggles.get("agc_enabled", False) and not toggles.get(
+        "multiband_enabled", False
+    ):
+        if (
+            toggles.get("limit_mpx", False)
+        ):
+            if metrics.get("tone_stability_cv", 0.0) > TONE_STABILITY_MAX_CV:
+                errors.append("steady-tone envelope is choppy")
     return errors
 
 
@@ -386,9 +428,14 @@ def main():
             for tone_mode in ("mono", "stereo"):
                 data = _render_mpx(sample_rate, args.duration, args.warmup, tone_mode)
                 metrics = analyze_array(sample_rate, data, nperseg=32768)
+                tone_stability_cv, tone_stability_p95 = _tone_band_stability(
+                    sample_rate, data, tone_mode
+                )
                 rds_freq = float(rds_state.get("rds_freq", RDS_FREQ))
                 rds_bb_rms = _rds_baseband_rms(data, sample_rate, rds_freq)
-                errors = _check_metrics(metrics, tone_mode)
+                metrics["tone_stability_cv"] = tone_stability_cv
+                metrics["tone_stability_p95"] = tone_stability_p95
+                errors = _check_metrics(metrics, tone_mode, toggles)
 
                 case = {
                     "case": _case_id(toggles, rds_on, processing_rate_hz),
@@ -408,6 +455,8 @@ def main():
                         "stereo_rms": metrics["stereo_rms"],
                         "stereo_peak": metrics["stereo_peak"],
                         "hf_rms": metrics["hf_rms"],
+                        "tone_stability_cv": metrics["tone_stability_cv"],
+                        "tone_stability_p95": metrics["tone_stability_p95"],
                     },
                     "errors": errors,
                 }

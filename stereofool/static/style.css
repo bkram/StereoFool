@@ -461,6 +461,28 @@ input[type="range"] {
     font-size: 12px;
 }
 
+.live-display.compact {
+    padding: 4px 6px;
+    min-height: 14px;
+    font-size: 11px;
+    letter-spacing: 0.4px;
+}
+
+.compact-status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 8px;
+}
+
+.compact-status-grid .status-item {
+    display: grid;
+    gap: 2px;
+}
+
+.compact-status-grid label {
+    margin-bottom: 0;
+}
+
 .stack {
     display: grid;
     gap: 6px;

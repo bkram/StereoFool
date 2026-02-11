@@ -148,6 +148,14 @@ MPX_HTML = r"""
                     <div class="section-header">Audio Engine</div>
                     <div class="section-body">
                         <div>
+                            <label>Pre-emphasis <span class="help-tip" data-tip="Transmission standard base curve: 50 us (EU) or 75 us (NA). Off for testing.">?</span></label>
+                            <select id="mpx_preemphasis_us" onchange="updatePreemphasis(this.value)">
+                                <option value="0" {% if state.preemphasis_us == 0 %}selected{% endif %}>Off (0 us)</option>
+                                <option value="50" {% if state.preemphasis_us == 50 %}selected{% endif %}>50 us</option>
+                                <option value="75" {% if state.preemphasis_us == 75 %}selected{% endif %}>75 us</option>
+                            </select>
+                        </div>
+                        <div>
                             <label>Block Size <span class="help-tip" data-tip="Higher values reduce CPU load and dropouts but increase latency. Restart required.">?</span></label>
                             <select id="mpx_blocksize" onchange="updateBlocksize(this.value)">
                                 <option value="512" {% if state.blocksize == 512 %}selected{% endif %}>512</option>
@@ -195,32 +203,6 @@ MPX_HTML = r"""
                         <div id="mpx_tone_freq_field">
                             <label>Test Tone Frequency (Hz)</label>
                             <input class="w-full" type="number" min="100" max="15000" step="10" id="mpx_test_tone_freq" value="{{state.test_tone_freq}}" onchange="updateToneFreq(this.value)">
-                        </div>
-                    </div>
-                </div>
-                <div class="section">
-                    <div class="section-header">Input Gain</div>
-                    <div class="section-body">
-                        <div>
-                            <label>Input Gain (dB)</label>
-                            <div class="slider-container">
-                                <input type="range" min="-24" max="24" step="0.1" id="mpx_input_gain_db" value="{{state.input_gain_db}}" oninput="updateInputGain(this.value)">
-                                <div class="slider-val" id="mpx_input_gain_val">{{state.input_gain_db}}</div>
-                            </div>
-                            <div class="text-[11px] text-gray-400 mt-1">Static gain/attenuation before processing.</div>
-                        </div>
-                    </div>
-                </div>
-                <div class="section">
-                    <div class="section-header">Output Gain</div>
-                    <div class="section-body">
-                        <div>
-                            <label>Output Gain (dB)</label>
-                            <div class="slider-container">
-                                <input type="range" min="-24" max="24" step="0.1" id="mpx_output_gain_db" value="{{state.output_gain_db}}" oninput="updateOutputGain(this.value)">
-                                <div class="slider-val" id="mpx_output_gain_val">{{state.output_gain_db}}</div>
-                            </div>
-                            <div class="text-[11px] text-gray-400 mt-1">Post-MPX gain before the soundcard.</div>
                         </div>
                     </div>
                 </div>
@@ -280,13 +262,13 @@ MPX_HTML = r"""
                             <input type="checkbox" class="toggle-checkbox" id="mpx_orbass_enabled" {% if state.orbass_enabled %}checked{% endif %} onchange="updateOrbassEnabled(this.checked)">
                         </div>
                         <div>
-                            <label>Presets</label>
+                            <label>Broadcast Presets</label>
                             <div class="preset-grid">
-                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('disco')">Disco Drive</button>
-                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('acoustic')">Acoustic Warm</button>
-                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('urban')">Urban Punch</button>
-                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('rock')">Rock Body</button>
-                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('talk')">Talk Safe</button>
+                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('chr')">CHR/EDM</button>
+                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('urban')">Urban</button>
+                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('rock')">Rock</button>
+                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('ac')">AC/Pop</button>
+                                <button type="button" class="mini-btn" onclick="applyOrbassPreset('talk')">Talk</button>
                             </div>
                         </div>
                         <div>
@@ -309,7 +291,35 @@ MPX_HTML = r"""
                                 <input type="range" min="0" max="1" step="0.01" id="mpx_orbass_harmonics" value="{{state.orbass_harmonics}}" oninput="updateOrbassHarmonics(this.value)">
                                 <div class="slider-val" id="mpx_orbass_harmonics_val">{{state.orbass_harmonics}}</div>
                             </div>
-                            <div class="text-[11px] text-gray-400 mt-1">Adds upper bass harmonics to keep bass audible on small speakers.</div>
+                            <div class="text-[11px] text-gray-400 mt-1">Adds upper-bass harmonics to keep bass audible on small speakers.</div>
+                        </div>
+                        <div>
+                            <label>Drive</label>
+                            <div class="slider-container">
+                                <input type="range" min="0" max="2.5" step="0.01" id="mpx_orbass_drive" value="{{state.orbass_drive}}" oninput="updateOrbassDrive(this.value)">
+                                <div class="slider-val" id="mpx_orbass_drive_val">{{state.orbass_drive}}</div>
+                            </div>
+                            <div class="text-[11px] text-gray-400 mt-1">Controls saturation depth and punch.</div>
+                        </div>
+                        <div>
+                            <label>Density</label>
+                            <div class="slider-container">
+                                <input type="range" min="0" max="1" step="0.01" id="mpx_orbass_density" value="{{state.orbass_density}}" oninput="updateOrbassDensity(this.value)">
+                                <div class="slider-val" id="mpx_orbass_density_val">{{state.orbass_density}}</div>
+                            </div>
+                            <div class="text-[11px] text-gray-400 mt-1">Higher values keep bass weight steadier across mixed material.</div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <label>Subharmonic Synth <span class="help-tip" data-tip="Optional octave-down style reinforcement below the bass focus frequency.">?</span></label>
+                            <input type="checkbox" class="toggle-checkbox" id="mpx_orbass_subharmonics_enabled" {% if state.orbass_subharmonics_enabled %}checked{% endif %} onchange="updateOrbassSubharmonicsEnabled(this.checked)">
+                        </div>
+                        <div>
+                            <label>Subharmonic Amount</label>
+                            <div class="slider-container">
+                                <input type="range" min="0" max="1" step="0.01" id="mpx_orbass_subharmonics_amount" value="{{state.orbass_subharmonics_amount}}" oninput="updateOrbassSubharmonicsAmount(this.value)">
+                                <div class="slider-val" id="mpx_orbass_subharmonics_amount_val">{{state.orbass_subharmonics_amount}}</div>
+                            </div>
+                            <div class="text-[11px] text-gray-400 mt-1">Adds synthesized very-low energy for larger perceived depth.</div>
                         </div>
                     </div>
                 </div>
@@ -338,6 +348,11 @@ MPX_HTML = r"""
                                 <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_ac')">3B AC/Pop</button>
                                 <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_country')">3B Country</button>
                                 <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_talk')">3B Talk</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_urban')">3B Urban</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_dance')">3B Dance</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_news')">3B News</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_jazz')">3B Jazz</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('3_classic')">3B Classical</button>
                             </div>
                         </div>
                         <div>
@@ -348,6 +363,11 @@ MPX_HTML = r"""
                                 <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_ac')">5B AC/Pop</button>
                                 <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_classic')">5B Classical/Jazz</button>
                                 <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_talk')">5B Talk</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_urban')">5B Urban</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_dance')">5B Dance</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_news')">5B News</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_jazz')">5B Jazz</button>
+                                <button type="button" class="mini-btn" onclick="applyMultibandPreset('5_oldies')">5B Oldies</button>
                             </div>
                         </div>
                         <div>
@@ -358,7 +378,7 @@ MPX_HTML = r"""
                                 <option value="heavy">Heavy</option>
                             </select>
                         </div>
-                        <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">
                             <div>
                                 <label>Knee (dB) <span class="help-tip" data-tip="Soft-knee width around threshold. Higher values sound smoother and less abrupt.">?</span></label>
                                 <div class="slider-container">
@@ -371,6 +391,13 @@ MPX_HTML = r"""
                                 <div class="slider-container">
                                     <input type="range" min="0" max="1" step="0.01" id="mpx_mb_link_strength" value="{{state.multiband_link_strength}}" oninput="updateMultibandLinkStrength(this.value)">
                                     <div class="slider-val" id="mpx_mb_link_val">{{state.multiband_link_strength}}</div>
+                                </div>
+                            </div>
+                            <div>
+                                <label>Makeup (dB) <span class="help-tip" data-tip="Final user loudness trim after adaptive multiband makeup. Use with limiter/preemphasis protection for higher boosts.">?</span></label>
+                                <div class="slider-container">
+                                    <input type="range" min="-6" max="6" step="0.1" id="mpx_mb_makeup_db" value="{{state.multiband_makeup_db}}" oninput="updateMultibandMakeup(this.value)">
+                                    <div class="slider-val" id="mpx_mb_makeup_val">{{state.multiband_makeup_db}}</div>
                                 </div>
                             </div>
                             <div class="flex items-center gap-2 mt-4">
@@ -447,49 +474,15 @@ MPX_HTML = r"""
                     </div>
                 </div>
                 <div class="section">
-                    <div class="section-header">Pre-emphasis</div>
+                    <div class="section-header">Protection Chain</div>
                     <div class="section-body">
-                        <div>
-                            <label>Pre-emphasis <span class="help-tip" data-tip="Use 50 us in most of Europe; 75 us in North America. Off for testing.">?</span></label>
-                            <select id="mpx_preemphasis_us" onchange="updatePreemphasis(this.value)">
-                                <option value="0" {% if state.preemphasis_us == 0 %}selected{% endif %}>Off</option>
-                                <option value="50" {% if state.preemphasis_us == 50 %}selected{% endif %}>50 us</option>
-                                <option value="75" {% if state.preemphasis_us == 75 %}selected{% endif %}>75 us</option>
-                            </select>
-                        </div>
+                        <div class="text-[11px] text-gray-400 mb-1">Base pre-emphasis mode is in Interfaces -> Audio Engine.</div>
                         <div class="flex items-center gap-2">
-                            <label>Pre-emphasis Limiter <span class="rec-badge">Recommended</span><span class="help-tip" data-tip="Controls HF overshoot after pre-emphasis.">?</span></label>
-                            <input type="checkbox" class="toggle-checkbox" id="mpx_preemph_limit" {% if state.preemphasis_limit_enabled %}checked{% endif %} onchange="updatePreemphasisLimiter(this.checked)">
-                        </div>
-                        <div>
-                            <label>Pre-emphasis Threshold <span class="help-tip" data-tip="Limiter threshold for pre-emphasis. Lower = more limiting.">?</span></label>
-                            <div class="slider-container">
-                                <input type="range" min="0.7" max="1.0" step="0.01" id="mpx_preemph_threshold" value="{{state.preemphasis_limit_threshold}}" oninput="updatePreemphasisThreshold(this.value)">
-                                <div class="slider-val" id="mpx_preemph_val">{{state.preemphasis_limit_threshold}}</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                <div class="section">
-                    <div class="section-header">Peak Protection</div>
-                    <div class="section-body">
-                        <div class="flex items-center gap-2">
-                            <label>Composite Clipper <span class="help-tip" data-tip="Soft clip for MPX peaks. Helps keep deviation within spec.">?</span></label>
-                            <input type="checkbox" class="toggle-checkbox" id="mpx_comp_clip" {% if state.composite_clip_enabled %}checked{% endif %} onchange="updateCompositeClipper(this.checked)">
-                        </div>
-                        <div>
-                            <label>Composite Threshold <span class="help-tip" data-tip="Clip threshold for composite MPX. Lower = more clipping.">?</span></label>
-                            <div class="slider-container">
-                                <input type="range" min="0.5" max="1.0" step="0.01" id="mpx_comp_threshold" value="{{state.composite_clip_threshold}}" oninput="updateCompositeThreshold(this.value)">
-                                <div class="slider-val" id="mpx_comp_val">{{state.composite_clip_threshold}}</div>
-                            </div>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <label>Soft Clip (Safety) <span class="help-tip" data-tip="MPX limiter for last-resort peak control.">?</span></label>
+                            <label>Soft Clip (Safety) <span class="help-tip" data-tip="Composite soft-knee clipper block for peak control.">?</span></label>
                             <input type="checkbox" class="toggle-checkbox" id="mpx_limit_mpx" {% if state.limit_mpx %}checked{% endif %} onchange="updateLimitMpx(this.checked)">
                         </div>
                         <div class="flex items-center gap-2">
-                            <label>Lookahead Limiter <span class="help-tip" data-tip="Reduces clipping artifacts by looking ahead.">?</span></label>
+                            <label>Lookahead Limiter <span class="help-tip" data-tip="Optional pre-limiter stage before Soft Clip. Reduces clipping artifacts by looking ahead.">?</span></label>
                             <input type="checkbox" class="toggle-checkbox" id="mpx_limit_lookahead" {% if state.limit_lookahead_enabled %}checked{% endif %} onchange="updateLimitLookahead(this.checked)">
                         </div>
                         <div>
@@ -1029,47 +1022,43 @@ MPX_HTML = r"""
                                         <div class="meter-fill" id="modulation_meter"></div>
                                         <div class="meter-hold" id="modulation_hold"></div>
                                     </div>
-                                <div class="meter-db" id="modulation_khz">0.0 kHz</div>
-                                <div class="meter-peak text-gray-400">0-100 kHz</div>
+                                    <div class="meter-db" id="modulation_khz">0.0 kHz</div>
+                                    <div class="meter-peak text-gray-400">Pre output gain, full-scale = target deviation</div>
+                                </div>
                             </div>
+                    </div>
+                </div>
+                <div class="section">
+                    <div class="section-header">Input Gain</div>
+                    <div class="section-body">
+                        <div>
+                            <label>Input Gain (dB)</label>
+                            <div class="slider-container">
+                                <input type="range" min="-24" max="24" step="0.1" id="mpx_input_gain_db" value="{{state.input_gain_db}}" oninput="updateInputGain(this.value)">
+                                <div class="slider-val" id="mpx_input_gain_val">{{state.input_gain_db}}</div>
                             </div>
+                            <div class="text-[11px] text-gray-400 mt-1">Static gain/attenuation before processing.</div>
                         </div>
                     </div>
+                </div>
                     <div class="section">
-                        <div class="section-header">Limiters</div>
-                        <div class="section-body">
-                            <div class="grid grid-cols-2 gap-2">
-                                <div>
-                                    <label>MPX Limiter</label>
-                                    <div class="live-display sub text-center" id="live_limiter">Idle</div>
-                                </div>
-                                <div>
-                                    <label>Pre-emphasis Limiter</label>
-                                    <div class="live-display sub text-center" id="live_preemph_limit">Off</div>
-                                </div>
-                                <div>
-                                    <label>Composite Clipper</label>
-                                    <div class="live-display sub text-center" id="live_composite_clip">Off</div>
-                                </div>
+                        <div class="section-header">DSP Status</div>
+                        <div class="section-body compact-status-grid">
+                            <div class="status-item">
+                                <label>MPX Limiter</label>
+                                <div class="live-display sub compact text-center" id="live_limiter">Idle</div>
                             </div>
-                        </div>
-                    </div>
-                    <div class="section">
-                        <div class="section-header">Processing</div>
-                        <div class="section-body">
-                            <div class="grid grid-cols-2 gap-2">
-                                <div>
-                                    <label>Multiband</label>
-                                    <div class="live-display sub text-center" id="live_multiband">Off</div>
-                                </div>
-                                <div>
-                                    <label>Orbass</label>
-                                    <div class="live-display sub text-center" id="live_orbass">Off</div>
-                                </div>
-                                <div>
-                                    <label>Widener</label>
-                                    <div class="live-display sub text-center" id="live_widener">Off</div>
-                                </div>
+                            <div class="status-item">
+                                <label>Multiband</label>
+                                <div class="live-display sub compact text-center" id="live_multiband">Off</div>
+                            </div>
+                            <div class="status-item">
+                                <label>Orbass</label>
+                                <div class="live-display sub compact text-center" id="live_orbass">Off</div>
+                            </div>
+                            <div class="status-item">
+                                <label>Widener</label>
+                                <div class="live-display sub compact text-center" id="live_widener">Off</div>
                             </div>
                         </div>
                     </div>
@@ -1127,13 +1116,12 @@ MPX_HTML = r"""
                                 <li>Pre-emphasis</li>
                                 <li>Pre-emphasis HF control (optional)</li>
                                 <li>Lookahead limiter (optional)</li>
-                                <li>Pre-emphasis limiter (optional)</li>
                                 <li>Safety gain (post pre-emphasis)</li>
                                 <li>38 kHz DSB + band-pass</li>
                                 <li>L+R + DSB sum</li>
                                 <li>Audio MPX LPF</li>
                                 <li>DC block + notch</li>
-                                <li>Composite clip (optional)</li>
+                                <li>Composite limiter (optional)</li>
                                 <li>Deviation scale</li>
                                 <li>Audio headroom trim</li>
                                 <li>Pilot + RDS add</li>
