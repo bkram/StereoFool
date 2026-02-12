@@ -77,6 +77,7 @@ RESTART_KEYS = {
     "monitor_enabled",
     "monitor_device_idx",
     "monitor_rate_hz",
+    "monitor_dsp_parallel",
     "audio_priority_profile",
     "output_enabled",
 }

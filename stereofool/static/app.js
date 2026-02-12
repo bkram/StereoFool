@@ -54,6 +54,12 @@ const ptyList = Array.isArray(appState.pty_list) ? appState.pty_list : [];
     function updateMonitorRate(value) {
         socket.emit('update', { monitor_rate_hz: Number(value) });
     }
+    function updateMonitorDspParallel(enabled) {
+        socket.emit('update', { monitor_dsp_parallel: enabled });
+    }
+    function updateDropoutGuard(enabled) {
+        socket.emit('update', { dropout_guard_enabled: enabled });
+    }
     function updateBlocksize(value) {
         socket.emit('update', { blocksize: Number(value) });
     }

@@ -167,8 +167,10 @@ mpx_state: dict[str, Any] = {
     "monitor_enabled": False,
     "monitor_device_idx": -1,
     "monitor_rate_hz": 48000,
+    "monitor_dsp_parallel": True,
     "blocksize": 4096,
     "audio_priority_profile": "normal",
+    "dropout_guard_enabled": True,
 }
 
 meter_state: dict[str, float] = {

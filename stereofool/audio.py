@@ -4,11 +4,12 @@ import threading
 import logging
 import time
 from collections import Counter, deque
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import numpy as np
 import sounddevice as sd
 from scipy import signal as dsp_signal
+from scipy.ndimage import maximum_filter1d
 
 from stereofool.constants import BLOCKSIZE, PILOT_FREQ, PREBUFFER_SECONDS
 from stereofool.rds import RDSSubcarrier
@@ -18,7 +19,14 @@ logger = logging.getLogger("stereofool")
 
 
 class AudioInputReader:
-    def __init__(self, device_idx, sample_rate, dtype, blocksize=BLOCKSIZE):
+    def __init__(
+        self,
+        device_idx,
+        sample_rate,
+        dtype,
+        blocksize=BLOCKSIZE,
+        aux_priority_hook: Callable[[str], None] | None = None,
+    ):
         self.device_idx = device_idx
         self.sample_rate = sample_rate
         self.dtype = np.dtype(dtype)
@@ -38,6 +46,8 @@ class AudioInputReader:
         self.underfilled_frames = 0
         self.drift_correction_events = 0
         self.last_frame = np.zeros(2, dtype=self.dtype)
+        self._aux_priority_hook = aux_priority_hook
+        self._priority_applied = False
 
     def start(self):
         if self.device_idx is None or self.device_idx < 0:
@@ -84,6 +94,12 @@ class AudioInputReader:
     def _callback(self, indata, frames, _time_info, _status):
         if not self.running:
             return
+        if (not self._priority_applied) and self._aux_priority_hook is not None:
+            try:
+                self._aux_priority_hook("input reader callback")
+            except Exception:
+                pass
+            self._priority_applied = True
         if _status:
             self._accumulate_status(_status)
             now = time.monotonic()
@@ -198,6 +214,9 @@ class FMEngine:
         monitor_callback=None,
         monitor_rate=48000,
         blocksize=BLOCKSIZE,
+        aux_priority_hook: Callable[[str], None] | None = None,
+        monitor_primary_output: bool = False,
+        monitor_parallel_enabled: bool | None = None,
     ):
         self.sample_rate = sample_rate
         self.dtype = np.float32
@@ -209,12 +228,30 @@ class FMEngine:
         self.capture_callback = capture_callback
         self.monitor_callback = monitor_callback
         self.monitor_rate = int(monitor_rate)
-        self.telemetry_interval_s = 0.05
+        self.monitor_primary_output = bool(monitor_primary_output)
+        if monitor_parallel_enabled is None:
+            self.monitor_parallel_enabled = bool(mpx_state.get("monitor_dsp_parallel", True))
+        else:
+            self.monitor_parallel_enabled = bool(monitor_parallel_enabled)
+        self.monitor_demod_lock = threading.Lock()
+        self.monitor_queue: queue.Queue[Any] = queue.Queue(maxsize=2)
+        self.monitor_stop = threading.Event()
+        self.monitor_thread: threading.Thread | None = None
+        self._aux_priority_hook = aux_priority_hook
+        self._output_cb_priority_applied = False
+        self._duplex_cb_priority_applied = False
+        self._telemetry_priority_applied = False
+        self._monitor_priority_applied = False
+        # Match app monitor emit cadence to reduce cross-thread pressure.
+        self.telemetry_interval_s = 0.1
         self._last_telemetry_enqueue = 0.0
         self.telemetry_queue = queue.Queue(maxsize=2)
         self.telemetry_stop = threading.Event()
         self.telemetry_thread = threading.Thread(target=self._telemetry_loop, daemon=True)
         self.telemetry_thread.start()
+        if self.monitor_callback and self.monitor_parallel_enabled:
+            self.monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+            self.monitor_thread.start()
         self._time_cache: dict[tuple[int, int], np.ndarray] = {}
         self._zero_cache: dict[int, np.ndarray] = {}
         self._resample_window_cache: dict[tuple[int, int], np.ndarray] = {}
@@ -252,6 +289,19 @@ class FMEngine:
         self._last_status_summary_log = 0.0
         self._status_counts: Counter[str] = Counter()
         self.blocksize = max(1, int(blocksize))
+        blocks_per_sec = float(self.sample_rate) / float(max(1, self.blocksize))
+        self.rt_shed_blocks_soft = max(2, int(round(blocks_per_sec * 0.12)))
+        self.rt_shed_blocks_hard = max(self.rt_shed_blocks_soft, int(round(blocks_per_sec * 0.30)))
+        self.rt_shed_blocks = 0
+        self._last_rt_shed_log = 0.0
+
+    def _apply_aux_priority_hook(self, context: str) -> None:
+        if self._aux_priority_hook is None:
+            return
+        try:
+            self._aux_priority_hook(context)
+        except Exception:
+            pass
 
     def _init_lookahead_state(self):
         self.lookahead_audio_pair_buffer = None
@@ -300,6 +350,27 @@ class FMEngine:
         if not seen_flag:
             self._status_counts[f"{label}:{status}"] += 1
 
+    def _note_realtime_overload_from_status(self, status) -> None:
+        if not status or not bool(mpx_state.get("dropout_guard_enabled", True)):
+            return
+        overload = False
+        for attr in ("input_overflow", "input_underflow", "output_overflow", "output_underflow"):
+            try:
+                if bool(getattr(status, attr)):
+                    overload = True
+                    break
+            except Exception:
+                continue
+        if overload:
+            self.rt_shed_blocks = max(self.rt_shed_blocks, self.rt_shed_blocks_hard)
+            now = time.monotonic()
+            if now - self._last_rt_shed_log >= 2.0:
+                logger.warning(
+                    "StereoFool: dropout guard active (%s blocks) due to stream under/overflow",
+                    self.rt_shed_blocks,
+                )
+                self._last_rt_shed_log = now
+
     def _get_time_base(self, frames, sample_rate):
         key = (int(frames), int(sample_rate))
         cached = self._time_cache.get(key)
@@ -339,6 +410,9 @@ class FMEngine:
         return cached
 
     def close(self, timeout=0.5):
+        self.monitor_stop.set()
+        if self.monitor_thread and self.monitor_thread.is_alive():
+            self.monitor_thread.join(timeout=timeout)
         self.telemetry_stop.set()
         if self.telemetry_thread.is_alive():
             self.telemetry_thread.join(timeout=timeout)
@@ -364,6 +438,9 @@ class FMEngine:
             pass
 
     def _telemetry_loop(self):
+        if not self._telemetry_priority_applied:
+            self._apply_aux_priority_hook("engine telemetry")
+            self._telemetry_priority_applied = True
         while not self.telemetry_stop.is_set() or not self.telemetry_queue.empty():
             try:
                 item = self.telemetry_queue.get(timeout=0.1)
@@ -475,6 +552,51 @@ class FMEngine:
                     meter_state["multiband_active"] = bool(mpx_state.get("multiband_enabled"))
             except Exception:
                 continue
+
+    def _monitor_loop(self):
+        if not self._monitor_priority_applied:
+            self._apply_aux_priority_hook("engine monitor")
+            self._monitor_priority_applied = True
+        while not self.monitor_stop.is_set() or not self.monitor_queue.empty():
+            try:
+                mpx, subcarrier = self.monitor_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                mon = self._monitor_demod(mpx, subcarrier)
+                if mon is not None and self.monitor_callback:
+                    self.monitor_callback(mon)
+            except Exception:
+                continue
+
+    def _dispatch_monitor_frame(self, mpx: np.ndarray, subcarrier: np.ndarray) -> None:
+        if not self.monitor_callback:
+            return
+        if not self.monitor_parallel_enabled:
+            try:
+                mon = self._monitor_demod(mpx, subcarrier)
+                if mon is not None:
+                    self.monitor_callback(mon)
+            except Exception:
+                pass
+            return
+        item = (
+            np.asarray(mpx, dtype=self.dtype),
+            np.asarray(subcarrier, dtype=self.dtype),
+        )
+        try:
+            self.monitor_queue.put_nowait(item)
+            return
+        except queue.Full:
+            pass
+        try:
+            self.monitor_queue.get_nowait()
+        except queue.Empty:
+            pass
+        try:
+            self.monitor_queue.put_nowait(item)
+        except queue.Full:
+            pass
 
     def _resolve_processing_rate(self):
         raw = mpx_state.get("processing_rate_hz", 0)
@@ -791,39 +913,40 @@ class FMEngine:
     def _monitor_demod(self, mpx, subcarrier):
         if not mpx.size:
             return None
-        mon_src, self.mon_rf_pilot_zi = dsp_signal.lfilter(
-            self.mon_rf_pilot_b, self.mon_rf_pilot_a, mpx, zi=self.mon_rf_pilot_zi
-        )
-        mon_src, self.mon_rf_rds_zi = dsp_signal.lfilter(
-            self.mon_rf_rds_b, self.mon_rf_rds_a, mon_src, zi=self.mon_rf_rds_zi
-        )
-        lpr, self.mon_lpf_zi = dsp_signal.sosfilt(self.mon_lpf_sos, mon_src, zi=self.mon_lpf_zi)
-        dsb, self.mon_bpf_zi = dsp_signal.sosfilt(self.mon_bpf_sos, mon_src, zi=self.mon_bpf_zi)
-        diff = 2.0 * dsb * subcarrier
-        diff, self.mon_lpf_zi_diff = dsp_signal.sosfilt(
-            self.mon_lpf_sos, diff, zi=self.mon_lpf_zi_diff
-        )
-        diff = -diff
-        left = lpr + diff
-        right = lpr - diff
-        # Remove residual 19 kHz pilot leakage from monitor demod to avoid idle-tone bleed.
-        left, self.mon_pilot_notch_zi_l = dsp_signal.lfilter(
-            self.mon_pilot_notch_b, self.mon_pilot_notch_a, left, zi=self.mon_pilot_notch_zi_l
-        )
-        right, self.mon_pilot_notch_zi_r = dsp_signal.lfilter(
-            self.mon_pilot_notch_b, self.mon_pilot_notch_a, right, zi=self.mon_pilot_notch_zi_r
-        )
-        self._refresh_monitor_deemphasis()
-        if self.deemphasis_us:
-            left, self.de_zi_l = dsp_signal.lfilter(self.de_b, self.de_a, left, zi=self.de_zi_l)
-            right, self.de_zi_r = dsp_signal.lfilter(self.de_b, self.de_a, right, zi=self.de_zi_r)
-        stereo = np.column_stack((left, right)).astype(np.float32, copy=False)
-        if self.monitor_rate != self.sample_rate:
-            g = math.gcd(self.sample_rate, self.monitor_rate)
-            down = self.sample_rate // g
-            up = self.monitor_rate // g
-            stereo = self._resample(stereo, up, down, None)
-        return stereo
+        with self.monitor_demod_lock:
+            mon_src, self.mon_rf_pilot_zi = dsp_signal.lfilter(
+                self.mon_rf_pilot_b, self.mon_rf_pilot_a, mpx, zi=self.mon_rf_pilot_zi
+            )
+            mon_src, self.mon_rf_rds_zi = dsp_signal.lfilter(
+                self.mon_rf_rds_b, self.mon_rf_rds_a, mon_src, zi=self.mon_rf_rds_zi
+            )
+            lpr, self.mon_lpf_zi = dsp_signal.sosfilt(self.mon_lpf_sos, mon_src, zi=self.mon_lpf_zi)
+            dsb, self.mon_bpf_zi = dsp_signal.sosfilt(self.mon_bpf_sos, mon_src, zi=self.mon_bpf_zi)
+            diff = 2.0 * dsb * subcarrier
+            diff, self.mon_lpf_zi_diff = dsp_signal.sosfilt(
+                self.mon_lpf_sos, diff, zi=self.mon_lpf_zi_diff
+            )
+            diff = -diff
+            left = lpr + diff
+            right = lpr - diff
+            # Remove residual 19 kHz pilot leakage from monitor demod to avoid idle-tone bleed.
+            left, self.mon_pilot_notch_zi_l = dsp_signal.lfilter(
+                self.mon_pilot_notch_b, self.mon_pilot_notch_a, left, zi=self.mon_pilot_notch_zi_l
+            )
+            right, self.mon_pilot_notch_zi_r = dsp_signal.lfilter(
+                self.mon_pilot_notch_b, self.mon_pilot_notch_a, right, zi=self.mon_pilot_notch_zi_r
+            )
+            self._refresh_monitor_deemphasis()
+            if self.deemphasis_us:
+                left, self.de_zi_l = dsp_signal.lfilter(self.de_b, self.de_a, left, zi=self.de_zi_l)
+                right, self.de_zi_r = dsp_signal.lfilter(self.de_b, self.de_a, right, zi=self.de_zi_r)
+            stereo = np.column_stack((left, right)).astype(np.float32, copy=False)
+            if self.monitor_rate != self.sample_rate:
+                g = math.gcd(self.sample_rate, self.monitor_rate)
+                down = self.sample_rate // g
+                up = self.monitor_rate // g
+                stereo = self._resample(stereo, up, down, None)
+            return stereo
 
     def _init_mpx_cleanup(self):
         self.mpx_dc_hz = float(mpx_state.get("mpx_dc_block_hz", 2.0))
@@ -916,28 +1039,36 @@ class FMEngine:
         if total_n == 0:
             return np.zeros(out_n, dtype=self.dtype)
         win = max(1, int(window))
-        out = np.empty(out_n, dtype=self.dtype)
-        max_queue: deque[int] = deque()
-        preload = min(total_n, win)
-        for idx in range(preload):
-            val = float(data[idx])
-            while max_queue and val >= float(data[max_queue[-1]]):
-                max_queue.pop()
-            max_queue.append(idx)
-        for i in range(out_n):
-            while max_queue and max_queue[0] < i:
-                max_queue.popleft()
-            if not max_queue:
-                fallback_idx = min(total_n - 1, i)
-                max_queue.append(fallback_idx)
-            out[i] = data[max_queue[0]]
-            next_idx = i + win
-            if next_idx < total_n:
-                next_val = float(data[next_idx])
-                while max_queue and next_val >= float(data[max_queue[-1]]):
+        if win <= 1:
+            return data[:out_n].astype(self.dtype, copy=False)
+        origin = -(win // 2)
+        try:
+            filtered = maximum_filter1d(data, size=win, mode="nearest", origin=origin)
+            return np.asarray(filtered[:out_n], dtype=self.dtype)
+        except Exception:
+            # Fallback to deque-based max if scipy ndimage path is unavailable.
+            out = np.empty(out_n, dtype=self.dtype)
+            max_queue: deque[int] = deque()
+            preload = min(total_n, win)
+            for idx in range(preload):
+                val = float(data[idx])
+                while max_queue and val >= float(data[max_queue[-1]]):
                     max_queue.pop()
-                max_queue.append(next_idx)
-        return out
+                max_queue.append(idx)
+            for i in range(out_n):
+                while max_queue and max_queue[0] < i:
+                    max_queue.popleft()
+                if not max_queue:
+                    fallback_idx = min(total_n - 1, i)
+                    max_queue.append(fallback_idx)
+                out[i] = data[max_queue[0]]
+                next_idx = i + win
+                if next_idx < total_n:
+                    next_val = float(data[next_idx])
+                    while max_queue and next_val >= float(data[max_queue[-1]]):
+                        max_queue.pop()
+                    max_queue.append(next_idx)
+            return out
 
     def _follow_gain_curve(
         self,
@@ -2177,13 +2308,14 @@ class FMEngine:
             "preemph_hf_sc_zi_sum",
             "preemph_hf_sc_zi_diff",
         )
-        for name in zi_names:
-            if hasattr(self, name):
-                state = getattr(self, name)
-                try:
-                    setattr(self, name, np.zeros_like(state))
-                except Exception:
-                    continue
+        with self.monitor_demod_lock:
+            for name in zi_names:
+                if hasattr(self, name):
+                    state = getattr(self, name)
+                    try:
+                        setattr(self, name, np.zeros_like(state))
+                    except Exception:
+                        continue
 
     def _apply_lookahead_limiter_named(self, signal, threshold, state_prefix, sample_rate=None):
         if threshold <= 0:
@@ -2327,6 +2459,14 @@ class FMEngine:
         )
 
     def _process_frame(self, outdata, frames, indata):
+        frame_start = time.perf_counter()
+        dropout_guard_enabled = bool(mpx_state.get("dropout_guard_enabled", True))
+        if dropout_guard_enabled:
+            if self.rt_shed_blocks > 0:
+                self.rt_shed_blocks -= 1
+        else:
+            self.rt_shed_blocks = 0
+        rt_shed_active = dropout_guard_enabled and self.rt_shed_blocks > 0
         if dsp_control.get("reset"):
             self._reset_dsp_state()
             dsp_control["reset"] = False
@@ -2407,6 +2547,7 @@ class FMEngine:
                             self.sample_rate,
                             self.dtype,
                             blocksize=self.blocksize,
+                            aux_priority_hook=self._aux_priority_hook,
                         )
                         self.audio_in.start()
                         if not self.logged_input_fallback:
@@ -2590,16 +2731,14 @@ class FMEngine:
                 self.capture_callback(mpx_pre_gain)
             except Exception:
                 pass
-        if self.monitor_callback:
-            try:
-                mon = self._monitor_demod(mpx_pre_gain, subcarrier.astype(self.dtype, copy=False))
-                if mon is not None:
-                    self.monitor_callback(mon)
-            except Exception:
-                pass
+        if self.monitor_callback and ((not rt_shed_active) or self.monitor_primary_output):
+            self._dispatch_monitor_frame(
+                mpx_pre_gain,
+                subcarrier.astype(self.dtype, copy=False),
+            )
 
         now = time.monotonic()
-        if now - self._last_telemetry_enqueue >= self.telemetry_interval_s:
+        if (not rt_shed_active) and (now - self._last_telemetry_enqueue >= self.telemetry_interval_s):
             self._enqueue_telemetry(
                 {
                     "input_rms": input_rms,
@@ -2618,6 +2757,20 @@ class FMEngine:
             )
             self._last_telemetry_enqueue = now
 
+        if dropout_guard_enabled:
+            frame_budget_s = float(frames) / max(1.0, float(self.sample_rate))
+            elapsed_s = time.perf_counter() - frame_start
+            if elapsed_s > frame_budget_s * 0.88:
+                self.rt_shed_blocks = max(self.rt_shed_blocks, self.rt_shed_blocks_soft)
+                if now - self._last_rt_shed_log >= 2.0:
+                    logger.warning(
+                        "StereoFool: dropout guard active (%s blocks) due to callback overrun %.2f ms / budget %.2f ms",
+                        self.rt_shed_blocks,
+                        elapsed_s * 1000.0,
+                        frame_budget_s * 1000.0,
+                    )
+                    self._last_rt_shed_log = now
+
         self.phase = (self.phase + (frames / self.sample_rate)) % 1.0
         self.tone_phase = (self.tone_phase + (frames / self.sample_rate)) % 1.0
         self.pan_phase = (self.pan_phase + (frames / self.sample_rate)) % 1.0
@@ -2628,9 +2781,17 @@ class FMEngine:
             outdata.fill(0.0)
 
     def callback_output(self, outdata, frames, _time_info, _status):
+        if not self._output_cb_priority_applied:
+            self._apply_aux_priority_hook("output callback")
+            self._output_cb_priority_applied = True
         self._log_stream_status(_status, "output")
+        self._note_realtime_overload_from_status(_status)
         self._process_frame(outdata, frames, None)
 
     def callback_duplex(self, indata, outdata, frames, _time_info, _status):
+        if not self._duplex_cb_priority_applied:
+            self._apply_aux_priority_hook("duplex callback")
+            self._duplex_cb_priority_applied = True
         self._log_stream_status(_status, "duplex")
+        self._note_realtime_overload_from_status(_status)
         self._process_frame(outdata, frames, indata)

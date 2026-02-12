@@ -171,13 +171,21 @@ MPX_HTML = r"""
                             <div class="text-[11px] text-gray-400 mt-1">Higher values improve stability on slower systems.</div>
                         </div>
                         <div>
-                            <label>Audio Priority Profile <span class="help-tip" data-tip="MacOS-only process/thread priority hints. Restart required.">?</span></label>
+                            <label>Audio Priority Profile <span class="help-tip" data-tip="OS-dependent process/thread priority hints. Restart required.">?</span></label>
                             <select id="mpx_audio_priority_profile" onchange="updateAudioPriorityProfile(this.value)">
                                 <option value="normal" {% if state.audio_priority_profile == 'normal' %}selected{% endif %}>Normal</option>
                                 <option value="high" {% if state.audio_priority_profile == 'high' %}selected{% endif %}>High</option>
                                 <option value="realtime-attempt" {% if state.audio_priority_profile == 'realtime-attempt' %}selected{% endif %}>Realtime Attempt</option>
                             </select>
                             <div class="text-[11px] text-gray-400 mt-1">Safe fallback to normal if unsupported or denied.</div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <label>Parallel Monitor DSP <span class="help-tip" data-tip="Runs monitor demod/de-emphasis on a separate thread to use additional CPU core(s). Restart required.">?</span></label>
+                            <input type="checkbox" class="toggle-checkbox" id="mpx_monitor_dsp_parallel" {% if state.monitor_dsp_parallel %}checked{% endif %} onchange="updateMonitorDspParallel(this.checked)">
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <label>Dropout Guard <span class="help-tip" data-tip="When overload is detected, temporarily skips monitor and meter/scope updates to protect realtime audio output.">?</span></label>
+                            <input type="checkbox" class="toggle-checkbox" id="mpx_dropout_guard_enabled" {% if state.dropout_guard_enabled %}checked{% endif %} onchange="updateDropoutGuard(this.checked)">
                         </div>
                     </div>
                 </div>

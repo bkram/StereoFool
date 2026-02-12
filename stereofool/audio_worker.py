@@ -232,6 +232,38 @@ def _apply_audio_priority_profile(context: str) -> None:
         )
 
 
+def _apply_aux_thread_priority_profile(context: str) -> None:
+    profile = _normalize_audio_priority_profile(mpx_state.get("audio_priority_profile", "normal"))
+    if profile == "normal":
+        return
+    helper_profile = "high" if profile in {"high", "realtime-attempt"} else profile
+    if sys.platform == "darwin":
+        qos_ok, qos_err = _set_macos_thread_qos(helper_profile)
+        if not qos_ok:
+            logger.debug(
+                "StereoFool: helper thread QoS '%s' not applied (%s): %s",
+                helper_profile,
+                context,
+                qos_err,
+            )
+        return
+    if sys.platform.startswith("win"):
+        thread_ok, thread_err = _set_windows_thread_priority(helper_profile)
+        mmcss_ok, mmcss_err = (
+            _set_windows_mmcss_if_requested(profile)
+            if profile == "realtime-attempt"
+            else (True, "")
+        )
+        if (not thread_ok) or (not mmcss_ok):
+            logger.debug(
+                "StereoFool: helper thread priority '%s' not fully applied (%s): thread=%s mmcss=%s",
+                helper_profile,
+                context,
+                "ok" if thread_ok else thread_err,
+                "ok" if mmcss_ok else mmcss_err,
+            )
+
+
 def _coerce_state_value(current: Any, new_value: Any) -> Any:
     if isinstance(current, bool):
         return _coerce_bool(new_value)
@@ -341,6 +373,7 @@ class WavCapture:
             logger.info("StereoFool: WAV capture dropped %s blocks", self.dropped)
 
     def _writer_loop(self) -> None:
+        _apply_aux_thread_priority_profile("wav capture writer")
         try:
             with wave.open(self.path, "wb") as wav:
                 wav.setnchannels(1)
@@ -370,6 +403,7 @@ class MonitorOutput:
         self._status_counts: dict[str, int] = {}
         self.prefill_frames = max(self.blocksize * 3, 2048)
         self.max_buffer_frames = max(self.blocksize * 16, self.prefill_frames * 2)
+        self.target_buffer_frames = max(self.prefill_frames, self.blocksize * 6)
         self.buffered_frames = 0
         self.buffer_lock = threading.Lock()
         self.chunks: deque[np.ndarray] = deque()
@@ -378,6 +412,12 @@ class MonitorOutput:
         self.waiting_prefill = True
         self.queue_drop_frames = 0
         self.queue_underruns = 0
+        self._priority_applied = False
+        self.last_frame = np.zeros(2, dtype=np.float32)
+        self.clock_trim_factor = 1.0
+        self.clock_trim_events = 0
+        self.clock_trim_slew = 0.12
+        self.clock_trim_limit = 0.01
 
     def start(self) -> None:
         if self.device_idx is None or self.device_idx < 0:
@@ -409,6 +449,24 @@ class MonitorOutput:
             logger.warning("StereoFool: monitor queue dropped %s frames", self.queue_drop_frames)
         if self.queue_underruns:
             logger.warning("StereoFool: monitor queue underruns %s", self.queue_underruns)
+        if self.clock_trim_events:
+            logger.info("StereoFool: monitor queue clock-trim events %s", self.clock_trim_events)
+
+    def _time_scale_chunk(self, chunk: np.ndarray, factor: float) -> np.ndarray:
+        if chunk.ndim != 2 or chunk.shape[1] != 2:
+            return chunk
+        src_n = int(chunk.shape[0])
+        if src_n <= 1:
+            return chunk
+        target_n = max(1, int(round(src_n * float(factor))))
+        if target_n == src_n:
+            return chunk
+        x_old = np.arange(src_n, dtype=np.float64)
+        x_new = np.linspace(0.0, float(src_n - 1), target_n, dtype=np.float64)
+        out = np.empty((target_n, 2), dtype=np.float32)
+        out[:, 0] = np.interp(x_new, x_old, chunk[:, 0]).astype(np.float32, copy=False)
+        out[:, 1] = np.interp(x_new, x_old, chunk[:, 1]).astype(np.float32, copy=False)
+        return out
 
     def push(self, data: np.ndarray) -> None:
         if self.stream is None:
@@ -420,10 +478,30 @@ class MonitorOutput:
             if chunk.shape[1] != 2:
                 return
             with self.buffer_lock:
-                self.chunks.append(chunk.copy())
+                buffered_snapshot = self.buffered_frames
+            target_frames = max(1, self.target_buffer_frames)
+            error_ratio = (float(buffered_snapshot) - float(target_frames)) / float(target_frames)
+            correction = max(
+                -self.clock_trim_limit, min(self.clock_trim_limit, error_ratio * 0.08)
+            )
+            target_factor = 1.0 - correction
+            self.clock_trim_factor = (1.0 - self.clock_trim_slew) * self.clock_trim_factor + (
+                self.clock_trim_slew * target_factor
+            )
+            if abs(self.clock_trim_factor - 1.0) >= 0.001:
+                scaled = self._time_scale_chunk(chunk, self.clock_trim_factor)
+                if scaled.shape[0] != chunk.shape[0]:
+                    chunk = scaled
+                    self.clock_trim_events += 1
+                    self._status_counts["queue_clock_trim"] = (
+                        self._status_counts.get("queue_clock_trim", 0) + 1
+                    )
+            with self.buffer_lock:
+                self.chunks.append(chunk)
                 self.buffered_frames += chunk.shape[0]
                 if self.buffered_frames > self.max_buffer_frames:
-                    drop = self.buffered_frames - self.max_buffer_frames
+                    # Avoid large discontinuities by trimming at most one block per push.
+                    drop = min(self.blocksize, self.buffered_frames - self.target_buffer_frames)
                     dropped = 0
                     while self.chunks and drop > 0:
                         head = self.chunks[0]
@@ -445,7 +523,31 @@ class MonitorOutput:
         except Exception:
             return
 
+    def _drop_buffered_frames_locked(self, count: int) -> int:
+        if count <= 0:
+            return 0
+        drop = int(count)
+        dropped = 0
+        while self.chunks and drop > 0:
+            head = self.chunks[0]
+            remaining = head.shape[0] - self.chunk_offset
+            if drop < remaining:
+                self.chunk_offset += drop
+                self.buffered_frames -= drop
+                dropped += drop
+                drop = 0
+            else:
+                drop -= remaining
+                self.buffered_frames -= remaining
+                dropped += remaining
+                self.chunks.popleft()
+                self.chunk_offset = 0
+        return dropped
+
     def _callback(self, outdata: np.ndarray, frames: int, _time_info: Any, _status: Any) -> None:
+        if not self._priority_applied:
+            _apply_aux_thread_priority_profile("monitor callback")
+            self._priority_applied = True
         if _status:
             self._accumulate_status(_status)
             now = time.monotonic()
@@ -462,7 +564,19 @@ class MonitorOutput:
         with self.buffer_lock:
             if self.waiting_prefill and self.buffered_frames >= self.prefill_frames:
                 self.waiting_prefill = False
+            # If output clock is slightly slower than producer clock, trim gently to avoid
+            # eventual burst drops and clicks.
+            high_water = self.target_buffer_frames + (self.blocksize * 2)
+            if (not self.waiting_prefill) and self.buffered_frames > high_water:
+                trim = min(self.blocksize // 4, self.buffered_frames - self.target_buffer_frames)
+                if trim > 0:
+                    dropped = self._drop_buffered_frames_locked(trim)
+                    if dropped > 0:
+                        self.queue_drop_frames += dropped
+                        self._status_counts["queue_trim"] = self._status_counts.get("queue_trim", 0) + 1
         if self.waiting_prefill:
+            if frames > 0:
+                out[:] = self.last_frame
             outdata[:] = out
             return
         filled = 0
@@ -483,7 +597,14 @@ class MonitorOutput:
         if filled < frames:
             self.queue_underruns += 1
             self._status_counts["queue_underrun"] = self._status_counts.get("queue_underrun", 0) + 1
-            self.waiting_prefill = True
+            # Keep continuity instead of forcing a full prefill pause.
+            if filled > 0:
+                hold = out[filled - 1]
+            else:
+                hold = self.last_frame
+            out[filled:] = hold
+        if frames > 0:
+            self.last_frame = out[frames - 1].copy()
         outdata[:] = out
 
     def _accumulate_status(self, status: Any) -> None:
@@ -524,6 +645,7 @@ def run_audio(capture_seconds: float | None = None) -> bool:
             logger.warning("StereoFool: stereo subcarrier band will be truncated at this sample rate")
     capture = None
     monitor = None
+    monitor_primary_output = False
     if mpx_state.get("wav_record_enabled"):
         path = str(mpx_state.get("wav_record_path", "mpx_capture.wav")).strip()
         if path:
@@ -535,6 +657,7 @@ def run_audio(capture_seconds: float | None = None) -> bool:
     monitor_enabled = bool(mpx_state.get("monitor_enabled"))
     monitor_rate = int(mpx_state.get("monitor_rate_hz", 48000))
     monitor_device = int(mpx_state.get("monitor_device_idx", -1))
+    monitor_parallel_enabled = bool(mpx_state.get("monitor_dsp_parallel", True))
     if (
         monitor_enabled
         and monitor_device >= 0
@@ -547,6 +670,11 @@ def run_audio(capture_seconds: float | None = None) -> bool:
         logger.info("StereoFool: monitor device matches output device; disabling MPX output for monitor mode")
     monitor_blocksize = max(1, int(round(blocksize * (monitor_rate / float(sample_rate)))))
     if monitor_enabled and monitor_device >= 0:
+        monitor_primary_output = not output_enabled
+        if monitor_primary_output and monitor_parallel_enabled:
+            # If monitor is the only audible path, avoid cross-thread frame drops.
+            monitor_parallel_enabled = False
+            logger.info("StereoFool: monitor is primary output; using inline monitor DSP")
         monitor = MonitorOutput(monitor_device, monitor_rate, blocksize=monitor_blocksize)
         monitor.start()
         logger.info("StereoFool: monitor output enabled (device=%s, rate=%s)", monitor_device, monitor_rate)
@@ -556,6 +684,9 @@ def run_audio(capture_seconds: float | None = None) -> bool:
         monitor_callback=monitor.push if monitor else None,
         monitor_rate=monitor_rate,
         blocksize=blocksize,
+        aux_priority_hook=_apply_aux_thread_priority_profile,
+        monitor_primary_output=monitor_primary_output,
+        monitor_parallel_enabled=monitor_parallel_enabled,
     )
     try:
         sd_out = mpx_state["device_out_idx"]
@@ -595,6 +726,7 @@ def run_audio(capture_seconds: float | None = None) -> bool:
                         if now - last >= 1.0:
                             logger.warning("StereoFool: input-only stream status: %s", _status)
                             last_status_log[0] = now
+                        engine._note_realtime_overload_from_status(_status)
                     outdata = np.zeros((frames, 2), dtype=engine.dtype)
                     engine._process_frame(outdata, frames, indata)
 
@@ -695,7 +827,10 @@ def launch_audio_thread(capture_seconds: float | None = None) -> bool:
         if audio_thread and audio_thread.is_alive():
             return False
         audio_thread = threading.Thread(
-            target=_run_audio_wrapper, args=(capture_seconds,), daemon=True
+            target=_run_audio_wrapper,
+            args=(capture_seconds,),
+            daemon=True,
+            name="sf-worker-audio",
         )
         audio_thread.start()
         return True
@@ -723,6 +858,7 @@ def request_audio_restart(reason: str, capture_seconds: float | None) -> None:
         restart_state["pending"] = True
 
     def _restart() -> None:
+        _apply_aux_thread_priority_profile("restart worker")
         logger.info("StereoFool: restarting audio (%s)", reason)
         stop_audio_thread(timeout=1.5)
         time.sleep(0.2)
@@ -732,10 +868,11 @@ def request_audio_restart(reason: str, capture_seconds: float | None) -> None:
         with restart_lock:
             restart_state["pending"] = False
 
-    threading.Thread(target=_restart, daemon=True).start()
+    threading.Thread(target=_restart, daemon=True, name="sf-worker-restart").start()
 
 
 def text_updater_loop() -> None:
+    _apply_aux_thread_priority_profile("text updater")
     while not shutdown_event.is_set():
         if rds_state["running"]:
             for key in ["ps_dynamic", "ps_long_32", "rt_text", "rt_a", "rt_b", "ptyn"]:
@@ -835,6 +972,7 @@ def _decimate_wave(samples: Sequence[float], max_points: int = 192) -> list[floa
 
 
 def telemetry_loop(telemetry_queue: Any) -> None:
+    _apply_aux_thread_priority_profile("telemetry")
     meta_counter = 0
     wave_counter = 0
     monitor_snapshot = refresh_monitor_snapshot()
@@ -857,6 +995,7 @@ def telemetry_loop(telemetry_queue: Any) -> None:
 
 
 def control_apply_loop() -> None:
+    _apply_aux_thread_priority_profile("control apply")
     while not shutdown_event.is_set():
         _flush_pending_updates()
         time.sleep(CONTROL_APPLY_INTERVAL_SECONDS)
@@ -873,9 +1012,18 @@ def worker_main(command_queue: Any, telemetry_queue: Any) -> None:
         pending_mpx_updates.clear()
         pending_rds_updates.clear()
         pending_dsp_reset = False
-    threading.Thread(target=text_updater_loop, daemon=True).start()
-    threading.Thread(target=telemetry_loop, args=(telemetry_queue,), daemon=True).start()
-    threading.Thread(target=control_apply_loop, daemon=True).start()
+    threading.Thread(
+        target=text_updater_loop, daemon=True, name="sf-worker-text-updater"
+    ).start()
+    threading.Thread(
+        target=telemetry_loop,
+        args=(telemetry_queue,),
+        daemon=True,
+        name="sf-worker-telemetry",
+    ).start()
+    threading.Thread(
+        target=control_apply_loop, daemon=True, name="sf-worker-control-apply"
+    ).start()
 
     while not shutdown_event.is_set():
         try:
