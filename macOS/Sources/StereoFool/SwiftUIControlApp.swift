@@ -190,7 +190,7 @@ enum MultibandPresetIntensity: String, CaseIterable, Identifiable {
 
 @MainActor
 enum NativeSwiftUIApp {
-    private static var retainedDelegate: SwiftUIAppDelegate?
+    private nonisolated(unsafe) static var retainedDelegate: SwiftUIAppDelegate?
 
     static func run(configPath: String, runSeconds: Double? = nil) throws {
         let app = NSApplication.shared
@@ -204,7 +204,7 @@ enum NativeSwiftUIApp {
 }
 
 @MainActor
-private final class SwiftUIAppDelegate: NSObject, NSApplicationDelegate {
+private final class SwiftUIAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let configPath: String
     private let runSeconds: Double?
     private var window: NSWindow?
@@ -258,6 +258,13 @@ private final class SwiftUIAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         model?.shutdown()
+    }
+
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        if menuItem.action == #selector(applyPendingChanges) {
+            return model?.runtimeApplyPending ?? false
+        }
+        return true
     }
 
     private func setupMainMenu() {
@@ -322,9 +329,8 @@ private final class SwiftUIAppDelegate: NSObject, NSApplicationDelegate {
         let applyItem = transportMenu.addItem(
             withTitle: "Apply Pending Changes",
             action: #selector(applyPendingChanges),
-            keyEquivalent: "a"  // ← Command + A
+            keyEquivalent: "a"
         )
-        applyItem.isEnabled = false  // initial state – we'll enable dynamically
 
         transportItem.submenu = transportMenu
         mainMenu.addItem(transportItem)
@@ -3475,7 +3481,7 @@ private struct SettingsSectionView: View {
                 }
             }
             .padding(20)
-        }
+        } 
     }
 }
 
