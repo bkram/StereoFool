@@ -190,7 +190,7 @@ enum MultibandPresetIntensity: String, CaseIterable, Identifiable {
 
 @MainActor
 enum NativeSwiftUIApp {
-    private nonisolated(unsafe) static var retainedDelegate: SwiftUIAppDelegate?
+hi    private nonisolated(unsafe) static var retainedDelegate: SwiftUIAppDelegate?
 
     static func run(configPath: String, runSeconds: Double? = nil) throws {
         let app = NSApplication.shared
