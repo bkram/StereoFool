@@ -202,6 +202,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.activate(ignoringOtherApps: true)
+        
         let vm = StereoFoolViewModel(configPath: configPath)
         model = vm
         setupMainMenu()
@@ -283,38 +285,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
 
-        // File Menu (unchanged – no Apply here now)
+        // File Menu
         let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "File")
-        fileMenu.addItem(
-            withTitle: "Open Config...", action: #selector(openConfig), keyEquivalent: "o")
-        fileMenu.addItem(withTitle: "Save Config", action: #selector(saveConfig), keyEquivalent: "")
-        fileMenu.addItem(
-            withTitle: "Save Config As...", action: #selector(saveConfigAs), keyEquivalent: "s"
-        ).keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(withTitle: "Open...", action: #selector(openConfig), keyEquivalent: "o")
+        fileMenu.addItem(withTitle: "Save", action: #selector(saveConfig), keyEquivalent: "s")
+        fileMenu.addItem(withTitle: "Save As...", action: #selector(saveConfigAs), keyEquivalent: "S").keyEquivalentModifierMask = [.command, .shift]
         fileItem.submenu = fileMenu
         mainMenu.addItem(fileItem)
 
-        // ──────────────── Transport Menu ────────────────
-        let transportItem = NSMenuItem(title: "Transport", action: nil, keyEquivalent: "")
-        let transportMenu = NSMenu(title: "Transport")
+        // Control Menu
+        let transportItem = NSMenuItem(title: "Control", action: nil, keyEquivalent: "")
+        let transportMenu = NSMenu(title: "Control")
 
         transportMenu.addItem(
-            withTitle: "Start/Stop", action: #selector(toggleTransport), keyEquivalent: "s"
-        ).keyEquivalentModifierMask = [.command]
+            withTitle: "Start/Stop", action: #selector(toggleTransport), keyEquivalent: "."
+        ).keyEquivalentModifierMask = []
         transportMenu.addItem(
-            withTitle: "Bypass", action: #selector(toggleBypass), keyEquivalent: "b"
-        ).keyEquivalentModifierMask = [.command]
+            withTitle: "Bypass", action: #selector(toggleBypass), keyEquivalent: "b")
         transportMenu.addItem(
-            withTitle: "Reset Peaks", action: #selector(resetPeaks), keyEquivalent: "r"
-        ).keyEquivalentModifierMask = [.command]
-
-        // NEW: Apply Pending Changes – placed here with ⌘A
-        let applyItem = transportMenu.addItem(
-            withTitle: "Apply Pending Changes",
-            action: #selector(applyPendingChanges),
-            keyEquivalent: "a"
-        )
+            withTitle: "Reset Peaks", action: #selector(resetPeaks), keyEquivalent: "r")
+        transportMenu.addItem(NSMenuItem.separator())
+        transportMenu.addItem(
+            withTitle: "Apply Pending Changes", action: #selector(applyPendingChanges), keyEquivalent: "a")
 
         transportItem.submenu = transportMenu
         mainMenu.addItem(transportItem)
@@ -322,24 +315,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         // Window Menu
         let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "Window")
-        windowMenu.addItem(
-            withTitle: "New Main", action: #selector(showMainWindow), keyEquivalent: "n")
+        
+        windowMenu.addItem(withTitle: "Main", action: #selector(showMainWindow), keyEquivalent: "1")
+        windowMenu.addItem(withTitle: "Spectrum", action: #selector(showSpectrumWindow), keyEquivalent: "8")
+        windowMenu.addItem(withTitle: "Levels", action: #selector(showLevelsWindow), keyEquivalent: "9")
+        windowMenu.addItem(withTitle: "Scopes", action: #selector(showScopesWindow), keyEquivalent: "0")
+        
         windowMenu.addItem(NSMenuItem.separator())
-        windowMenu.addItem(
-            withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
-        windowMenu.addItem(
-            withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
         windowMenu.addItem(NSMenuItem.separator())
-        windowMenu.addItem(
-            withTitle: "Scopes", action: #selector(showScopesWindow), keyEquivalent: "0")
-        windowMenu.addItem(
-            withTitle: "Spectrum", action: #selector(showSpectrumWindow), keyEquivalent: "8")
-        windowMenu.addItem(
-            withTitle: "Levels", action: #selector(showLevelsWindow), keyEquivalent: "9")
-        windowMenu.addItem(NSMenuItem.separator())
-        windowMenu.addItem(
-            withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)),
-            keyEquivalent: "")
+        windowMenu.addItem(withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)), keyEquivalent: "")
+        
         windowItem.submenu = windowMenu
         mainMenu.addItem(windowItem)
 
@@ -1829,7 +1816,27 @@ private struct RootView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .navigationTitle("StereoFool")
-        .sfToolbarTitleDisplayModeAutomatic()
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button(model.isRunning ? "Stop" : "Start") {
+                    model.startOrStopTransport()
+                }
+                .keyboardShortcut(.space, modifiers: [])
+                .disabled(model.isBusy)
+
+                Button(model.processingBypass ? "Bypass On" : "Bypass") {
+                    model.toggleBypass()
+                }
+                .disabled(model.isBusy)
+
+                if model.runtimeApplyPending {
+                    Button("Apply") {
+                        model.applyPendingRuntimeChanges()
+                    }
+                }
+            }
+        }
+        .toolbarTitleDisplayMode(.inline)
     }
 }
 
@@ -2254,17 +2261,6 @@ private struct DSPStateIndicator: View {
             Circle()
                 .fill(dotColor)
                 .frame(width: 7, height: 7)
-        }
-    }
-}
-
-extension View {
-    @ViewBuilder
-    fileprivate func sfToolbarTitleDisplayModeAutomatic() -> some View {
-        if #available(macOS 14.0, *) {
-            self.toolbarTitleDisplayMode(.automatic)
-        } else {
-            self
         }
     }
 }
@@ -3490,18 +3486,82 @@ private struct SettingsSectionView: View {
 
 private struct AboutSectionView: View {
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                Card(title: "About") {
-                    Text(
-                        "StereoFool is SwiftUI-first. DSP and audio routing remain native CoreAudio/AVAudioEngine."
-                    )
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("StereoFool")
+                        .font(.title2.weight(.semibold))
+                    Text("Experimental FM Composite MPX + RDS Generator")
+                        .foregroundStyle(.secondary)
+                    Divider()
+                    Text("A macOS app for generating FM composite MPX signal with RDS/RBDS. Features include multiband compression, stereo widening, look-ahead limiting, and real-time metering.")
+                        .foregroundStyle(.secondary)
                 }
+                .padding(.vertical, 4)
             }
-            .padding(20)
+
+            Section("Features") {
+                Text("• FM Composite (MPX) generation")
+                Text("• RDS/RBDS encoder with PTYN, RT+, AF")
+                Text("• Multiband dynamics processing")
+                Text("• Stereo widener")
+                Text("• Look-ahead limiting")
+                Text("• Real-time scopes and meters")
+            }
+
+            Section {
+                DisclaimerBox()
+            }
         }
+        .formStyle(.grouped)
+    }
+}
+
+private struct DisclaimerBox: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("Disclaimer")
+                    .font(.headline)
+            }
+            
+            Text("This software is provided for experimental and educational purposes only.")
+                .font(.caption)
+            
+            Text("It may not conform to any applicable technical standards, regulatory requirements, or broadcast specifications related to:")
+                .font(.caption)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("• RDS (Radio Data System)")
+                Text("• FM composite (MPX) signal generation")
+                Text("• RDS multiplex (RDS-MX) generation")
+                Text("• Modulation accuracy, deviation limits, or spectral purity")
+                Text("• Regional standards (e.g. EN 50067, IEC 62106, NRSC, ITU-R)")
+            }
+            .font(.caption)
+            .padding(.leading, 8)
+            
+            Text("No warranty, guarantee, or representation is made that:")
+                .font(.caption)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text("• The generated composite or RDS signal meets required specifications")
+                Text("• The output is suitable for on-air transmission")
+                Text("• The software complies with any national or international broadcast regulations")
+            }
+            .font(.caption)
+            .padding(.leading, 8)
+            
+            Text("Use of this software for transmission may require proper certification, measurement, and regulatory approval. The author assumes no liability for regulatory violations, equipment damage, interference, or any direct or indirect consequences arising from its use.")
+                .font(.caption)
+            
+            Text("Use at your own risk.")
+                .font(.caption.weight(.semibold))
+        }
+        .padding(12)
+        .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

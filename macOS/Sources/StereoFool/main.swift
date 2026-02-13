@@ -119,9 +119,7 @@ do {
         let delegate = AppDelegate(configPath: configPath, runSeconds: options.runSeconds)
         app.delegate = delegate
         app.setActivationPolicy(.regular)
-        app.activate(ignoringOtherApps: true)
         app.run()
-        exit(0)
     }
     let config = try AppConfig.load(fromINI: configPath)
     let generator = MPXGenerator(config: config, sampleRate: config.sampleRate)
