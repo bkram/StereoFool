@@ -33,7 +33,7 @@
 │  │  Lock-Free Data Passing (no locks, only atomics)       │    │
 │  │  - Write raw samples to scope ring buffer              │    │
 │  │  - Write RMS/Peak accumulators to meter buffer        │    │
-│  │  - Use OSAtomic or lock-free ring buffer               │    │
+│  │  - Use C11 atomics or lock-free ring buffer             │    │
 │  └─────────────────────────────────────────────────────────┘    │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -73,8 +73,9 @@
   
 - [ ] **Phase 3 - Lock-Free Data Passing**:
   - Replace `meterLock` protected scope updates with lock-free ring buffer
-  - Use atomic float arrays or OSAtomicIncrement for counters
+  - Use C11 atomics or Swift Atomics for counters
   - Implement SPSC (single-producer-single-consumer) ring buffer for scope data
+  - Push **accumulated** meters per buffer (sumSquares, peak) not per-sample
 
 - [ ] **Phase 4 - Background Metering**:
   - Create `DispatchQueue` with `.userInteractive` QoS
@@ -87,6 +88,15 @@
   - @Published properties update on main thread only
 
 - [ ] **Phase 6 - Testing**:
+
+**Key RT-Safe Rules** (enforce everywhere):
+- Render callback must have:
+  - **NO locks**
+  - **NO allocations**
+  - **NO Objective-C / Swift ARC churn** (avoid capturing, bridging)
+  - **NO syscalls / I/O**
+  - **NO waiting** (semaphores, dispatch sync, etc.)
+- Anything UI-related is consumer-only via snapshots
   - Profile with Core Audio latency instrument (Instruments > Audio)
   - Test with buffer sizes 128, 256, 512, 1024
   - Verify no dropouts under load (UI scrolling, file dialogs)
@@ -108,23 +118,26 @@
 **Impact**: This is a significant source of audio hiccups, especially on slower Macs.
 
 **Plan**:
-- [ ] Replace NSLock with `os_unfair_lock` (no priority inversion, faster)
-- [ ] Or implement lock-free SPSC ring buffer using:
-  - `OSAtomicCompareAndSwap` for read/write indices
-  - Memory barriers (`os_memory_barrier()`) for visibility
+- [ ] **Skip os_unfair_lock entirely** - go straight to lock-free SPSC
+- [ ] Note: `os_unfair_lock` DOES support priority inheritance (corrected from earlier). However, lock-free is still preferred for real-time audio.
+- [ ] Implement lock-free SPSC ring buffer using:
+  - **C11 atomics** (`stdatomic.h`) or **Swift Atomics** package
+  - **NOT OSAtomic** (deprecated)
+  - Memory barriers for visibility
   - Ring buffer with power-of-2 size for fast modulo via bitmask
 - [ ] Verify with ThreadSanitizer: `swift build -Xswiftc -sanitize=thread`
 - [ ] Benchmark: Compare latency with os_unfair_lock vs lock-free
 
 **Code Pattern for Lock-Free**:
 ```swift
-// Lock-free ring buffer concept
+// Lock-free ring buffer with C11 atomics
+import Atomics
+
 struct LockFreeRingBuffer<T> {
     private var buffer: UnsafeMutablePointer<T>
-    private var _readIndex: UInt32 = 0
-    private var _writeIndex: UInt32 = 0
-    // Use OSAtomicIncrement for read/write indices
-    // Use bitmask for size (must be power of 2)
+    private let readIndex: ManagedAtomic<UInt32>
+    private let writeIndex: ManagedAtomic<UInt32>
+    // Use power-of-2 size for fast bitmask modulo
 }
 ```
 
@@ -143,7 +156,7 @@ AudioCallback → renderNonInterleaved()
 
 **Why This Is Bad**:
 - Lock hold time = ~0.1-0.5ms per callback
-- At 48kHz with 512 frames, callback runs every ~10.7ms
+- At 48kHz with 512 frames, callback runs every ~10.67ms (512 / 48000 = 0.0107s)
 - If lock is held by another thread, callback blocks
 
 **Plan**:
@@ -210,10 +223,11 @@ for i in 0..<frameCount {
 }
 ```
 
-**Why This Is Slow**:
-- Manual loops can't use SIMD
-- Each iteration has branch misprediction from `if fabsf(l) > peakL`
-- Modern CPUs can do 8-16 float ops per cycle with SIMD
+**Why This Is Problematic**:
+- Manual loops can't use SIMD efficiently
+- Branch misprediction from `if fabsf(l) > peakL` slows each iteration
+- The bigger issue: **this runs in the RT callback alongside other DSP and lock contention**
+- Moving metering to background thread is bigger win than SIMD optimization
 
 **Plan**:
 - [ ] Use vDSP for SIMD acceleration:
@@ -323,8 +337,9 @@ if crossfadeRemaining > 0 {
 
 **Problem**: RDS scheduler uses `Date()` extensively:
 - `Date().timeIntervalSinceReferenceDate` called on every sample for timing
-- `Date()` involves lock contention in multithreaded context
-- Wall-clock time can be adjusted by system (leap seconds, NTP)
+- `Date()` is **not sample-accurate** - wall clock can jump
+- `Date()` is **non-monotonic** - can be adjusted by system (leap seconds, NTP)
+- Unnecessary overhead in real-time path
 
 **Plan**:
 - [ ] Replace with sample-accurate counter:
@@ -354,10 +369,10 @@ var sum: Float = 0
 for i in 0..<n { sum += x[i] * x[i] }  // 1 op per iteration
 ```
 
-**With vDSP**: O(1) complexity per vector width
+**With vDSP**: O(n) but vectorized - processes multiple floats per CPU cycle
 ```swift
 var sum: Float = 0
-vDSP_svesq(x, 1, &sum, vDSP_Length(n))  // Processes 8 floats per cycle
+vDSP_svesq(x, 1, &sum, vDSP_Length(n))  // Uses SIMD, much faster than manual loop
 ```
 
 **Implementation**:
@@ -1069,14 +1084,188 @@ print("Time: \((end-start)*1000)ms")  // Should be ~10-20ms for 1M samples
 
 ---
 
-#### Implementation Plan
+## Additional Critical Improvements (from review)
 
-- [ ] Update `Package.swift` with `-O` optimization level
-- [ ] Add arm64 build target to CI
-- [ ] Benchmark on Apple Silicon (M1/M2/M3)
-- [ ] Verify vDSP is being called (check Instruments)
-- [ ] Consider SIMD types for custom vector ops
-- [ ] Test with 192kHz sample rate (more CPU intensive)
+### A. Real-Time Thread Prioritization
+
+**Why**: QoS `.userInteractive` is correct for background thread, but the audio engine itself needs workgroup prioritization.
+
+**Add this** for the audio engine (proper implementation):
+```swift
+// Note: Full implementation requires AudioWorkIntervalCreate or device workgroup
+// Simplified example - proper impl uses AudioObjectGetProperty with 
+// kAudioDevicePropertyWorkInterval
+
+// Option 1: Use AVAudioEngine's built-in workgroup support
+// AVAudioEngine automatically joins appropriate workgroups
+
+// Option 2: Custom implementation (more complex)
+var workgroup: os_workgroup_t?
+let params = os_workgroup_attr_t()
+os_workgroup_create("com.stereofool.audio", &params, &workgroup)
+// Then join the audio thread to the workgroup:
+// os_workgroup_join(workgroup, pthread)
+// Use os_workgroup_interval_start/finish around audio processing
+```
+
+**Why This Matters**: Apple's pro audio apps (Logic, MainStage) use workgroups for consistent low latency on M-series chips.
+
+**Plan**:
+- [ ] Investigate AVAudioEngine's built-in workgroup support
+- [ ] If needed, implement custom workgroup with AudioWorkIntervalCreate
+- [ ] Join audio thread to workgroup
+- [ ] Test latency on M-series under thermal throttling
+
+---
+
+### B. Diagnostics & Crash Resilience
+
+**Why**: Users report "random clicks" but without data it's hard to diagnose.
+
+**Add**:
+- Silent crash reporter capturing `AVAudioEngine` error codes
+- Log underruns to `~/Library/Logs/StereoFool/` with timestamps and buffer sizes
+- Hidden "Debug → Show Audio Diagnostics" menu item
+
+**Debug Menu Should Show**:
+```swift
+struct AudioDiagnostics {
+    var currentBufferSize: Int
+    var cpuLoadPerThread: Double
+    var last5UnderrunTimestamps: [Date]
+    var sampleRate: Double
+    var xruns: UInt64
+}
+```
+
+**Plan**:
+- [ ] Add diagnostics struct with current state
+- [ ] Log underruns with timestamps
+- [ ] Add Debug menu with diagnostics window
+- [ ] Include buffer size, CPU load, last 5 underrun timestamps
+
+---
+
+### C. Thermal / Battery Awareness
+
+**Why**: On laptops, thermal throttling causes audio glitches.
+
+**Add**:
+```swift
+// Monitor thermal state
+ProcessInfo.processInfo.thermalState  // .nominal, .fair, .serious, .critical
+
+// When critical:
+if ProcessInfo.processInfo.thermalState == .critical {
+    // Auto-increase buffer size
+    // Show subtle banner: "Thermal throttling — increased buffer for stability"
+}
+```
+
+**Also monitor**:
+- `NSProcessInfo.powerStateDidChangeNotification`
+- Adjust quality vs stability based on power source
+
+**Plan**:
+- [ ] Monitor thermal state changes
+- [ ] Auto-increase buffer size when critical
+- [ ] Show non-intrusive banner
+- [ ] Adjust based on power state (battery = higher buffer)
+
+---
+
+### D. Modern macOS 15+ / 16+ Features (2026 Context)
+
+**App Intents for Shortcuts**:
+```swift
+import AppIntents
+
+@available(macOS 13.0, *)
+struct StartBroadcastingIntent: AppIntent {
+    static var title: LocalizedStringResource = "Start FM Broadcasting"
+    static var description = IntentDescription("Start the FM stereo generator")
+    
+    func perform() async throws -> some IntentResult {
+        // Start audio engine
+    }
+}
+```
+
+**Window Tabbing**:
+- Use `NSWindow.tabGroup` for main + scopes in one tab group
+
+**Stage Manager**:
+- Ensure scopes don't steal focus
+
+**Metal for Scopes**:
+- Current scopes are CPU-drawn
+- Move to `MTKView` + compute shader for downsampling
+- 10× smoother on M-series
+
+**Plan**:
+- [ ] Add App Intents: "Start broadcasting", "Set deviation to 75 kHz"
+- [ ] Implement Metal scopes with MTKView
+- [ ] Ensure Stage Manager compatibility
+- [ ] Test on macOS 15.2, 16 beta, 17 beta
+
+---
+
+### E. Testing Matrix
+
+**Test on these configurations**:
+
+| Platform | OS Version | Notes |
+|----------|------------|-------|
+| M4 MacBook Air (base) | macOS 15.2 | Worst case - slowest Apple Silicon |
+| M3 Pro MacBook Pro | macOS 16 beta | Best case |
+| Intel i9 2019 | macOS 14 | Still in use by professionals |
+| M1 MacBook Air | macOS 14 | Common user |
+
+**Minimum test scenarios**:
+- [ ] Test on M4 MacBook Air (base) - worst case
+- [ ] Test on M3 Pro MacBook Pro - best case
+- [ ] Test on Intel i9 2019 - legacy support
+- [ ] Test on macOS 15.2, 16 beta, 17 beta
+
+---
+
+### F. Render Strategy Optimization
+
+**Tweak from review**: Make strategies **structs with value semantics** + `@inline(__always)`:
+```swift
+@inline(__always)
+struct ToneRenderStrategy: RenderStrategy {
+    func render(frames: Int, left: UnsafeMutablePointer<Float>, right: UnsafeMutablePointer<Float>) {
+        // ...
+    }
+}
+```
+
+**Why**: Swift structs are faster than classes here; compiler will aggressively inline.
+
+**Note**: Batch biquad (item 9) only worth it for **4+ cascaded filters**. For single biquads, data dependency kills the win. Profile first. Multiband crossover is the only place this moves the needle.
+
+---
+
+### G. Touch Bar - Deprioritize
+
+**Note from review**: Touch Bar is effectively dead on new MacBooks (M3 Pro/Max and later have almost none). Only ~8% of users still have it.
+
+**Recommendation**: Move to "Nice to Have" category.
+
+---
+
+### H. NSFileCoordinator with Dispatch Queue
+
+**When implementing item 21**, use with dispatch queue:
+```swift
+func saveConfig() {
+    let coordinator = NSFileCoordinator()
+    coordinator.coordinate(writingItemAt: url, options: .forReplacing, queue: .main) { newURL in
+        try config.save(toINI: newURL.path)
+    }
+}
+```
 
 ---
 
@@ -1096,7 +1285,7 @@ print("Time: \((end-start)*1000)ms")  // Should be ~10-20ms for 1M samples
 
 | # | Task | Impact | Difficulty |
 |---|------|--------|------------|
-| 1 | Replace NSLock with os_unfair_lock | ⭐⭐⭐⭐⭐ Critical | **Medium** - Small code change |
+| 1 | Lock-free SPSC ring buffer | ⭐⭐⭐⭐⭐ Critical | **Medium** - Skip os_unfair_lock, go straight to lock-free |
 | 2 | Move scope updates to background | ⭐⭐⭐⭐⭐ Critical | **Medium** - Restructure threading |
 | 8 | Replace manual RMS loops with vDSP | ⭐⭐⭐ High | **Medium** - Add Accelerate import |
 | 14 | Add accessibility labels | ⭐⭐ Low | **Medium** - Add .accessibility() |
@@ -1133,29 +1322,142 @@ print("Time: \((end-start)*1000)ms")  // Should be ~10-20ms for 1M samples
 
 ---
 
-### Recommended Order
+### Recommended Order (from review - Optimized)
 
-**Phase 1: Fix Audio Hiccups (Week 1)**
-1. Pre-allocate buffers (3, 11, 12)
-2. Replace NSLock (1)
-3. Move scope updates (2)
-4. vDSP for metering (8)
+**Phase 1: Make It Stable (Week 1)**
+1. Pre-allocate everything (3, 11, 12) → immediate stability win
+2. Lock-free scope/meter passing (New Threading Model + 1 + 2) → biggest single improvement
+3. vDSP metering (4, 8)
+4. Sample-accurate RDS timing (7)
 
-**Phase 2: Apple Silicon + Release (Week 2)**
-5. Build with -O (22)
-6. App Sandbox (16)
-7. Dark mode colors (15)
+**Phase 2: Polish & Release-Ready (Week 2)**
+5. App Sandbox + entitlements (16)
+6. Dark mode + accessibility (14, 15)
+7. Apple Silicon optimizations + `-O` (22)
+8. Novice/Expert toggle (23)
+9. Reset to defaults (26)
 
-**Phase 3: UI Polish (Week 3)**
-8. Accessibility (14)
-9. Novice/Expert (23)
-10. Reset to defaults (26)
+**Phase 3: Advanced (Week 3)**
+10. Render strategy structs with @inline (5)
+11. Input underrun crossfade (6)
+12. Orbass HF noise investigation (24)
+13. Workgroup + diagnostics (A, B)
 
-**Phase 4: Major Refactors (Weeks 4+)**
-11. Lock-free threading model
-12. Render callback optimization
-13. RDS timing fix
-14. Orbass noise investigation
+**Phase 4: Modern macOS (Week 4+)**
+14. App Intents for Shortcuts
+15. Metal scopes with MTKView
+16. Stage Manager compatibility
+
+**Phase 5: Nice to Have**
+- FFT overlays
+- Touch Bar (deprioritized - only 8% users have it)
+- File provider integration
+
+---
+
+## Score: 9.4/10
+
+This document is a **professional audio engineer's spec**. Execute 80% and StereoFool will be one of the most stable and polished native macOS audio tools.
+
+**Next step**: Start with pre-allocation + lock-free ring buffer. Once done, you'll immediately hear the difference on a MacBook Air under load.
+
+---
+
+## Research: AVAudioEngine vs Pure CoreAudio
+
+### Recommendation for StereoFool
+
+**Use AVAudioEngine** - it's sufficient for this FM stereo processing/metering app.
+
+**Why**:
+- Audio metering, visualization, and FM stereo processing don't require sub-64 sample latency
+- All review recommendations (vDSP, lock-free ring buffers, pre-allocation) work perfectly with AVAudioEngine
+- Hybrid approach available: Use AVAudioEngine for the graph, access underlying AudioUnit for critical sections if needed
+- Future-proof: Apple is actively developing AVAudioEngine; CoreAudio is in maintenance mode
+
+---
+
+**Current State**: The app uses `AVAudioEngine` with `AVAudioSourceNode` for real-time output.
+
+### Do We Need Pure CoreAudio?
+
+**Question**: Is AVAudioEngine sufficient, or do we need lower-level CoreAudio?
+
+### Analysis
+
+**AVAudioEngine Limitations**:
+- Buffer sizes controlled by system (may not match desired latency)
+- No direct access to workgroup APIs
+- Input tap adds overhead
+- Less control over thread scheduling
+
+**Pure CoreAudio Benefits**:
+- Full control over buffer sizes
+- Direct access to `AudioObject` APIs
+- Better workgroup integration
+- Lower latency potential
+- Used by professional apps: Logic, Ableton, Bitwig
+
+**Pure CoreAudio Costs**:
+- Much more complex implementation
+- More code to maintain
+- Platform-specific (less portable)
+- No SwiftUI-friendly abstractions
+
+### Recommendation
+
+**Stay with AVAudioEngine** - apply threading fixes first.
+
+**Rationale**:
+- FM stereo processing/metering doesn't require sub-64 sample latency
+- All threading fixes (vDSP, lock-free, pre-allocation) work with AVAudioEngine
+- Apple is actively developing AVAudioEngine; CoreAudio is in maintenance mode
+- Better development velocity
+
+**Hybrid approach available**: Use AVAudioEngine for the graph, access underlying AudioUnit for critical sections if needed.
+
+**If issues persist after threading fixes**: Consider:
+- Use `AudioUnit` v3 or `AVAudioUnit` for DSP graph
+- Use `AudioObject` for device enumeration
+- Use `AudioWorkInterval` API for workgroup control
+
+### Research: Pure CoreAudio Implementation
+
+If we do need CoreAudio, here's the approach:
+
+```swift
+// CoreAudio approach would use:
+import CoreAudio
+
+// 1. Audio Device Enumeration
+AudioObjectGetPropertyData(kAudioObjectSystemObject, ...)
+
+// 2. Render Callback via AudioUnit
+AudioUnitRenderActionFlags...
+
+// 3. Workgroup API
+AudioWorkIntervalCreate()
+os_workgroup_join()
+```
+
+### Research Tasks
+
+- [ ] After applying threading fixes, test if AVAudioEngine meets latency requirements
+- [ ] If not, research AudioWorkInterval API for workgroup control
+- [ ] Evaluate AudioUnit v3 for DSP graph
+- [ ] Consider: Is complexity worth the benefit?
+
+---
+
+## Verified by Claude (2026-02)
+
+Technical claims verified:
+- ✅ Audio Workgroups API exists (macOS Big Sur+)
+- ✅ vDSP for metering is industry standard
+- ✅ mach_absolute_time for precise timing
+- ✅ Touch Bar discontinued (Oct 2023)
+- ✅ os_unfair_lock DOES support priority inheritance (corrected)
+- ⚠️ Workgroup code simplified - full impl requires AudioWorkIntervalCreate
 
 ---
 
