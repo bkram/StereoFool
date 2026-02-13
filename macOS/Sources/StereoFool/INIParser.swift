@@ -26,10 +26,12 @@ struct INIParser {
                 continue
             }
             if let commentRange = line.range(of: ";") {
-                line = String(line[..<commentRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                line = String(line[..<commentRange.lowerBound]).trimmingCharacters(
+                    in: .whitespacesAndNewlines)
             }
             if line.hasPrefix("[") && line.hasSuffix("]") && line.count >= 2 {
-                section = String(line.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+                section = String(line.dropFirst().dropLast()).trimmingCharacters(
+                    in: .whitespacesAndNewlines)
                 if result[section] == nil {
                     result[section] = [:]
                 }
@@ -39,7 +41,8 @@ struct INIParser {
                 continue
             }
             let key = String(line[..<eq]).trimmingCharacters(in: .whitespacesAndNewlines)
-            let value = String(line[line.index(after: eq)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = String(line[line.index(after: eq)...]).trimmingCharacters(
+                in: .whitespacesAndNewlines)
             if key.isEmpty {
                 continue
             }
@@ -50,4 +53,3 @@ struct INIParser {
         return result
     }
 }
-

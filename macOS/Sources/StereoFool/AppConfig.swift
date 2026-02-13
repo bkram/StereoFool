@@ -84,9 +84,11 @@ struct AppConfig {
     var rdsEnableAF: Bool = false
     var rdsAFList: String = "88.1, 98.8, 106.6"
     var rdsAFMethod: String = "A"
-    var rdsPSDynamic: String = "3s:Stereo- 3s:Fool 3s:Open 3s:Source 3s:Stereo 3s:and 3s:RDS 2s:Coder"
+    var rdsPSDynamic: String =
+        "3s:Stereo- 3s:Fool 3s:Open 3s:Source 3s:Stereo 3s:and 3s:RDS 2s:Coder"
     var rdsPSCentered: Bool = true
-    var rdsRTText: String = "10s:StereoFool Stereo and RDS Coder/10s:100% Python, Multi-Platform, Web-based"
+    var rdsRTText: String =
+        "10s:StereoFool Stereo and RDS Coder/10s:100% Python, Multi-Platform, Web-based"
     var rdsRTManualBuffers: Bool = false
     var rdsRTCycleAB: Bool = false
     var rdsRTA: String = "StereoFool: MPX + RDS + UI"
@@ -126,7 +128,7 @@ struct AppConfig {
     static func load(fromINI path: String) throws -> AppConfig {
         let resolvedPath = resolveINIPath(path, forWrite: false)
         let parsed = try INIParser.parseFile(resolvedPath)
-        
+
         let mpx = parsed["MPX"] ?? [:]
         let interfaces = parsed["INTERFACES"] ?? [:]
         let rds = parsed["RDS"] ?? [:]
@@ -158,15 +160,22 @@ struct AppConfig {
         cfg.limitMPX = mpx.bool("limit_mpx", defaultValue: cfg.limitMPX)
         cfg.limitThreshold = mpx.double("limit_threshold", defaultValue: cfg.limitThreshold)
         cfg.limitLookaheadMS = mpx.double("limit_lookahead_ms", defaultValue: cfg.limitLookaheadMS)
-        cfg.limitLookaheadEnabled = mpx.bool("limit_lookahead_enabled", defaultValue: cfg.limitLookaheadEnabled)
+        cfg.limitLookaheadEnabled = mpx.bool(
+            "limit_lookahead_enabled", defaultValue: cfg.limitLookaheadEnabled)
         cfg.mpxDeviationKHz = mpx.double("mpx_deviation_khz", defaultValue: cfg.mpxDeviationKHz)
         cfg.enRDS = mpx.bool("en_rds", defaultValue: rds.bool("en_rds", defaultValue: cfg.enRDS))
-        cfg.widebandAGCEnabled = mpx.bool("wideband_agc_enabled", defaultValue: cfg.widebandAGCEnabled)
-        cfg.widebandAGCTargetDB = mpx.double("wideband_agc_target_db", defaultValue: cfg.widebandAGCTargetDB)
-        cfg.widebandAGCAttackMS = mpx.double("wideband_agc_attack_ms", defaultValue: cfg.widebandAGCAttackMS)
-        cfg.widebandAGCReleaseMS = mpx.double("wideband_agc_release_ms", defaultValue: cfg.widebandAGCReleaseMS)
-        cfg.widebandAGCMaxGainDB = mpx.double("wideband_agc_max_gain_db", defaultValue: cfg.widebandAGCMaxGainDB)
-        cfg.widebandAGCMinGainDB = mpx.double("wideband_agc_min_gain_db", defaultValue: cfg.widebandAGCMinGainDB)
+        cfg.widebandAGCEnabled = mpx.bool(
+            "wideband_agc_enabled", defaultValue: cfg.widebandAGCEnabled)
+        cfg.widebandAGCTargetDB = mpx.double(
+            "wideband_agc_target_db", defaultValue: cfg.widebandAGCTargetDB)
+        cfg.widebandAGCAttackMS = mpx.double(
+            "wideband_agc_attack_ms", defaultValue: cfg.widebandAGCAttackMS)
+        cfg.widebandAGCReleaseMS = mpx.double(
+            "wideband_agc_release_ms", defaultValue: cfg.widebandAGCReleaseMS)
+        cfg.widebandAGCMaxGainDB = mpx.double(
+            "wideband_agc_max_gain_db", defaultValue: cfg.widebandAGCMaxGainDB)
+        cfg.widebandAGCMinGainDB = mpx.double(
+            "wideband_agc_min_gain_db", defaultValue: cfg.widebandAGCMinGainDB)
         cfg.orbassEnabled = mpx.bool("orbass_enabled", defaultValue: cfg.orbassEnabled)
         cfg.orbassAmount = mpx.double("orbass_amount", defaultValue: cfg.orbassAmount)
         cfg.orbassFreqHz = mpx.double("orbass_freq_hz", defaultValue: cfg.orbassFreqHz)
@@ -181,9 +190,11 @@ struct AppConfig {
             "orbass_subharmonics_amount",
             defaultValue: cfg.orbassSubharmonicsAmount
         )
-        cfg.stereoWidenEnabled = mpx.bool("stereo_widen_enabled", defaultValue: cfg.stereoWidenEnabled)
+        cfg.stereoWidenEnabled = mpx.bool(
+            "stereo_widen_enabled", defaultValue: cfg.stereoWidenEnabled)
         cfg.stereoWidenWidth = mpx.double("stereo_widen_width", defaultValue: cfg.stereoWidenWidth)
-        cfg.stereoWidenCenter = mpx.double("stereo_widen_center", defaultValue: cfg.stereoWidenCenter)
+        cfg.stereoWidenCenter = mpx.double(
+            "stereo_widen_center", defaultValue: cfg.stereoWidenCenter)
         cfg.stereoWidenMix = mpx.double("stereo_widen_mix", defaultValue: cfg.stereoWidenMix)
         cfg.multibandEnabled = mpx.bool("multiband_enabled", defaultValue: cfg.multibandEnabled)
         cfg.multibandMode = mpx.int("multiband_mode", defaultValue: cfg.multibandMode)
@@ -193,25 +204,39 @@ struct AppConfig {
         cfg.multibandX2Hz = mpx.double("multiband_x2_hz", defaultValue: cfg.multibandX2Hz)
         cfg.multibandX3Hz = mpx.double("multiband_x3_hz", defaultValue: cfg.multibandX3Hz)
         cfg.multibandX4Hz = mpx.double("multiband_x4_hz", defaultValue: cfg.multibandX4Hz)
-        cfg.multibandLowThresholdDB = mpx.double("multiband_low_threshold_db", defaultValue: cfg.multibandLowThresholdDB)
-        cfg.multibandMidThresholdDB = mpx.double("multiband_mid_threshold_db", defaultValue: cfg.multibandMidThresholdDB)
-        cfg.multibandHighThresholdDB = mpx.double("multiband_high_threshold_db", defaultValue: cfg.multibandHighThresholdDB)
-        cfg.multibandLowRatio = mpx.double("multiband_low_ratio", defaultValue: cfg.multibandLowRatio)
-        cfg.multibandMidRatio = mpx.double("multiband_mid_ratio", defaultValue: cfg.multibandMidRatio)
-        cfg.multibandHighRatio = mpx.double("multiband_high_ratio", defaultValue: cfg.multibandHighRatio)
-        cfg.multibandLowAttackMS = mpx.double("multiband_low_attack_ms", defaultValue: cfg.multibandLowAttackMS)
-        cfg.multibandMidAttackMS = mpx.double("multiband_mid_attack_ms", defaultValue: cfg.multibandMidAttackMS)
-        cfg.multibandHighAttackMS = mpx.double("multiband_high_attack_ms", defaultValue: cfg.multibandHighAttackMS)
-        cfg.multibandLowReleaseMS = mpx.double("multiband_low_release_ms", defaultValue: cfg.multibandLowReleaseMS)
-        cfg.multibandMidReleaseMS = mpx.double("multiband_mid_release_ms", defaultValue: cfg.multibandMidReleaseMS)
-        cfg.multibandHighReleaseMS = mpx.double("multiband_high_release_ms", defaultValue: cfg.multibandHighReleaseMS)
+        cfg.multibandLowThresholdDB = mpx.double(
+            "multiband_low_threshold_db", defaultValue: cfg.multibandLowThresholdDB)
+        cfg.multibandMidThresholdDB = mpx.double(
+            "multiband_mid_threshold_db", defaultValue: cfg.multibandMidThresholdDB)
+        cfg.multibandHighThresholdDB = mpx.double(
+            "multiband_high_threshold_db", defaultValue: cfg.multibandHighThresholdDB)
+        cfg.multibandLowRatio = mpx.double(
+            "multiband_low_ratio", defaultValue: cfg.multibandLowRatio)
+        cfg.multibandMidRatio = mpx.double(
+            "multiband_mid_ratio", defaultValue: cfg.multibandMidRatio)
+        cfg.multibandHighRatio = mpx.double(
+            "multiband_high_ratio", defaultValue: cfg.multibandHighRatio)
+        cfg.multibandLowAttackMS = mpx.double(
+            "multiband_low_attack_ms", defaultValue: cfg.multibandLowAttackMS)
+        cfg.multibandMidAttackMS = mpx.double(
+            "multiband_mid_attack_ms", defaultValue: cfg.multibandMidAttackMS)
+        cfg.multibandHighAttackMS = mpx.double(
+            "multiband_high_attack_ms", defaultValue: cfg.multibandHighAttackMS)
+        cfg.multibandLowReleaseMS = mpx.double(
+            "multiband_low_release_ms", defaultValue: cfg.multibandLowReleaseMS)
+        cfg.multibandMidReleaseMS = mpx.double(
+            "multiband_mid_release_ms", defaultValue: cfg.multibandMidReleaseMS)
+        cfg.multibandHighReleaseMS = mpx.double(
+            "multiband_high_release_ms", defaultValue: cfg.multibandHighReleaseMS)
         cfg.multibandKneeDB = mpx.double("multiband_knee_db", defaultValue: cfg.multibandKneeDB)
-        cfg.multibandLinkStrength = mpx.double("multiband_link_strength", defaultValue: cfg.multibandLinkStrength)
+        cfg.multibandLinkStrength = mpx.double(
+            "multiband_link_strength", defaultValue: cfg.multibandLinkStrength)
         cfg.multibandReleaseProgramDependent = mpx.bool(
             "multiband_release_program_dependent",
             defaultValue: cfg.multibandReleaseProgramDependent
         )
-        cfg.multibandMakeupDB = mpx.double("multiband_makeup_db", defaultValue: cfg.multibandMakeupDB)
+        cfg.multibandMakeupDB = mpx.double(
+            "multiband_makeup_db", defaultValue: cfg.multibandMakeupDB)
         cfg.rdsLevel = rds.double("rds_level", defaultValue: cfg.rdsLevel)
         cfg.rdsPI = rds.string("pi", defaultValue: cfg.rdsPI)
         cfg.rdsPTY = rds.int("pty", defaultValue: cfg.rdsPTY)
@@ -257,10 +282,13 @@ struct AppConfig {
         cfg.rdsAutoStart = rds.bool("auto_start", defaultValue: cfg.rdsAutoStart)
         cfg.rdsGroupSequence = rds.string("group_sequence", defaultValue: cfg.rdsGroupSequence)
         cfg.rdsSchedulerAuto = rds.bool("scheduler_auto", defaultValue: cfg.rdsSchedulerAuto)
-        cfg.rdsSchedulerStandard = rds.bool("scheduler_standard", defaultValue: cfg.rdsSchedulerStandard)
-        cfg.rdsSchedulerStandardLPS = rds.bool("scheduler_standard_lps", defaultValue: cfg.rdsSchedulerStandardLPS)
+        cfg.rdsSchedulerStandard = rds.bool(
+            "scheduler_standard", defaultValue: cfg.rdsSchedulerStandard)
+        cfg.rdsSchedulerStandardLPS = rds.bool(
+            "scheduler_standard_lps", defaultValue: cfg.rdsSchedulerStandardLPS)
         cfg.rdsFreq = rds.double("rds_freq", defaultValue: cfg.rdsFreq)
-        cfg.rdsGaussianEnabled = rds.bool("rds_gaussian_enabled", defaultValue: cfg.rdsGaussianEnabled)
+        cfg.rdsGaussianEnabled = rds.bool(
+            "rds_gaussian_enabled", defaultValue: cfg.rdsGaussianEnabled)
         cfg.rdsGaussianBWHZ = rds.double("rds_gaussian_bw_hz", defaultValue: cfg.rdsGaussianBWHZ)
         cfg.rdsGaussianTaps = rds.int("rds_gaussian_taps", defaultValue: cfg.rdsGaussianTaps)
         cfg.rdsPI = Self.sanitizedPICode(cfg.rdsPI)
@@ -419,7 +447,8 @@ struct AppConfig {
             "output_device_uid = \(outputDeviceUID ?? "")",
             "monitor_device_uid = \(monitorDeviceUID ?? "")",
         ]
-        let text = (mpxLines + [""] + rdsLines + [""] + interfacesLines + [""]).joined(separator: "\n")
+        let text = (mpxLines + [""] + rdsLines + [""] + interfacesLines + [""]).joined(
+            separator: "\n")
         let resolvedPath = Self.resolveINIPath(path, forWrite: true)
         let fileManager = FileManager.default
         let parentDirectory = URL(fileURLWithPath: resolvedPath).deletingLastPathComponent().path
@@ -550,42 +579,50 @@ struct AppConfig {
         if let firstCandidate = candidates.first {
             return firstCandidate
         }
-        let fallback = (fileManager.currentDirectoryPath as NSString).appendingPathComponent(expandedPath)
+        let fallback = (fileManager.currentDirectoryPath as NSString).appendingPathComponent(
+            expandedPath)
         return (fallback as NSString).standardizingPath
     }
 }
 
-private extension Dictionary where Key == String, Value == String {
-    func string(_ key: String, defaultValue: String) -> String {
-        guard let raw = self[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+extension Dictionary where Key == String, Value == String {
+    fileprivate func string(_ key: String, defaultValue: String) -> String {
+        guard let raw = self[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
+        else {
             return defaultValue
         }
         return raw
     }
 
-    func optionalString(_ key: String) -> String? {
-        guard let raw = self[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+    fileprivate func optionalString(_ key: String) -> String? {
+        guard let raw = self[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
+        else {
             return nil
         }
         return raw
     }
 
-    func double(_ key: String, defaultValue: Double) -> Double {
-        guard let raw = self[key], let val = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+    fileprivate func double(_ key: String, defaultValue: Double) -> Double {
+        guard let raw = self[key],
+            let val = Double(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        else {
             return defaultValue
         }
         return val
     }
 
-    func int(_ key: String, defaultValue: Int) -> Int {
-        guard let raw = self[key], let val = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+    fileprivate func int(_ key: String, defaultValue: Int) -> Int {
+        guard let raw = self[key],
+            let val = Int(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        else {
             return defaultValue
         }
         return val
     }
 
-    func bool(_ key: String, defaultValue: Bool) -> Bool {
-        guard let raw = self[key]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else {
+    fileprivate func bool(_ key: String, defaultValue: Bool) -> Bool {
+        guard let raw = self[key]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        else {
             return defaultValue
         }
         switch raw {

@@ -1,5 +1,5 @@
-import Foundation
 import Darwin
+import Foundation
 
 private let twoPi = Float.pi * 2.0
 private let pilotFreq = Float(19_000.0)
@@ -109,7 +109,9 @@ struct Biquad {
         setNormalized(pb0, pb1, pb2, pa0, pa1, pa2)
     }
 
-    mutating func configureHighShelf(gainDB: Float, cutoffHz: Float, sampleRate: Float, slope: Float = 1.0) {
+    mutating func configureHighShelf(
+        gainDB: Float, cutoffHz: Float, sampleRate: Float, slope: Float = 1.0
+    ) {
         if fabsf(gainDB) < 0.01 {
             configureIdentity()
             return
@@ -389,7 +391,8 @@ struct LookaheadLimiter {
     var holdSamples: Int = 0
     var holdCounter: Int = 0
 
-    mutating func configure(sampleRate: Float, lookaheadMS: Float, threshold: Float, enabled: Bool) {
+    mutating func configure(sampleRate: Float, lookaheadMS: Float, threshold: Float, enabled: Bool)
+    {
         self.enabled = enabled
         self.threshold = clampf(threshold, 0.5, 0.999)
 
@@ -603,14 +606,16 @@ private final class BasicRDSCoder {
         self.schedulerAuto = config.rdsSchedulerAuto
         self.schedulerStandard = config.rdsSchedulerStandard
         self.schedulerStandardLPS = config.rdsSchedulerStandardLPS
-        self.psFrames = Self.parseTimedFrames(config.rdsPSDynamic, width: 8, uppercase: true, center: psCentered)
+        self.psFrames = Self.parseTimedFrames(
+            config.rdsPSDynamic, width: 8, uppercase: true, center: psCentered)
         self.rtFrames = Self.parseTimedFrames(
             config.rdsRTText,
             width: rtMode2B ? 32 : 64,
             uppercase: false,
             center: rtCentered
         )
-        self.psSequence = Self.parseTimedSequence(config.rdsPSDynamic, width: 8, uppercase: true, center: psCentered)
+        self.psSequence = Self.parseTimedSequence(
+            config.rdsPSDynamic, width: 8, uppercase: true, center: psCentered)
         self.rtSequence = Self.parseTimedSequence(
             config.rdsRTText,
             width: rtMode2B ? 32 : 64,
@@ -619,13 +624,17 @@ private final class BasicRDSCoder {
         )
         self.ptynEnabled = config.rdsEnablePTYN
         self.ptynCentered = config.rdsPTYNCentered
-        self.ptynFrames = Self.parseTimedFrames(config.rdsPTYN, width: 8, uppercase: true, center: ptynCentered)
-        self.ptynSequence = Self.parseTimedSequence(config.rdsPTYN, width: 8, uppercase: true, center: ptynCentered)
+        self.ptynFrames = Self.parseTimedFrames(
+            config.rdsPTYN, width: 8, uppercase: true, center: ptynCentered)
+        self.ptynSequence = Self.parseTimedSequence(
+            config.rdsPTYN, width: 8, uppercase: true, center: ptynCentered)
         self.lpsEnabled = config.rdsEnableLPS
         self.lpsCentered = config.rdsLPSCentered
         self.lpsCR = config.rdsLPSCR
-        self.lpsFrames = Self.parseTimedFrames(config.rdsLongPS32, width: 32, uppercase: false, center: lpsCentered)
-        self.lpsSequence = Self.parseTimedSequence(config.rdsLongPS32, width: 32, uppercase: false, center: lpsCentered)
+        self.lpsFrames = Self.parseTimedFrames(
+            config.rdsLongPS32, width: 32, uppercase: false, center: lpsCentered)
+        self.lpsSequence = Self.parseTimedSequence(
+            config.rdsLongPS32, width: 32, uppercase: false, center: lpsCentered)
         self.rtPlusEnabled = config.rdsEnableRTPlus
         self.rtPlusFormatA = config.rdsRTPlusFormatA
         self.rtPlusFormatB = config.rdsRTPlusFormatB
@@ -682,9 +691,11 @@ private final class BasicRDSCoder {
     }
 
     private func updateShapingFilters() {
-        biphaseKernel = Self.biphaseShapingTaps(sampleRate: sampleRate, bitrate: Self.bitrate, tapCount: 301)
+        biphaseKernel = Self.biphaseShapingTaps(
+            sampleRate: sampleRate, bitrate: Self.bitrate, tapCount: 301)
         if gaussianEnabled {
-            gaussianKernel = Self.gaussianTaps(sampleRate: sampleRate, bandwidthHz: gaussianBWHZ, tapCount: gaussianTaps)
+            gaussianKernel = Self.gaussianTaps(
+                sampleRate: sampleRate, bandwidthHz: gaussianBWHZ, tapCount: gaussianTaps)
         } else {
             gaussianKernel = [1.0]
         }
@@ -778,7 +789,9 @@ private final class BasicRDSCoder {
         return y
     }
 
-    private static func biphaseShapingTaps(sampleRate: Float, bitrate: Float, tapCount: Int) -> [Float] {
+    private static func biphaseShapingTaps(sampleRate: Float, bitrate: Float, tapCount: Int)
+        -> [Float]
+    {
         // Match Python path intent: firwin2-shaped EN50067 biphase impulse response.
         let count = max(9, tapCount | 1)
         let sr = max(8_000.0, sampleRate)
@@ -831,7 +844,9 @@ private final class BasicRDSCoder {
         return taps
     }
 
-    private static func gaussianTaps(sampleRate: Float, bandwidthHz: Float, tapCount: Int) -> [Float] {
+    private static func gaussianTaps(sampleRate: Float, bandwidthHz: Float, tapCount: Int)
+        -> [Float]
+    {
         let count = max(9, tapCount | 1)
         let sr = max(8_000.0, sampleRate)
         let bw = max(100.0, bandwidthHz)
@@ -901,7 +916,9 @@ private final class BasicRDSCoder {
         case 3:
             return rtPlusEnabled ? buildGroup3A() : buildGroup0(versionB: false)
         case 4:
-            return enCT ? (buildClockTimeGroupImmediate() ?? buildGroup0(versionB: false)) : buildGroup0(versionB: false)
+            return enCT
+                ? (buildClockTimeGroupImmediate() ?? buildGroup0(versionB: false))
+                : buildGroup0(versionB: false)
         case 10:
             return ptynEnabled ? buildGroup10A() : buildGroup0(versionB: false)
         case 11:
@@ -996,7 +1013,8 @@ private final class BasicRDSCoder {
 
     private func buildGroup10A() -> [UInt8] {
         updatePTYNSequenceIfNeeded()
-        let frame = ptynSequence.isEmpty ? ptynFrames[ptynFrameIndex] : ptynSequence[ptynSeqIndex].text
+        let frame =
+            ptynSequence.isEmpty ? ptynFrames[ptynFrameIndex] : ptynSequence[ptynSeqIndex].text
         let bytes = Array(frame.utf8)
         let segment = ptynSegment % 2
         ptynSegment += 1
@@ -1033,11 +1051,13 @@ private final class BasicRDSCoder {
         }
 
         let b2Tail = ((rtPlusToggle & 1) << 4) | 0x08 | ((t1Type >> 3) & 0x07)
-        let b3Value = ((t1Type & 0x07) << 13)
+        let b3Value =
+            ((t1Type & 0x07) << 13)
             | ((t1Start & 0x3F) << 7)
             | ((t1Length & 0x3F) << 1)
             | ((t2Type >> 5) & 0x01)
-        let b4Value = ((t2Type & 0x1F) << 11)
+        let b4Value =
+            ((t2Type & 0x1F) << 11)
             | ((t2Start & 0x3F) << 5)
             | (t2Length & 0x1F)
         return buildGroupBits(
@@ -1088,20 +1108,23 @@ private final class BasicRDSCoder {
         guard enCT else { return nil }
         let now = Date()
         let calendar = Calendar(identifier: .gregorian)
-        let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute, .second], from: now)
+        let comps = calendar.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second], from: now)
         guard let year = comps.year,
-              let month = comps.month,
-              let day = comps.day,
-              let hour = comps.hour,
-              let minute = comps.minute,
-              let second = comps.second else {
+            let month = comps.month,
+            let day = comps.day,
+            let hour = comps.hour,
+            let minute = comps.minute,
+            let second = comps.second
+        else {
             return nil
         }
         guard second == 0 else { return nil }
         guard minute != ctMinuteLock else { return nil }
         ctMinuteLock = minute
 
-        return buildClockTimeGroupFromComponents(year: year, month: month, day: day, hour: hour, minute: minute)
+        return buildClockTimeGroupFromComponents(
+            year: year, month: month, day: day, hour: hour, minute: minute)
     }
 
     private func buildClockTimeGroupImmediate() -> [UInt8]? {
@@ -1110,13 +1133,15 @@ private final class BasicRDSCoder {
         let calendar = Calendar(identifier: .gregorian)
         let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: now)
         guard let year = comps.year,
-              let month = comps.month,
-              let day = comps.day,
-              let hour = comps.hour,
-              let minute = comps.minute else {
+            let month = comps.month,
+            let day = comps.day,
+            let hour = comps.hour,
+            let minute = comps.minute
+        else {
             return nil
         }
-        return buildClockTimeGroupFromComponents(year: year, month: month, day: day, hour: hour, minute: minute)
+        return buildClockTimeGroupFromComponents(
+            year: year, month: month, day: day, hour: hour, minute: minute)
     }
 
     private func buildClockTimeGroupFromComponents(
@@ -1131,7 +1156,8 @@ private final class BasicRDSCoder {
         let tzSign = tzOffset < 0 ? 1 : 0
         let b2Tail = (mjd >> 15) & 0x3
         let b3Value = ((mjd & 0x7FFF) << 1) | ((hour >> 4) & 0x1)
-        let b4Value = ((hour & 0x0F) << 12) | ((minute & 0x3F) << 6) | (tzSign << 5) | (tzHalfHours & 0x1F)
+        let b4Value =
+            ((hour & 0x0F) << 12) | ((minute & 0x3F) << 6) | (tzSign << 5) | (tzHalfHours & 0x1F)
         return buildGroupBits(
             groupType: 4,
             versionB: false,
@@ -1302,7 +1328,8 @@ private final class BasicRDSCoder {
         }
 
         guard !rtSequence.isEmpty else {
-            return Self.prepareRTFrame(rtFrames[rtFrameIndex], width: limit, centered: rtCentered, appendCR: rtCR)
+            return Self.prepareRTFrame(
+                rtFrames[rtFrameIndex], width: limit, centered: rtCentered, appendCR: rtCR)
         }
 
         let now = Date().timeIntervalSinceReferenceDate
@@ -1337,7 +1364,8 @@ private final class BasicRDSCoder {
         b4Value: Int
     ) -> [UInt8] {
         let b1Data = piCode & 0xFFFF
-        let b2Data = ((groupType & 0x0F) << 12)
+        let b2Data =
+            ((groupType & 0x0F) << 12)
             | ((versionB ? 1 : 0) << 11)
             | ((tpFlag ? 1 : 0) << 10)
             | ((pty & 0x1F) << 5)
@@ -1394,7 +1422,8 @@ private final class BasicRDSCoder {
     }
 
     private static func parseGroupSequence(_ raw: String) -> [RDSGroupSpec] {
-        let tokens = raw
+        let tokens =
+            raw
             .uppercased()
             .replacingOccurrences(of: ",", with: " ")
             .split(whereSeparator: { $0.isWhitespace })
@@ -1413,8 +1442,10 @@ private final class BasicRDSCoder {
             }
             guard let groupType = Int(digits) else { continue }
             let versionB = (groupType == 0 || groupType == 2) && suffix == "B"
-            if groupType == 0 || groupType == 1 || groupType == 2 || groupType == 3 || groupType == 4
-                || groupType == 10 || groupType == 11 || groupType == 15 {
+            if groupType == 0 || groupType == 1 || groupType == 2 || groupType == 3
+                || groupType == 4
+                || groupType == 10 || groupType == 11 || groupType == 15
+            {
                 out.append(RDSGroupSpec(type: groupType, versionB: versionB))
             }
         }
@@ -1439,11 +1470,16 @@ private final class BasicRDSCoder {
         rtPlusTags = Self.parseRTPlusTags(text: text, format: format)
     }
 
-    private static func parseTimedFrames(_ raw: String, width: Int, uppercase: Bool, center: Bool) -> [String] {
-        return parseTimedSequence(raw, width: width, uppercase: uppercase, center: center).map(\.text)
+    private static func parseTimedFrames(_ raw: String, width: Int, uppercase: Bool, center: Bool)
+        -> [String]
+    {
+        return parseTimedSequence(raw, width: width, uppercase: uppercase, center: center).map(
+            \.text)
     }
 
-    private static func parseTimedSequence(_ raw: String, width: Int, uppercase: Bool, center: Bool) -> [TimedTextFrame] {
+    private static func parseTimedSequence(_ raw: String, width: Int, uppercase: Bool, center: Bool)
+        -> [TimedTextFrame]
+    {
         let resolved = resolveTextMarkers(raw) ?? raw
         let trimmed = resolved.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
@@ -1454,24 +1490,32 @@ private final class BasicRDSCoder {
         let startsTimed = trimmed.range(of: #"^\s*\d+s:"#, options: .regularExpression) != nil
 
         if startsTimed {
-            let slashParts = trimmed
+            let slashParts =
+                trimmed
                 .split(separator: "/", omittingEmptySubsequences: false)
                 .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             if slashParts.count > 1 {
                 for part in slashParts where !part.isEmpty {
                     if let timed = parseTimedPrefix(part) {
-                        let chunks = splitAndPad(timed.text, width: width, uppercase: uppercase, center: center)
+                        let chunks = splitAndPad(
+                            timed.text, width: width, uppercase: uppercase, center: center)
                         if chunks.isEmpty {
-                            out.append(TimedTextFrame(duration: timed.duration, text: String(repeating: " ", count: width)))
+                            out.append(
+                                TimedTextFrame(
+                                    duration: timed.duration,
+                                    text: String(repeating: " ", count: width)))
                         } else {
                             for chunk in chunks {
                                 out.append(TimedTextFrame(duration: timed.duration, text: chunk))
                             }
                         }
                     } else {
-                        let chunks = splitAndPad(part, width: width, uppercase: uppercase, center: center)
+                        let chunks = splitAndPad(
+                            part, width: width, uppercase: uppercase, center: center)
                         if chunks.isEmpty {
-                            out.append(TimedTextFrame(duration: 2.5, text: String(repeating: " ", count: width)))
+                            out.append(
+                                TimedTextFrame(
+                                    duration: 2.5, text: String(repeating: " ", count: width)))
                         } else {
                             for chunk in chunks {
                                 out.append(TimedTextFrame(duration: 2.5, text: chunk))
@@ -1484,14 +1528,19 @@ private final class BasicRDSCoder {
                 options: []
             ) {
                 let ns = trimmed as NSString
-                let matches = regex.matches(in: trimmed, options: [], range: NSRange(location: 0, length: ns.length))
+                let matches = regex.matches(
+                    in: trimmed, options: [], range: NSRange(location: 0, length: ns.length))
                 for m in matches where m.numberOfRanges >= 3 {
                     let durationRaw = ns.substring(with: m.range(at: 1))
                     let duration = max(0.5, Double(durationRaw) ?? 2.5)
-                    let segment = ns.substring(with: m.range(at: 2)).trimmingCharacters(in: .whitespacesAndNewlines)
-                    let chunks = splitAndPad(segment, width: width, uppercase: uppercase, center: center)
+                    let segment = ns.substring(with: m.range(at: 2)).trimmingCharacters(
+                        in: .whitespacesAndNewlines)
+                    let chunks = splitAndPad(
+                        segment, width: width, uppercase: uppercase, center: center)
                     if chunks.isEmpty {
-                        out.append(TimedTextFrame(duration: duration, text: String(repeating: " ", count: width)))
+                        out.append(
+                            TimedTextFrame(
+                                duration: duration, text: String(repeating: " ", count: width)))
                     } else {
                         for chunk in chunks {
                             out.append(TimedTextFrame(duration: duration, text: chunk))
@@ -1500,7 +1549,8 @@ private final class BasicRDSCoder {
                 }
             }
         } else {
-            let base = (width <= 8) ? resolved : resolved.trimmingCharacters(in: .whitespacesAndNewlines)
+            let base =
+                (width <= 8) ? resolved : resolved.trimmingCharacters(in: .whitespacesAndNewlines)
             if base.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 return [TimedTextFrame(duration: 10.0, text: String(repeating: " ", count: width))]
             }
@@ -1521,7 +1571,9 @@ private final class BasicRDSCoder {
         return out
     }
 
-    private static func splitAndPad(_ raw: String, width: Int, uppercase: Bool, center: Bool) -> [String] {
+    private static func splitAndPad(_ raw: String, width: Int, uppercase: Bool, center: Bool)
+        -> [String]
+    {
         let normalized = sanitizeText(raw, uppercase: uppercase)
         let words = normalized.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         if words.isEmpty {
@@ -1539,7 +1591,8 @@ private final class BasicRDSCoder {
             if center {
                 let left = padding / 2
                 let right = padding - left
-                return String(repeating: " ", count: left) + clipped + String(repeating: " ", count: right)
+                return String(repeating: " ", count: left) + clipped
+                    + String(repeating: " ", count: right)
             }
             return clipped + String(repeating: " ", count: padding)
         }
@@ -1639,7 +1692,8 @@ private final class BasicRDSCoder {
             return source
         }
         let ns = source as NSString
-        let matches = regex.matches(in: source, options: [], range: NSRange(location: 0, length: ns.length))
+        let matches = regex.matches(
+            in: source, options: [], range: NSRange(location: 0, length: ns.length))
         if matches.isEmpty {
             return source
         }
@@ -1658,12 +1712,15 @@ private final class BasicRDSCoder {
     }
 
     private static func parseTimedPrefix(_ text: String) -> (duration: Double, text: String)? {
-        guard let regex = try? NSRegularExpression(pattern: #"^\s*(\d+)s:(.*)$"#, options: []) else {
+        guard let regex = try? NSRegularExpression(pattern: #"^\s*(\d+)s:(.*)$"#, options: [])
+        else {
             return nil
         }
         let ns = text as NSString
         let range = NSRange(location: 0, length: ns.length)
-        guard let match = regex.firstMatch(in: text, options: [], range: range), match.numberOfRanges >= 3 else {
+        guard let match = regex.firstMatch(in: text, options: [], range: range),
+            match.numberOfRanges >= 3
+        else {
             return nil
         }
         let duration = max(0.5, Double(ns.substring(with: match.range(at: 1))) ?? 2.5)
@@ -1698,7 +1755,8 @@ private final class BasicRDSCoder {
     }
 
     private static func cleanMarkerSpaces(_ text: String) -> String {
-        return text.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")
+        return text.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(
+            of: "\n", with: " ")
     }
 
     private static func convertToEBULatin(_ text: String) -> String {
@@ -1716,7 +1774,8 @@ private final class BasicRDSCoder {
     }
 
     private static func sanitizeText(_ raw: String, uppercase: Bool) -> String {
-        let folded = raw.folding(options: [.diacriticInsensitive, .widthInsensitive], locale: .current)
+        let folded = raw.folding(
+            options: [.diacriticInsensitive, .widthInsensitive], locale: .current)
         let mapped = folded.unicodeScalars.map { scalar -> Character in
             if scalar.value >= 0x20, scalar.value <= 0x7E {
                 return Character(scalar)
@@ -1730,7 +1789,9 @@ private final class BasicRDSCoder {
         return base
     }
 
-    private static func prepareRTFrame(_ raw: String, width: Int, centered: Bool, appendCR: Bool) -> String {
+    private static func prepareRTFrame(_ raw: String, width: Int, centered: Bool, appendCR: Bool)
+        -> String
+    {
         let sanitized = sanitizeText(raw, uppercase: false)
         let limited = String(sanitized.prefix(width))
         if appendCR {
@@ -1745,7 +1806,8 @@ private final class BasicRDSCoder {
             let total = width - limited.count
             let left = total / 2
             let right = total - left
-            return String(repeating: " ", count: left) + limited + String(repeating: " ", count: right)
+            return String(repeating: " ", count: left) + limited
+                + String(repeating: " ", count: right)
         }
         if limited.count < width {
             return limited + String(repeating: " ", count: width - limited.count)
@@ -1764,7 +1826,9 @@ private final class BasicRDSCoder {
     }
 
     private static func parseAFList(_ raw: String) -> [Int] {
-        let tokens = raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let tokens = raw.split(separator: ",").map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         var out: [Int] = []
         for token in tokens {
             guard let mhz = Double(token) else { continue }
@@ -1776,7 +1840,8 @@ private final class BasicRDSCoder {
     }
 
     private static func parseHexByte(_ raw: String) -> Int {
-        let cleaned = raw
+        let cleaned =
+            raw
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .uppercased()
             .filter { ch in
@@ -1803,9 +1868,10 @@ private final class BasicRDSCoder {
         }
         let a = y / 100
         let b = 2 - a + (a / 4)
-        let jd = Int(Double(Int(365.25 * Double(y + 4716)))
-            + Double(Int(30.6001 * Double(m + 1)))
-            + Double(day + b) - 1524.5)
+        let jd = Int(
+            Double(Int(365.25 * Double(y + 4716)))
+                + Double(Int(30.6001 * Double(m + 1)))
+                + Double(day + b) - 1524.5)
         return jd - 2_400_001
     }
 
@@ -2109,7 +2175,8 @@ final class MPXGenerator {
         preSum.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
         preDiff.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
         programLP.configure(cutoffHz: programLowpassHz, sampleRate: sampleRate)
-        widebandAGCEnv.configure(sampleRate: sampleRate, attackMS: widebandAGCAttackMS, releaseMS: widebandAGCReleaseMS)
+        widebandAGCEnv.configure(
+            sampleRate: sampleRate, attackMS: widebandAGCAttackMS, releaseMS: widebandAGCReleaseMS)
         inputHPF.configureHighpass(cutoffHz: hpfHz, sampleRate: sampleRate)
         hfTrim.configureHighShelf(gainDB: hfTrimDB, cutoffHz: hfTrimHz, sampleRate: sampleRate)
         configureOrbassFilters()
@@ -2136,8 +2203,6 @@ final class MPXGenerator {
         subStep = twoPi * subcarrierFreq / sampleRate
         updateMonitorRecoveryRates()
     }
-
-
 
     private func updateMonitorRecoveryRates() {
         let sr = max(8_000.0, sampleRate)
@@ -2225,7 +2290,8 @@ final class MPXGenerator {
             let floorFallS: Float = 0.50
             let floorS = floorTarget > monitorProgramNoiseFloor ? floorRiseS : floorFallS
             let floorCoeff = expf(-1.0 / (sr * floorS))
-            monitorProgramNoiseFloor = (floorCoeff * monitorProgramNoiseFloor) + ((1.0 - floorCoeff) * floorTarget)
+            monitorProgramNoiseFloor =
+                (floorCoeff * monitorProgramNoiseFloor) + ((1.0 - floorCoeff) * floorTarget)
         }
 
         let openThreshold = max(0.00016, monitorProgramNoiseFloor * 2.3)
@@ -2257,7 +2323,8 @@ final class MPXGenerator {
         if sidePresent && collapsed {
             monitorCollapseHoldSamples += 1
             if monitorCollapseCooldownSamples <= 0,
-               monitorCollapseHoldSamples > Int(sr * 0.55) {
+                monitorCollapseHoldSamples > Int(sr * 0.55)
+            {
                 configureMonitorDemod()
                 monitorCollapseCooldownSamples = Int(sr * 2.0)
                 monitorCollapseHoldSamples = 0
@@ -2672,13 +2739,15 @@ final class MPXGenerator {
         }
 
         let postSideAbs = fabsf((l - r) * 0.5)
-        let sideCoeff = postSideAbs > monitorExpectedSideEnv
+        let sideCoeff =
+            postSideAbs > monitorExpectedSideEnv
             ? monitorExpectedSideAttackCoeff
             : monitorExpectedSideReleaseCoeff
-        monitorExpectedSideEnv = (sideCoeff * monitorExpectedSideEnv) + ((1.0 - sideCoeff) * postSideAbs)
+        monitorExpectedSideEnv =
+            (sideCoeff * monitorExpectedSideEnv) + ((1.0 - sideCoeff) * postSideAbs)
 
         var base = ((l + r) * 0.5) * sumLevel
-        var diff = monoMode ? 0.0 : (((r - l) * 0.5) * diffLevel)
+        let diff = monoMode ? 0.0 : (((r - l) * 0.5) * diffLevel)
 
         base = preSum.process(base)
         // Don't apply preemphasis to diff signal - it causes accumulated lpState drift
@@ -2861,7 +2930,9 @@ final class MPXGenerator {
         return (outL, outR)
     }
 
-    private func smoothOrbassGain(current: Float, target: Float, attackMS: Float, releaseMS: Float) -> Float {
+    private func smoothOrbassGain(current: Float, target: Float, attackMS: Float, releaseMS: Float)
+        -> Float
+    {
         let sr = max(8_000.0, sampleRate)
         let tauMS = target > current ? max(0.1, attackMS) : max(1.0, releaseMS)
         let coeff = expf(-1.0 / ((tauMS * 0.001) * sr))
@@ -2930,11 +3001,16 @@ final class MPXGenerator {
         let b5L = rem3L - b4L
         let b5R = rem3R - b4R
 
-        let o1 = compressStereoBand(left: b1L, right: b1R, leftComp: &mb5Comp1L, rightComp: &mb5Comp1R)
-        let o2 = compressStereoBand(left: b2L, right: b2R, leftComp: &mb5Comp2L, rightComp: &mb5Comp2R)
-        let o3 = compressStereoBand(left: b3L, right: b3R, leftComp: &mb5Comp3L, rightComp: &mb5Comp3R)
-        let o4 = compressStereoBand(left: b4L, right: b4R, leftComp: &mb5Comp4L, rightComp: &mb5Comp4R)
-        let o5 = compressStereoBand(left: b5L, right: b5R, leftComp: &mb5Comp5L, rightComp: &mb5Comp5R)
+        let o1 = compressStereoBand(
+            left: b1L, right: b1R, leftComp: &mb5Comp1L, rightComp: &mb5Comp1R)
+        let o2 = compressStereoBand(
+            left: b2L, right: b2R, leftComp: &mb5Comp2L, rightComp: &mb5Comp2R)
+        let o3 = compressStereoBand(
+            left: b3L, right: b3R, leftComp: &mb5Comp3L, rightComp: &mb5Comp3R)
+        let o4 = compressStereoBand(
+            left: b4L, right: b4R, leftComp: &mb5Comp4L, rightComp: &mb5Comp4R)
+        let o5 = compressStereoBand(
+            left: b5L, right: b5R, leftComp: &mb5Comp5L, rightComp: &mb5Comp5R)
 
         let outL = (o1.0 + o2.0 + o3.0 + o4.0 + o5.0) * multibandMakeup
         let outR = (o1.1 + o2.1 + o3.1 + o4.1 + o5.1) * multibandMakeup

@@ -1,7 +1,7 @@
-import Foundation
-import Darwin
-import CoreAudio
 import AppKit
+import CoreAudio
+import Darwin
+import Foundation
 
 @discardableResult
 func applyRealtimePriorityHints() -> Bool {
@@ -27,7 +27,8 @@ func normalizeConfigPath(_ rawPath: String) -> String {
     if expandedNSString.isAbsolutePath {
         return expandedNSString.standardizingPath
     }
-    let launchDirectory = ProcessInfo.processInfo.environment["PWD"] ?? FileManager.default.currentDirectoryPath
+    let launchDirectory =
+        ProcessInfo.processInfo.environment["PWD"] ?? FileManager.default.currentDirectoryPath
     let combined = (launchDirectory as NSString).appendingPathComponent(expanded)
     return (combined as NSString).standardizingPath
 }
@@ -64,21 +65,23 @@ func parseCLI() -> CLIOptions {
 
 func printUsage() {
     let text = """
-    StereoFool
+        StereoFool
 
-    Usage:
-      StereoFool [--config macOS/StereFool.ini] [--seconds 30] [--gui|--nogui]
+        Usage:
+          StereoFool [--config macOS/StereFool.ini] [--seconds 30] [--gui|--nogui]
 
-    Options:
-      --config   Path to macOS INI config (default: macOS/StereFool.ini)
-      --seconds  Auto-stop after N seconds (GUI or headless)
-      --gui      Launch native SwiftUI macOS window (default)
-      --nogui    Run headless
-    """
+        Options:
+          --config   Path to macOS INI config (default: macOS/StereFool.ini)
+          --seconds  Auto-stop after N seconds (GUI or headless)
+          --gui      Launch native SwiftUI macOS window (default)
+          --nogui    Run headless
+        """
     print(text)
 }
 
-func buildDeviceInfo(inputID: AudioDeviceID?, outputID: AudioDeviceID?, allDevices: [AudioDevice]) -> String {
+func buildDeviceInfo(inputID: AudioDeviceID?, outputID: AudioDeviceID?, allDevices: [AudioDevice])
+    -> String
+{
     var parts: [String] = []
     if let inputID = inputID {
         if let device = allDevices.first(where: { $0.id == inputID }) {
@@ -102,7 +105,8 @@ if CommandLine.arguments.contains("--help") || CommandLine.arguments.contains("-
     printUsage()
     exit(0)
 }
-let configPath = options.configPathExplicit ? options.configPath : AppConfig.resolvedINIPath(options.configPath)
+let configPath =
+    options.configPathExplicit ? options.configPath : AppConfig.resolvedINIPath(options.configPath)
 
 do {
     let qosApplied = applyRealtimePriorityHints()
@@ -121,15 +125,15 @@ do {
     }
     let config = try AppConfig.load(fromINI: configPath)
     let generator = MPXGenerator(config: config, sampleRate: config.sampleRate)
-    
+
     // Minimize blocking before audio engine start: do device lookup with minimal I/O and NO logging
     var allDevices: [AudioDevice] = []
     var inputID: AudioDeviceID? = nil
     var outputID: AudioDeviceID? = nil
-    
+
     do {
         allDevices = try AudioDevices.list()
-        
+
         // Resolve device UIDs to IDs quickly and silently - NO PRINT STATEMENTS
         if config.sourceMode.lowercased() == "input", let uid = config.inputDeviceUID {
             inputID = allDevices.first(where: { $0.uid == uid })?.id
@@ -140,7 +144,7 @@ do {
     } catch {
         // Silent failure - will use system defaults
     }
-    
+
     let audioEngine = AudioOutputEngine(
         generator: generator,
         config: config,
@@ -148,37 +152,41 @@ do {
         outputDeviceID: outputID
     )
     try audioEngine.start()
-    
+
     // Brief debug output about input setup
-    fputs("[Input] Device ID: \(inputID ?? 0), Sample rate requested: \(config.sampleRate)\n", stderr)
+    fputs(
+        "[Input] Device ID: \(inputID ?? 0), Sample rate requested: \(config.sampleRate)\n", stderr)
     if let inputRate = audioEngine.inputSampleRate {
         fputs("[Input] Actual input sample rate: \(inputRate)\n", stderr)
     }
     fputs("[Render] Actual render sample rate: \(audioEngine.renderSampleRate) Hz\n", stderr)
     fputs("[Render] Hardware sample rate: \(audioEngine.hardwareSampleRate) Hz\n", stderr)
-    
+
     // Use NSApplication event loop with proper setup just like GUI mode does
     let app = NSApplication.shared
     app.setActivationPolicy(.prohibited)  // Invisible: no dock icon, no window
     app.activate(ignoringOtherApps: true)
-    
+
     signal(SIGINT, SIG_IGN)
     let signalSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-    signalSource.setEventHandler(handler: DispatchWorkItem {
-        audioEngine.stop()
-        exit(0)
-    })
-    signalSource.resume()
-
-    if let secs = options.runSeconds {
-        DispatchQueue.main.asyncAfter(deadline: .now() + secs, execute: DispatchWorkItem {
+    signalSource.setEventHandler(
+        handler: DispatchWorkItem {
             audioEngine.stop()
             exit(0)
         })
+    signalSource.resume()
+
+    if let secs = options.runSeconds {
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + secs,
+            execute: DispatchWorkItem {
+                audioEngine.stop()
+                exit(0)
+            })
     }
 
     print("StereoFool running. Press Ctrl-C to stop.")
-    
+
     // Run the application event loop - same as GUI does
     app.run()
 } catch {

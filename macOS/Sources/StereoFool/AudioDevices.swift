@@ -1,5 +1,5 @@
-import Foundation
 import CoreAudio
+import Foundation
 
 struct AudioDevice: Identifiable {
     let id: AudioDeviceID
@@ -36,18 +36,22 @@ enum AudioDevices {
             throw AudioDeviceError.propertyQueryFailed(status)
         }
         return ids.compactMap { id in
-            let name = readCFString(
-                objectID: id,
-                selector: kAudioObjectPropertyName,
-                scope: kAudioObjectPropertyScopeGlobal
-            ) ?? "AudioDevice \(id)"
-            let uid = readCFString(
-                objectID: id,
-                selector: kAudioDevicePropertyDeviceUID,
-                scope: kAudioObjectPropertyScopeGlobal
-            ) ?? "\(id)"
-            let inputChannels = readChannelCount(deviceID: id, scope: kAudioDevicePropertyScopeInput)
-            let outputChannels = readChannelCount(deviceID: id, scope: kAudioDevicePropertyScopeOutput)
+            let name =
+                readCFString(
+                    objectID: id,
+                    selector: kAudioObjectPropertyName,
+                    scope: kAudioObjectPropertyScopeGlobal
+                ) ?? "AudioDevice \(id)"
+            let uid =
+                readCFString(
+                    objectID: id,
+                    selector: kAudioDevicePropertyDeviceUID,
+                    scope: kAudioObjectPropertyScopeGlobal
+                ) ?? "\(id)"
+            let inputChannels = readChannelCount(
+                deviceID: id, scope: kAudioDevicePropertyScopeInput)
+            let outputChannels = readChannelCount(
+                deviceID: id, scope: kAudioDevicePropertyScopeOutput)
             if inputChannels <= 0 && outputChannels <= 0 {
                 return nil
             }
@@ -95,7 +99,9 @@ enum AudioDevices {
         return value.takeUnretainedValue() as String
     }
 
-    private static func readChannelCount(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope) -> Int {
+    private static func readChannelCount(deviceID: AudioDeviceID, scope: AudioObjectPropertyScope)
+        -> Int
+    {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: scope,

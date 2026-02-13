@@ -1,9 +1,10 @@
-import Foundation
+import Accelerate
 import AppKit
-import SwiftUI
 import Combine
 import CoreAudio
-import Accelerate
+import Foundation
+import SwiftUI
+import UniformTypeIdentifiers
 
 enum AppSection: String, CaseIterable, Identifiable {
     case monitoring = "Monitoring"
@@ -258,25 +259,92 @@ private final class SwiftUIAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func setupMainMenu() {
-        let appName = ProcessInfo.processInfo.processName
+        let appName = Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "StereoFool"
         let mainMenu = NSMenu()
 
+        // App Menu (unchanged)
         let appItem = NSMenuItem()
         let appMenu = NSMenu(title: appName)
-        appMenu.addItem(withTitle: "About \(appName)", action: #selector(showAbout), keyEquivalent: "")
+        appMenu.addItem(
+            withTitle: "About \(appName)", action: #selector(showAbout), keyEquivalent: "")
         appMenu.addItem(NSMenuItem.separator())
-        appMenu.addItem(withTitle: "Settings...", action: #selector(showSettings), keyEquivalent: ",")
+        appMenu.addItem(
+            withTitle: "Preferences...", action: #selector(showSettings), keyEquivalent: ",")
+        appMenu.addItem(withTitle: "Services", action: nil, keyEquivalent: "").submenu = NSMenu(
+            title: "Services")
         appMenu.addItem(NSMenuItem.separator())
-        appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(
+            withTitle: "Hide \(appName)", action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h")
+        let hideOthersItem = appMenu.addItem(
+            withTitle: "Hide Others", action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "")
+        hideOthersItem.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(
+            withTitle: "Show All", action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: "")
+        appMenu.addItem(NSMenuItem.separator())
+        appMenu.addItem(
+            withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q")
         appItem.submenu = appMenu
         mainMenu.addItem(appItem)
 
-        let transportItem = NSMenuItem()
+        // File Menu (unchanged – no Apply here now)
+        let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
+        let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(
+            withTitle: "Open Config...", action: #selector(openConfig), keyEquivalent: "o")
+        fileMenu.addItem(withTitle: "Save Config", action: #selector(saveConfig), keyEquivalent: "")
+        fileMenu.addItem(
+            withTitle: "Save Config As...", action: #selector(saveConfigAs), keyEquivalent: "s"
+        ).keyEquivalentModifierMask = [.command, .shift]
+        fileItem.submenu = fileMenu
+        mainMenu.addItem(fileItem)
+
+        // ──────────────── Transport Menu ────────────────
+        let transportItem = NSMenuItem(title: "Transport", action: nil, keyEquivalent: "")
         let transportMenu = NSMenu(title: "Transport")
-        transportMenu.addItem(withTitle: "Start/Stop", action: #selector(toggleTransport), keyEquivalent: " ")
-        transportMenu.addItem(withTitle: "Reset Peaks", action: #selector(resetPeaks), keyEquivalent: "r").keyEquivalentModifierMask = [.command]
+
+        transportMenu.addItem(
+            withTitle: "Start/Stop", action: #selector(toggleTransport), keyEquivalent: "s"
+        ).keyEquivalentModifierMask = [.command]
+        transportMenu.addItem(
+            withTitle: "Bypass", action: #selector(toggleBypass), keyEquivalent: "b"
+        ).keyEquivalentModifierMask = [.command]
+        transportMenu.addItem(
+            withTitle: "Reset Peaks", action: #selector(resetPeaks), keyEquivalent: "r"
+        ).keyEquivalentModifierMask = [.command]
+
+        // NEW: Apply Pending Changes – placed here with ⌘A
+        let applyItem = transportMenu.addItem(
+            withTitle: "Apply Pending Changes",
+            action: #selector(applyPendingChanges),
+            keyEquivalent: "a"  // ← Command + A
+        )
+        applyItem.isEnabled = false  // initial state – we'll enable dynamically
+
         transportItem.submenu = transportMenu
         mainMenu.addItem(transportItem)
+
+        // Window and Help menus (unchanged)
+        let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
+        let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(
+            withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(
+            withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(NSMenuItem.separator())
+        windowMenu.addItem(
+            withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)),
+            keyEquivalent: "")
+        windowItem.submenu = windowMenu
+        mainMenu.addItem(windowItem)
+
+        let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
+        let helpMenu = NSMenu(title: "Help")
+        helpItem.submenu = helpMenu
+        mainMenu.addItem(helpItem)
 
         NSApp.mainMenu = mainMenu
     }
@@ -293,9 +361,48 @@ private final class SwiftUIAppDelegate: NSObject, NSApplicationDelegate {
         model?.startOrStopTransport()
     }
 
+    @objc private func toggleBypass() {
+        model?.toggleBypass()
+    }
+
     @objc private func resetPeaks() {
         model?.resetPeaks()
     }
+
+    @objc private func saveConfig() {
+        model?.saveCurrentConfig()
+    }
+
+    @objc private func applyPendingChanges() {
+        model?.applyPendingRuntimeChanges()
+    }
+
+    @objc private func openConfig() {
+        let openPanel = NSOpenPanel()
+        openPanel.allowedContentTypes = [UTType(filenameExtension: "ini")!]
+        openPanel.message = "Choose a configuration file to open"
+        openPanel.canChooseDirectories = false
+        openPanel.canChooseFiles = true
+        openPanel.allowsMultipleSelection = false
+
+        openPanel.begin { [weak self] response in
+            guard response == .OK, let url = openPanel.url else { return }
+            self?.model?.loadConfigFromFile(url.path)
+        }
+    }
+
+    @objc private func saveConfigAs() {
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [UTType(filenameExtension: "ini")!]
+        savePanel.message = "Save configuration as..."
+        savePanel.nameFieldStringValue = "config.ini"
+
+        savePanel.begin { [weak self] response in
+            guard response == .OK, let url = savePanel.url else { return }
+            self?.model?.saveConfigToFile(url.path)
+        }
+    }
+
 }
 
 @MainActor
@@ -530,14 +637,18 @@ final class StereoFoolViewModel: ObservableObject {
     func piBinding() -> Binding<String> {
         Binding(
             get: { self.config.rdsPI },
-            set: { self.setConfigValue(\.rdsPI, Self.sanitizeHex($0, width: 4), restartRequired: true) }
+            set: {
+                self.setConfigValue(\.rdsPI, Self.sanitizeHex($0, width: 4), restartRequired: true)
+            }
         )
     }
 
     func hexByteBinding(_ keyPath: WritableKeyPath<AppConfig, String>) -> Binding<String> {
         Binding(
             get: { self.config[keyPath: keyPath] },
-            set: { self.setConfigValue(keyPath, Self.sanitizeHex($0, width: 2), restartRequired: true) }
+            set: {
+                self.setConfigValue(keyPath, Self.sanitizeHex($0, width: 2), restartRequired: true)
+            }
         )
     }
 
@@ -546,7 +657,8 @@ final class StereoFoolViewModel: ObservableObject {
             get: { self.config.rdsGaussianTaps },
             set: { raw in
                 let clamped = max(9, min(401, raw))
-                let odd = (clamped % 2 == 0) ? (clamped + 1 <= 401 ? clamped + 1 : clamped - 1) : clamped
+                let odd =
+                    (clamped % 2 == 0) ? (clamped + 1 <= 401 ? clamped + 1 : clamped - 1) : clamped
                 self.setConfigValue(\.rdsGaussianTaps, odd, restartRequired: true)
             }
         )
@@ -564,7 +676,8 @@ final class StereoFoolViewModel: ObservableObject {
         config.orbassSubharmonicsEnabled = preset.subharmonicsEnabled
         config.orbassSubharmonicsAmount = preset.subharmonicsAmount
         saveConfig(restartRequired: true)
-        statusText = isRunning
+        statusText =
+            isRunning
             ? "Loaded Orbass preset \(preset.title). Press Apply to hear changes."
             : "Loaded Orbass preset \(preset.title)."
     }
@@ -613,24 +726,34 @@ final class StereoFoolViewModel: ObservableObject {
             max: -6.0
         )
 
-        config.multibandLowRatio = Self.clamp(preset.lowRatio * intensity.ratioMul, min: 1.0, max: 4.0)
-        config.multibandMidRatio = Self.clamp(preset.midRatio * intensity.ratioMul, min: 1.0, max: 4.0)
-        config.multibandHighRatio = Self.clamp(preset.highRatio * intensity.ratioMul, min: 1.0, max: 4.0)
+        config.multibandLowRatio = Self.clamp(
+            preset.lowRatio * intensity.ratioMul, min: 1.0, max: 4.0)
+        config.multibandMidRatio = Self.clamp(
+            preset.midRatio * intensity.ratioMul, min: 1.0, max: 4.0)
+        config.multibandHighRatio = Self.clamp(
+            preset.highRatio * intensity.ratioMul, min: 1.0, max: 4.0)
 
-        config.multibandLowAttackMS = Self.clamp(preset.lowAttackMS * intensity.attackMul, min: 1.0, max: 200.0)
-        config.multibandMidAttackMS = Self.clamp(preset.midAttackMS * intensity.attackMul, min: 1.0, max: 200.0)
-        config.multibandHighAttackMS = Self.clamp(preset.highAttackMS * intensity.attackMul, min: 1.0, max: 200.0)
+        config.multibandLowAttackMS = Self.clamp(
+            preset.lowAttackMS * intensity.attackMul, min: 1.0, max: 200.0)
+        config.multibandMidAttackMS = Self.clamp(
+            preset.midAttackMS * intensity.attackMul, min: 1.0, max: 200.0)
+        config.multibandHighAttackMS = Self.clamp(
+            preset.highAttackMS * intensity.attackMul, min: 1.0, max: 200.0)
 
-        config.multibandLowReleaseMS = Self.clamp(preset.lowReleaseMS * intensity.releaseMul, min: 50.0, max: 1000.0)
-        config.multibandMidReleaseMS = Self.clamp(preset.midReleaseMS * intensity.releaseMul, min: 50.0, max: 1000.0)
-        config.multibandHighReleaseMS = Self.clamp(preset.highReleaseMS * intensity.releaseMul, min: 50.0, max: 1000.0)
+        config.multibandLowReleaseMS = Self.clamp(
+            preset.lowReleaseMS * intensity.releaseMul, min: 50.0, max: 1000.0)
+        config.multibandMidReleaseMS = Self.clamp(
+            preset.midReleaseMS * intensity.releaseMul, min: 50.0, max: 1000.0)
+        config.multibandHighReleaseMS = Self.clamp(
+            preset.highReleaseMS * intensity.releaseMul, min: 50.0, max: 1000.0)
 
         config.multibandKneeDB = preset.kneeDB
         config.multibandLinkStrength = preset.linkStrength
         config.multibandReleaseProgramDependent = preset.releaseProgramDependent
 
         saveConfig(restartRequired: true)
-        statusText = isRunning
+        statusText =
+            isRunning
             ? "Loaded Multiband preset \(preset.title) (\(intensity.title)). Press Apply to hear changes."
             : "Loaded Multiband preset \(preset.title) (\(intensity.title))."
     }
@@ -651,6 +774,35 @@ final class StereoFoolViewModel: ObservableObject {
             statusText = "Config reloaded"
         } catch {
             statusText = "Config reload failed: \(error)"
+        }
+    }
+
+    func loadConfigFromFile(_ path: String) {
+        do {
+            config = try AppConfig.load(fromINI: path)
+            sourceMode = config.sourceMode
+            monitorEnabled = config.monitorEnabled
+            processingBypass = config.processingBypass
+            inputGainDB = config.inputGainDB
+            pendingRuntimeApply = false
+            refreshDevices()
+            statusText = "Config loaded: \(URL(fileURLWithPath: path).lastPathComponent)"
+        } catch {
+            statusText = "Config load failed: \(error)"
+        }
+    }
+
+    func saveCurrentConfig() {
+        saveConfig(restartRequired: false)
+        statusText = "Config saved"
+    }
+
+    func saveConfigToFile(_ path: String) {
+        do {
+            try config.save(toINI: path)
+            statusText = "Config saved: \(URL(fileURLWithPath: path).lastPathComponent)"
+        } catch {
+            statusText = "Config save failed: \(error)"
         }
     }
 
@@ -731,8 +883,8 @@ final class StereoFoolViewModel: ObservableObject {
             engineStartReference = Date().timeIntervalSinceReferenceDate
             let mode = monitorEnabled ? "monitor" : "output"
             var line =
-                "Running source=\(runConfig.sourceMode) mode=\(mode) " +
-                "render=\(Int(engine.renderSampleRate))Hz hw=\(Int(engine.hardwareSampleRate))Hz"
+                "Running source=\(runConfig.sourceMode) mode=\(mode) "
+                + "render=\(Int(engine.renderSampleRate))Hz hw=\(Int(engine.hardwareSampleRate))Hz"
             if let note = engine.deviceRoutingNote {
                 line += " (\(note))"
             }
@@ -787,16 +939,19 @@ final class StereoFoolViewModel: ObservableObject {
 
         if let engine = runningEngine {
             let cap = engine.captureStats
-            var runtime = "Running · Render \(Int(engine.renderSampleRate)) Hz · Hardware \(Int(engine.hardwareSampleRate)) Hz"
+            var runtime =
+                "Running · Render \(Int(engine.renderSampleRate)) Hz · Hardware \(Int(engine.hardwareSampleRate)) Hz"
             if let inRate = engine.inputSampleRate {
                 runtime += " · Input \(Int(inRate)) Hz"
             }
             runtime += " · Source \(engine.sourceDescription)"
             runtimeText = runtime
             health.isRunning = true
-            health.inputName = sourceMode.lowercased() == "tone"
+            health.inputName =
+                sourceMode.lowercased() == "tone"
                 ? "Tone Generator"
-                : (inputDevices.first(where: { $0.uid == selectedInputUID })?.name.ifEmpty("None") ?? "None")
+                : (inputDevices.first(where: { $0.uid == selectedInputUID })?.name.ifEmpty("None")
+                    ?? "None")
             health.renderHz = Int(engine.renderSampleRate.rounded())
             health.inputHz = Int((engine.inputSampleRate ?? 0).rounded())
 
@@ -809,8 +964,11 @@ final class StereoFoolViewModel: ObservableObject {
                 inputBufferCritical = Double(target * 3 / 2)
                 inputBufferValue = Double(stats.bufferedFrames)
 
-                let deltaOverflows = stats.overflows >= lastOverflowTotal ? (stats.overflows - lastOverflowTotal) : 0
-                let deltaUnderflows = stats.underflows >= lastUnderflowTotal ? (stats.underflows - lastUnderflowTotal) : 0
+                let deltaOverflows =
+                    stats.overflows >= lastOverflowTotal ? (stats.overflows - lastOverflowTotal) : 0
+                let deltaUnderflows =
+                    stats.underflows >= lastUnderflowTotal
+                    ? (stats.underflows - lastUnderflowTotal) : 0
                 lastOverflowTotal = stats.overflows
                 lastUnderflowTotal = stats.underflows
                 if deltaOverflows > 0 || deltaUnderflows > 0 {
@@ -827,7 +985,8 @@ final class StereoFoolViewModel: ObservableObject {
                 health.overflowsTotal = Int(min(UInt64(Int.max), stats.overflows))
                 health.underflowsTotal = Int(min(UInt64(Int.max), stats.underflows))
             } else {
-                inputRingText = "Input Ring: inactive (tone source) · Capture callbacks \(cap.callbacks)"
+                inputRingText =
+                    "Input Ring: inactive (tone source) · Capture callbacks \(cap.callbacks)"
                 inputBufferValue = 0
                 inputBufferMax = 1
                 inputBufferWarning = 0.7
@@ -894,10 +1053,15 @@ final class StereoFoolViewModel: ObservableObject {
         let outputTarget = Self.levelMeterScale(outputRMS)
         let modulationTarget = max(0.0, min(1.0, modulationNorm))
 
-        vuInputL = smoothMeter(current: vuInputL, target: inputLTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
-        vuInputR = smoothMeter(current: vuInputR, target: inputRTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
-        vuOutput = smoothMeter(current: vuOutput, target: outputTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
-        vuModulation = smoothMeter(current: vuModulation, target: modulationTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
+        vuInputL = smoothMeter(
+            current: vuInputL, target: inputLTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
+        vuInputR = smoothMeter(
+            current: vuInputR, target: inputRTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
+        vuOutput = smoothMeter(
+            current: vuOutput, target: outputTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
+        vuModulation = smoothMeter(
+            current: vuModulation, target: modulationTarget, dt: dt, attackMS: 18.0,
+            releaseMS: 110.0)
 
         inputLLevel = Double(max(0.0, min(1.0, vuInputL)))
         inputRLevel = Double(max(0.0, min(1.0, vuInputR)))
@@ -906,17 +1070,23 @@ final class StereoFoolViewModel: ObservableObject {
 
         // Sticky marker follows the same visual meter scale as the bar fill (RMS/VU style),
         // matching broadcast meter behavior and avoiding "marker above unreachable range".
-        inputLPeakHoldLevel = Double(updatePeakHold(livePeak: vuInputL, state: &peakHoldInputL, dt: dt))
-        inputRPeakHoldLevel = Double(updatePeakHold(livePeak: vuInputR, state: &peakHoldInputR, dt: dt))
-        outputPeakHoldLevel = Double(updatePeakHold(livePeak: vuOutput, state: &peakHoldOutput, dt: dt))
-        modulationPeakHoldLevel = Double(updatePeakHold(livePeak: vuModulation, state: &peakHoldModulation, dt: dt))
+        inputLPeakHoldLevel = Double(
+            updatePeakHold(livePeak: vuInputL, state: &peakHoldInputL, dt: dt))
+        inputRPeakHoldLevel = Double(
+            updatePeakHold(livePeak: vuInputR, state: &peakHoldInputR, dt: dt))
+        outputPeakHoldLevel = Double(
+            updatePeakHold(livePeak: vuOutput, state: &peakHoldOutput, dt: dt))
+        modulationPeakHoldLevel = Double(
+            updatePeakHold(livePeak: vuModulation, state: &peakHoldModulation, dt: dt))
 
         inputLText = Self.dbfsString(inputLeftRMS)
         inputRText = Self.dbfsString(inputRightRMS)
         outputText = Self.meterMetaString(rms: outputRMS, peak: outputPeak)
         modulationText = String(format: "%.1f kHz", deviationKHz)
 
-        let limiterState = config.limitMPX ? (outputPeak >= Float(config.limitThreshold) ? "Active" : "Idle") : "Off"
+        let limiterState =
+            config.limitMPX
+            ? (outputPeak >= Float(config.limitThreshold) ? "Active" : "Idle") : "Off"
         limiterStateText = limiterState
         multibandStateText = config.multibandEnabled ? "On" : "Off"
         orbassStateText = config.orbassEnabled ? "On" : "Off"
@@ -1025,7 +1195,8 @@ final class StereoFoolViewModel: ObservableObject {
             imag.withUnsafeMutableBufferPointer { imagBP in
                 var split = DSPSplitComplex(realp: realBP.baseAddress!, imagp: imagBP.baseAddress!)
                 windowed.withUnsafeBufferPointer { src in
-                    src.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: n / 2) { complexSrc in
+                    src.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: n / 2) {
+                        complexSrc in
                         vDSP_ctoz(complexSrc, 2, &split, 1, vDSP_Length(n / 2))
                     }
                 }
@@ -1106,7 +1277,8 @@ final class StereoFoolViewModel: ObservableObject {
         if smoothed.count > 2 {
             var spatial = smoothed
             for i in 1..<(smoothed.count - 1) {
-                spatial[i] = (smoothed[i - 1] * 0.12) + (smoothed[i] * 0.76) + (smoothed[i + 1] * 0.12)
+                spatial[i] =
+                    (smoothed[i - 1] * 0.12) + (smoothed[i] * 0.76) + (smoothed[i + 1] * 0.12)
             }
             smoothed = spatial
         }
@@ -1164,7 +1336,9 @@ final class StereoFoolViewModel: ObservableObject {
         return seq.last?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    private static func parseTimedDisplaySequence(_ raw: String) -> [(duration: Double, text: String)] {
+    private static func parseTimedDisplaySequence(_ raw: String) -> [(
+        duration: Double, text: String
+    )] {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return [(10.0, "")]
@@ -1173,14 +1347,17 @@ final class StereoFoolViewModel: ObservableObject {
         let slashParts = trimmed.split(separator: "/").map(String.init)
         if slashParts.count > 1 {
             var out: [(Double, String)] = []
-            let prefixRegex = try? NSRegularExpression(pattern: #"^([0-9]+(?:\.[0-9]+)?)s:"#, options: [])
+            let prefixRegex = try? NSRegularExpression(
+                pattern: #"^([0-9]+(?:\.[0-9]+)?)s:"#, options: [])
             for part in slashParts {
                 let p = part.trimmingCharacters(in: .whitespacesAndNewlines)
                 if p.isEmpty { continue }
                 if let prefixRegex {
                     let ns = p as NSString
-                    if let match = prefixRegex.firstMatch(in: p, options: [], range: NSRange(location: 0, length: ns.length)),
-                       match.range.location == 0 {
+                    if let match = prefixRegex.firstMatch(
+                        in: p, options: [], range: NSRange(location: 0, length: ns.length)),
+                        match.range.location == 0
+                    {
                         let dur = Double(ns.substring(with: match.range(at: 1))) ?? 2.5
                         let textStart = match.range.location + match.range.length
                         let text = textStart < ns.length ? ns.substring(from: textStart) : ""
@@ -1196,16 +1373,20 @@ final class StereoFoolViewModel: ObservableObject {
         let tokenRegex = try? NSRegularExpression(pattern: #"([0-9]+(?:\.[0-9]+)?)s:"#, options: [])
         if let tokenRegex {
             let ns = trimmed as NSString
-            let matches = tokenRegex.matches(in: trimmed, options: [], range: NSRange(location: 0, length: ns.length))
+            let matches = tokenRegex.matches(
+                in: trimmed, options: [], range: NSRange(location: 0, length: ns.length))
             if !matches.isEmpty, matches[0].range.location == 0 {
                 var out: [(Double, String)] = []
                 for (idx, match) in matches.enumerated() {
                     let durRange = match.range(at: 1)
                     let duration = Double(ns.substring(with: durRange)) ?? 2.5
                     let textStart = match.range.location + match.range.length
-                    let textEnd = (idx + 1 < matches.count) ? matches[idx + 1].range.location : ns.length
-                    let textRange = NSRange(location: textStart, length: max(0, textEnd - textStart))
-                    let text = ns.substring(with: textRange).trimmingCharacters(in: .whitespacesAndNewlines)
+                    let textEnd =
+                        (idx + 1 < matches.count) ? matches[idx + 1].range.location : ns.length
+                    let textRange = NSRange(
+                        location: textStart, length: max(0, textEnd - textStart))
+                    let text = ns.substring(with: textRange).trimmingCharacters(
+                        in: .whitespacesAndNewlines)
                     out.append((duration, text))
                 }
                 if !out.isEmpty {
@@ -1219,41 +1400,153 @@ final class StereoFoolViewModel: ObservableObject {
 
     private static let ptyNames: [String] = [
         "None", "News", "Current Affairs", "Information", "Sport", "Education", "Drama", "Culture",
-        "Science", "Varied", "Pop Music", "Rock Music", "Easy Music", "Light Classical", "Serious Classical",
+        "Science", "Varied", "Pop Music", "Rock Music", "Easy Music", "Light Classical",
+        "Serious Classical",
         "Other Music", "Weather", "Finance", "Children's", "Social Affairs", "Religion", "Phone-In",
-        "Travel", "Leisure", "Jazz", "Country", "National Music", "Oldies", "Folk Music", "Documentary",
-        "Alarm Test", "Alarm"
+        "Travel", "Leisure", "Jazz", "Country", "National Music", "Oldies", "Folk Music",
+        "Documentary",
+        "Alarm Test", "Alarm",
     ]
 
     private static let orbassPresets: [OrbassPreset] = [
-        .init(id: "chr", title: "CHR/EDM", enabled: true, amount: 0.76, freqHz: 70, harmonics: 0.78, drive: 1.45, density: 0.86, subharmonicsEnabled: true, subharmonicsAmount: 0.55),
-        .init(id: "urban", title: "Urban", enabled: true, amount: 0.72, freqHz: 68, harmonics: 0.74, drive: 1.35, density: 0.82, subharmonicsEnabled: true, subharmonicsAmount: 0.52),
-        .init(id: "rock", title: "Rock", enabled: true, amount: 0.58, freqHz: 84, harmonics: 0.44, drive: 1.18, density: 0.72, subharmonicsEnabled: true, subharmonicsAmount: 0.34),
-        .init(id: "ac", title: "AC/Pop", enabled: true, amount: 0.42, freqHz: 94, harmonics: 0.30, drive: 1.00, density: 0.66, subharmonicsEnabled: false, subharmonicsAmount: 0.20),
-        .init(id: "talk", title: "Talk", enabled: true, amount: 0.22, freqHz: 118, harmonics: 0.16, drive: 0.72, density: 0.55, subharmonicsEnabled: false, subharmonicsAmount: 0.10),
+        .init(
+            id: "chr", title: "CHR/EDM", enabled: true, amount: 0.76, freqHz: 70, harmonics: 0.78,
+            drive: 1.45, density: 0.86, subharmonicsEnabled: true, subharmonicsAmount: 0.55),
+        .init(
+            id: "urban", title: "Urban", enabled: true, amount: 0.72, freqHz: 68, harmonics: 0.74,
+            drive: 1.35, density: 0.82, subharmonicsEnabled: true, subharmonicsAmount: 0.52),
+        .init(
+            id: "rock", title: "Rock", enabled: true, amount: 0.58, freqHz: 84, harmonics: 0.44,
+            drive: 1.18, density: 0.72, subharmonicsEnabled: true, subharmonicsAmount: 0.34),
+        .init(
+            id: "ac", title: "AC/Pop", enabled: true, amount: 0.42, freqHz: 94, harmonics: 0.30,
+            drive: 1.00, density: 0.66, subharmonicsEnabled: false, subharmonicsAmount: 0.20),
+        .init(
+            id: "talk", title: "Talk", enabled: true, amount: 0.22, freqHz: 118, harmonics: 0.16,
+            drive: 0.72, density: 0.55, subharmonicsEnabled: false, subharmonicsAmount: 0.10),
     ]
 
     private static let multibandPresets: [MultibandPreset] = [
-        .init(id: "3_chr", title: "3B CHR/EDM", mode: 3, lowHz: 260, highHz: 2300, x1Hz: nil, x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -25, lowRatio: 2.6, lowAttackMS: 18, lowReleaseMS: 290, midThresholdDB: -23, midRatio: 2.3, midAttackMS: 12, midReleaseMS: 220, highThresholdDB: -21, highRatio: 1.8, highAttackMS: 7, highReleaseMS: 150, kneeDB: 2.0, linkStrength: 0.36, releaseProgramDependent: true),
-        .init(id: "3_rock", title: "3B Rock", mode: 3, lowHz: 290, highHz: 2400, x1Hz: nil, x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -23, lowRatio: 2.4, lowAttackMS: 20, lowReleaseMS: 310, midThresholdDB: -20, midRatio: 2.2, midAttackMS: 13, midReleaseMS: 230, highThresholdDB: -18, highRatio: 1.7, highAttackMS: 8, highReleaseMS: 165, kneeDB: 2.2, linkStrength: 0.40, releaseProgramDependent: true),
-        .init(id: "3_ac", title: "3B AC/Pop", mode: 3, lowHz: 310, highHz: 2550, x1Hz: nil, x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -20, lowRatio: 2.0, lowAttackMS: 24, lowReleaseMS: 340, midThresholdDB: -18, midRatio: 1.8, midAttackMS: 16, midReleaseMS: 260, highThresholdDB: -17, highRatio: 1.4, highAttackMS: 10, highReleaseMS: 190, kneeDB: 2.8, linkStrength: 0.44, releaseProgramDependent: true),
-        .init(id: "3_country", title: "3B Country", mode: 3, lowHz: 300, highHz: 2450, x1Hz: nil, x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -21, lowRatio: 2.2, lowAttackMS: 22, lowReleaseMS: 320, midThresholdDB: -19, midRatio: 1.9, midAttackMS: 15, midReleaseMS: 250, highThresholdDB: -17, highRatio: 1.5, highAttackMS: 10, highReleaseMS: 185, kneeDB: 2.6, linkStrength: 0.42, releaseProgramDependent: true),
-        .init(id: "3_talk", title: "3B Talk", mode: 3, lowHz: 340, highHz: 3000, x1Hz: nil, x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -16, lowRatio: 1.6, lowAttackMS: 34, lowReleaseMS: 420, midThresholdDB: -15, midRatio: 1.5, midAttackMS: 28, midReleaseMS: 340, highThresholdDB: -14, highRatio: 1.3, highAttackMS: 18, highReleaseMS: 270, kneeDB: 3.8, linkStrength: 0.58, releaseProgramDependent: true),
-        .init(id: "3_urban", title: "3B Urban", mode: 3, lowHz: 250, highHz: 2200, x1Hz: nil, x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -24, lowRatio: 2.7, lowAttackMS: 16, lowReleaseMS: 280, midThresholdDB: -22, midRatio: 2.4, midAttackMS: 11, midReleaseMS: 210, highThresholdDB: -20, highRatio: 1.9, highAttackMS: 6, highReleaseMS: 145, kneeDB: 2.1, linkStrength: 0.38, releaseProgramDependent: true),
-        .init(id: "3_dance", title: "3B Dance", mode: 3, lowHz: 240, highHz: 2100, x1Hz: nil, x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -26, lowRatio: 2.9, lowAttackMS: 14, lowReleaseMS: 260, midThresholdDB: -24, midRatio: 2.6, midAttackMS: 10, midReleaseMS: 200, highThresholdDB: -22, highRatio: 2.0, highAttackMS: 5, highReleaseMS: 135, kneeDB: 1.9, linkStrength: 0.34, releaseProgramDependent: true),
-        .init(id: "3_news", title: "3B News", mode: 3, lowHz: 360, highHz: 3200, x1Hz: nil, x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -15, lowRatio: 1.4, lowAttackMS: 38, lowReleaseMS: 480, midThresholdDB: -14, midRatio: 1.35, midAttackMS: 30, midReleaseMS: 390, highThresholdDB: -13, highRatio: 1.25, highAttackMS: 22, highReleaseMS: 320, kneeDB: 4.0, linkStrength: 0.62, releaseProgramDependent: true),
-        .init(id: "3_jazz", title: "3B Jazz", mode: 3, lowHz: 330, highHz: 2800, x1Hz: nil, x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -18, lowRatio: 1.7, lowAttackMS: 30, lowReleaseMS: 420, midThresholdDB: -17, midRatio: 1.55, midAttackMS: 24, midReleaseMS: 330, highThresholdDB: -16, highRatio: 1.35, highAttackMS: 16, highReleaseMS: 250, kneeDB: 3.2, linkStrength: 0.52, releaseProgramDependent: true),
-        .init(id: "3_classic", title: "3B Classical", mode: 3, lowHz: 360, highHz: 3400, x1Hz: nil, x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -14, lowRatio: 1.35, lowAttackMS: 42, lowReleaseMS: 520, midThresholdDB: -13, midRatio: 1.3, midAttackMS: 36, midReleaseMS: 430, highThresholdDB: -12, highRatio: 1.2, highAttackMS: 26, highReleaseMS: 340, kneeDB: 4.6, linkStrength: 0.66, releaseProgramDependent: true),
-        .init(id: "5_chr", title: "5B CHR/EDM", mode: 5, lowHz: nil, highHz: nil, x1Hz: 80, x2Hz: 300, x3Hz: 1250, x4Hz: 5000, lowThresholdDB: -25, lowRatio: 2.8, lowAttackMS: 14, lowReleaseMS: 270, midThresholdDB: -23, midRatio: 2.4, midAttackMS: 10, midReleaseMS: 210, highThresholdDB: -21, highRatio: 1.9, highAttackMS: 5, highReleaseMS: 140, kneeDB: 1.8, linkStrength: 0.34, releaseProgramDependent: true),
-        .init(id: "5_rock", title: "5B Rock", mode: 5, lowHz: nil, highHz: nil, x1Hz: 85, x2Hz: 320, x3Hz: 1400, x4Hz: 5400, lowThresholdDB: -23, lowRatio: 2.5, lowAttackMS: 18, lowReleaseMS: 300, midThresholdDB: -21, midRatio: 2.1, midAttackMS: 12, midReleaseMS: 225, highThresholdDB: -19, highRatio: 1.8, highAttackMS: 7, highReleaseMS: 160, kneeDB: 2.1, linkStrength: 0.38, releaseProgramDependent: true),
-        .init(id: "5_ac", title: "5B AC/Pop", mode: 5, lowHz: nil, highHz: nil, x1Hz: 80, x2Hz: 320, x3Hz: 1500, x4Hz: 5800, lowThresholdDB: -20, lowRatio: 1.9, lowAttackMS: 22, lowReleaseMS: 330, midThresholdDB: -18, midRatio: 1.8, midAttackMS: 14, midReleaseMS: 260, highThresholdDB: -17, highRatio: 1.5, highAttackMS: 10, highReleaseMS: 190, kneeDB: 2.8, linkStrength: 0.44, releaseProgramDependent: true),
-        .init(id: "5_classic", title: "5B Classical/Jazz", mode: 5, lowHz: nil, highHz: nil, x1Hz: 90, x2Hz: 360, x3Hz: 1700, x4Hz: 6500, lowThresholdDB: -17, lowRatio: 1.5, lowAttackMS: 36, lowReleaseMS: 450, midThresholdDB: -16, midRatio: 1.4, midAttackMS: 30, midReleaseMS: 360, highThresholdDB: -15, highRatio: 1.25, highAttackMS: 20, highReleaseMS: 280, kneeDB: 4.5, linkStrength: 0.60, releaseProgramDependent: true),
-        .init(id: "5_talk", title: "5B Talk", mode: 5, lowHz: nil, highHz: nil, x1Hz: 100, x2Hz: 400, x3Hz: 1800, x4Hz: 7000, lowThresholdDB: -16, lowRatio: 1.5, lowAttackMS: 38, lowReleaseMS: 480, midThresholdDB: -15, midRatio: 1.4, midAttackMS: 32, midReleaseMS: 380, highThresholdDB: -14, highRatio: 1.2, highAttackMS: 22, highReleaseMS: 300, kneeDB: 4.2, linkStrength: 0.62, releaseProgramDependent: true),
-        .init(id: "5_urban", title: "5B Urban", mode: 5, lowHz: nil, highHz: nil, x1Hz: 75, x2Hz: 280, x3Hz: 1100, x4Hz: 4700, lowThresholdDB: -24, lowRatio: 2.7, lowAttackMS: 14, lowReleaseMS: 270, midThresholdDB: -22, midRatio: 2.3, midAttackMS: 10, midReleaseMS: 205, highThresholdDB: -20, highRatio: 1.9, highAttackMS: 5, highReleaseMS: 140, kneeDB: 1.9, linkStrength: 0.36, releaseProgramDependent: true),
-        .init(id: "5_dance", title: "5B Dance", mode: 5, lowHz: nil, highHz: nil, x1Hz: 70, x2Hz: 260, x3Hz: 1000, x4Hz: 4300, lowThresholdDB: -26, lowRatio: 3.0, lowAttackMS: 12, lowReleaseMS: 250, midThresholdDB: -24, midRatio: 2.6, midAttackMS: 9, midReleaseMS: 190, highThresholdDB: -22, highRatio: 2.1, highAttackMS: 4, highReleaseMS: 130, kneeDB: 1.7, linkStrength: 0.32, releaseProgramDependent: true),
-        .init(id: "5_news", title: "5B News", mode: 5, lowHz: nil, highHz: nil, x1Hz: 110, x2Hz: 450, x3Hz: 2100, x4Hz: 7600, lowThresholdDB: -15, lowRatio: 1.4, lowAttackMS: 40, lowReleaseMS: 500, midThresholdDB: -14, midRatio: 1.35, midAttackMS: 34, midReleaseMS: 400, highThresholdDB: -13, highRatio: 1.25, highAttackMS: 24, highReleaseMS: 320, kneeDB: 4.3, linkStrength: 0.64, releaseProgramDependent: true),
-        .init(id: "5_jazz", title: "5B Jazz", mode: 5, lowHz: nil, highHz: nil, x1Hz: 95, x2Hz: 360, x3Hz: 1600, x4Hz: 6200, lowThresholdDB: -18, lowRatio: 1.65, lowAttackMS: 32, lowReleaseMS: 430, midThresholdDB: -17, midRatio: 1.5, midAttackMS: 26, midReleaseMS: 340, highThresholdDB: -16, highRatio: 1.35, highAttackMS: 17, highReleaseMS: 260, kneeDB: 3.4, linkStrength: 0.54, releaseProgramDependent: true),
-        .init(id: "5_oldies", title: "5B Oldies", mode: 5, lowHz: nil, highHz: nil, x1Hz: 90, x2Hz: 340, x3Hz: 1450, x4Hz: 5600, lowThresholdDB: -20, lowRatio: 1.8, lowAttackMS: 26, lowReleaseMS: 360, midThresholdDB: -18, midRatio: 1.7, midAttackMS: 18, midReleaseMS: 280, highThresholdDB: -17, highRatio: 1.45, highAttackMS: 11, highReleaseMS: 210, kneeDB: 3.0, linkStrength: 0.48, releaseProgramDependent: true),
+        .init(
+            id: "3_chr", title: "3B CHR/EDM", mode: 3, lowHz: 260, highHz: 2300, x1Hz: nil,
+            x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -25, lowRatio: 2.6, lowAttackMS: 18,
+            lowReleaseMS: 290, midThresholdDB: -23, midRatio: 2.3, midAttackMS: 12,
+            midReleaseMS: 220, highThresholdDB: -21, highRatio: 1.8, highAttackMS: 7,
+            highReleaseMS: 150, kneeDB: 2.0, linkStrength: 0.36, releaseProgramDependent: true),
+        .init(
+            id: "3_rock", title: "3B Rock", mode: 3, lowHz: 290, highHz: 2400, x1Hz: nil, x2Hz: nil,
+            x3Hz: nil, x4Hz: nil, lowThresholdDB: -23, lowRatio: 2.4, lowAttackMS: 20,
+            lowReleaseMS: 310, midThresholdDB: -20, midRatio: 2.2, midAttackMS: 13,
+            midReleaseMS: 230, highThresholdDB: -18, highRatio: 1.7, highAttackMS: 8,
+            highReleaseMS: 165, kneeDB: 2.2, linkStrength: 0.40, releaseProgramDependent: true),
+        .init(
+            id: "3_ac", title: "3B AC/Pop", mode: 3, lowHz: 310, highHz: 2550, x1Hz: nil, x2Hz: nil,
+            x3Hz: nil, x4Hz: nil, lowThresholdDB: -20, lowRatio: 2.0, lowAttackMS: 24,
+            lowReleaseMS: 340, midThresholdDB: -18, midRatio: 1.8, midAttackMS: 16,
+            midReleaseMS: 260, highThresholdDB: -17, highRatio: 1.4, highAttackMS: 10,
+            highReleaseMS: 190, kneeDB: 2.8, linkStrength: 0.44, releaseProgramDependent: true),
+        .init(
+            id: "3_country", title: "3B Country", mode: 3, lowHz: 300, highHz: 2450, x1Hz: nil,
+            x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -21, lowRatio: 2.2, lowAttackMS: 22,
+            lowReleaseMS: 320, midThresholdDB: -19, midRatio: 1.9, midAttackMS: 15,
+            midReleaseMS: 250, highThresholdDB: -17, highRatio: 1.5, highAttackMS: 10,
+            highReleaseMS: 185, kneeDB: 2.6, linkStrength: 0.42, releaseProgramDependent: true),
+        .init(
+            id: "3_talk", title: "3B Talk", mode: 3, lowHz: 340, highHz: 3000, x1Hz: nil, x2Hz: nil,
+            x3Hz: nil, x4Hz: nil, lowThresholdDB: -16, lowRatio: 1.6, lowAttackMS: 34,
+            lowReleaseMS: 420, midThresholdDB: -15, midRatio: 1.5, midAttackMS: 28,
+            midReleaseMS: 340, highThresholdDB: -14, highRatio: 1.3, highAttackMS: 18,
+            highReleaseMS: 270, kneeDB: 3.8, linkStrength: 0.58, releaseProgramDependent: true),
+        .init(
+            id: "3_urban", title: "3B Urban", mode: 3, lowHz: 250, highHz: 2200, x1Hz: nil,
+            x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -24, lowRatio: 2.7, lowAttackMS: 16,
+            lowReleaseMS: 280, midThresholdDB: -22, midRatio: 2.4, midAttackMS: 11,
+            midReleaseMS: 210, highThresholdDB: -20, highRatio: 1.9, highAttackMS: 6,
+            highReleaseMS: 145, kneeDB: 2.1, linkStrength: 0.38, releaseProgramDependent: true),
+        .init(
+            id: "3_dance", title: "3B Dance", mode: 3, lowHz: 240, highHz: 2100, x1Hz: nil,
+            x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -26, lowRatio: 2.9, lowAttackMS: 14,
+            lowReleaseMS: 260, midThresholdDB: -24, midRatio: 2.6, midAttackMS: 10,
+            midReleaseMS: 200, highThresholdDB: -22, highRatio: 2.0, highAttackMS: 5,
+            highReleaseMS: 135, kneeDB: 1.9, linkStrength: 0.34, releaseProgramDependent: true),
+        .init(
+            id: "3_news", title: "3B News", mode: 3, lowHz: 360, highHz: 3200, x1Hz: nil, x2Hz: nil,
+            x3Hz: nil, x4Hz: nil, lowThresholdDB: -15, lowRatio: 1.4, lowAttackMS: 38,
+            lowReleaseMS: 480, midThresholdDB: -14, midRatio: 1.35, midAttackMS: 30,
+            midReleaseMS: 390, highThresholdDB: -13, highRatio: 1.25, highAttackMS: 22,
+            highReleaseMS: 320, kneeDB: 4.0, linkStrength: 0.62, releaseProgramDependent: true),
+        .init(
+            id: "3_jazz", title: "3B Jazz", mode: 3, lowHz: 330, highHz: 2800, x1Hz: nil, x2Hz: nil,
+            x3Hz: nil, x4Hz: nil, lowThresholdDB: -18, lowRatio: 1.7, lowAttackMS: 30,
+            lowReleaseMS: 420, midThresholdDB: -17, midRatio: 1.55, midAttackMS: 24,
+            midReleaseMS: 330, highThresholdDB: -16, highRatio: 1.35, highAttackMS: 16,
+            highReleaseMS: 250, kneeDB: 3.2, linkStrength: 0.52, releaseProgramDependent: true),
+        .init(
+            id: "3_classic", title: "3B Classical", mode: 3, lowHz: 360, highHz: 3400, x1Hz: nil,
+            x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -14, lowRatio: 1.35, lowAttackMS: 42,
+            lowReleaseMS: 520, midThresholdDB: -13, midRatio: 1.3, midAttackMS: 36,
+            midReleaseMS: 430, highThresholdDB: -12, highRatio: 1.2, highAttackMS: 26,
+            highReleaseMS: 340, kneeDB: 4.6, linkStrength: 0.66, releaseProgramDependent: true),
+        .init(
+            id: "5_chr", title: "5B CHR/EDM", mode: 5, lowHz: nil, highHz: nil, x1Hz: 80, x2Hz: 300,
+            x3Hz: 1250, x4Hz: 5000, lowThresholdDB: -25, lowRatio: 2.8, lowAttackMS: 14,
+            lowReleaseMS: 270, midThresholdDB: -23, midRatio: 2.4, midAttackMS: 10,
+            midReleaseMS: 210, highThresholdDB: -21, highRatio: 1.9, highAttackMS: 5,
+            highReleaseMS: 140, kneeDB: 1.8, linkStrength: 0.34, releaseProgramDependent: true),
+        .init(
+            id: "5_rock", title: "5B Rock", mode: 5, lowHz: nil, highHz: nil, x1Hz: 85, x2Hz: 320,
+            x3Hz: 1400, x4Hz: 5400, lowThresholdDB: -23, lowRatio: 2.5, lowAttackMS: 18,
+            lowReleaseMS: 300, midThresholdDB: -21, midRatio: 2.1, midAttackMS: 12,
+            midReleaseMS: 225, highThresholdDB: -19, highRatio: 1.8, highAttackMS: 7,
+            highReleaseMS: 160, kneeDB: 2.1, linkStrength: 0.38, releaseProgramDependent: true),
+        .init(
+            id: "5_ac", title: "5B AC/Pop", mode: 5, lowHz: nil, highHz: nil, x1Hz: 80, x2Hz: 320,
+            x3Hz: 1500, x4Hz: 5800, lowThresholdDB: -20, lowRatio: 1.9, lowAttackMS: 22,
+            lowReleaseMS: 330, midThresholdDB: -18, midRatio: 1.8, midAttackMS: 14,
+            midReleaseMS: 260, highThresholdDB: -17, highRatio: 1.5, highAttackMS: 10,
+            highReleaseMS: 190, kneeDB: 2.8, linkStrength: 0.44, releaseProgramDependent: true),
+        .init(
+            id: "5_classic", title: "5B Classical/Jazz", mode: 5, lowHz: nil, highHz: nil, x1Hz: 90,
+            x2Hz: 360, x3Hz: 1700, x4Hz: 6500, lowThresholdDB: -17, lowRatio: 1.5, lowAttackMS: 36,
+            lowReleaseMS: 450, midThresholdDB: -16, midRatio: 1.4, midAttackMS: 30,
+            midReleaseMS: 360, highThresholdDB: -15, highRatio: 1.25, highAttackMS: 20,
+            highReleaseMS: 280, kneeDB: 4.5, linkStrength: 0.60, releaseProgramDependent: true),
+        .init(
+            id: "5_talk", title: "5B Talk", mode: 5, lowHz: nil, highHz: nil, x1Hz: 100, x2Hz: 400,
+            x3Hz: 1800, x4Hz: 7000, lowThresholdDB: -16, lowRatio: 1.5, lowAttackMS: 38,
+            lowReleaseMS: 480, midThresholdDB: -15, midRatio: 1.4, midAttackMS: 32,
+            midReleaseMS: 380, highThresholdDB: -14, highRatio: 1.2, highAttackMS: 22,
+            highReleaseMS: 300, kneeDB: 4.2, linkStrength: 0.62, releaseProgramDependent: true),
+        .init(
+            id: "5_urban", title: "5B Urban", mode: 5, lowHz: nil, highHz: nil, x1Hz: 75, x2Hz: 280,
+            x3Hz: 1100, x4Hz: 4700, lowThresholdDB: -24, lowRatio: 2.7, lowAttackMS: 14,
+            lowReleaseMS: 270, midThresholdDB: -22, midRatio: 2.3, midAttackMS: 10,
+            midReleaseMS: 205, highThresholdDB: -20, highRatio: 1.9, highAttackMS: 5,
+            highReleaseMS: 140, kneeDB: 1.9, linkStrength: 0.36, releaseProgramDependent: true),
+        .init(
+            id: "5_dance", title: "5B Dance", mode: 5, lowHz: nil, highHz: nil, x1Hz: 70, x2Hz: 260,
+            x3Hz: 1000, x4Hz: 4300, lowThresholdDB: -26, lowRatio: 3.0, lowAttackMS: 12,
+            lowReleaseMS: 250, midThresholdDB: -24, midRatio: 2.6, midAttackMS: 9,
+            midReleaseMS: 190, highThresholdDB: -22, highRatio: 2.1, highAttackMS: 4,
+            highReleaseMS: 130, kneeDB: 1.7, linkStrength: 0.32, releaseProgramDependent: true),
+        .init(
+            id: "5_news", title: "5B News", mode: 5, lowHz: nil, highHz: nil, x1Hz: 110, x2Hz: 450,
+            x3Hz: 2100, x4Hz: 7600, lowThresholdDB: -15, lowRatio: 1.4, lowAttackMS: 40,
+            lowReleaseMS: 500, midThresholdDB: -14, midRatio: 1.35, midAttackMS: 34,
+            midReleaseMS: 400, highThresholdDB: -13, highRatio: 1.25, highAttackMS: 24,
+            highReleaseMS: 320, kneeDB: 4.3, linkStrength: 0.64, releaseProgramDependent: true),
+        .init(
+            id: "5_jazz", title: "5B Jazz", mode: 5, lowHz: nil, highHz: nil, x1Hz: 95, x2Hz: 360,
+            x3Hz: 1600, x4Hz: 6200, lowThresholdDB: -18, lowRatio: 1.65, lowAttackMS: 32,
+            lowReleaseMS: 430, midThresholdDB: -17, midRatio: 1.5, midAttackMS: 26,
+            midReleaseMS: 340, highThresholdDB: -16, highRatio: 1.35, highAttackMS: 17,
+            highReleaseMS: 260, kneeDB: 3.4, linkStrength: 0.54, releaseProgramDependent: true),
+        .init(
+            id: "5_oldies", title: "5B Oldies", mode: 5, lowHz: nil, highHz: nil, x1Hz: 90,
+            x2Hz: 340, x3Hz: 1450, x4Hz: 5600, lowThresholdDB: -20, lowRatio: 1.8, lowAttackMS: 26,
+            lowReleaseMS: 360, midThresholdDB: -18, midRatio: 1.7, midAttackMS: 18,
+            midReleaseMS: 280, highThresholdDB: -17, highRatio: 1.45, highAttackMS: 11,
+            highReleaseMS: 210, kneeDB: 3.0, linkStrength: 0.48, releaseProgramDependent: true),
     ]
 
     private static func ptyName(for pty: Int) -> String {
@@ -1372,7 +1665,9 @@ final class StereoFoolViewModel: ObservableObject {
         return state.value
     }
 
-    private func smoothMeter(current: Float, target: Float, dt: Double, attackMS: Float, releaseMS: Float) -> Float {
+    private func smoothMeter(
+        current: Float, target: Float, dt: Double, attackMS: Float, releaseMS: Float
+    ) -> Float {
         let clampedTarget = max(0.0, min(1.0, target.isFinite ? target : 0.0))
         let tauMS = clampedTarget >= current ? max(1.0, attackMS) : max(5.0, releaseMS)
         let alpha = 1.0 - exp(-dt / (Double(tauMS) * 0.001))
@@ -1401,8 +1696,8 @@ final class StereoFoolViewModel: ObservableObject {
     }
 }
 
-private extension String {
-    func ifEmpty(_ fallback: String) -> String {
+extension String {
+    fileprivate func ifEmpty(_ fallback: String) -> String {
         let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? fallback : trimmed
     }
@@ -1569,7 +1864,8 @@ private struct MonitoringHealthSummaryRow: View {
                     }
                     GridRow {
                         MonitoringDetailValue("Underflows (10s)", "\(health.underflowsRecent)")
-                        MonitoringDetailValue("Totals", "O:\(health.overflowsTotal) U:\(health.underflowsTotal)")
+                        MonitoringDetailValue(
+                            "Totals", "O:\(health.overflowsTotal) U:\(health.underflowsTotal)")
                     }
                     GridRow {
                         MonitoringDetailValue("Rates", rateText)
@@ -1585,7 +1881,8 @@ private struct MonitoringHealthSummaryRow: View {
 
     private var summaryText: String {
         let stateText = health.isRunning ? "Running" : "Stopped"
-        return "\(stateText) • \(health.rateSummary) • Input: \(health.inputName) • Buffer: \(health.bufferSummary)"
+        return
+            "\(stateText) • \(health.rateSummary) • Input: \(health.inputName) • Buffer: \(health.bufferSummary)"
     }
 
     private var ringText: String {
@@ -1643,10 +1940,16 @@ private struct MonitoringRuntimeSectionView: View {
             Text("Runtime").font(.headline)
             VStack(alignment: .leading, spacing: 8) {
                 LabeledContent("Source") {
-                    Picker("", selection: Binding(
-                        get: { model.sourceMode },
-                        set: { model.sourceMode = $0; model.persistBasicConfig() }
-                    )) {
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { model.sourceMode },
+                            set: {
+                                model.sourceMode = $0
+                                model.persistBasicConfig()
+                            }
+                        )
+                    ) {
                         Text("input").tag("input")
                         Text("tone").tag("tone")
                     }
@@ -1654,10 +1957,16 @@ private struct MonitoringRuntimeSectionView: View {
                     .pickerStyle(.menu)
                 }
                 LabeledContent("Input") {
-                    Picker("", selection: Binding(
-                        get: { model.selectedInputUID },
-                        set: { model.selectedInputUID = $0; model.persistBasicConfig() }
-                    )) {
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { model.selectedInputUID },
+                            set: {
+                                model.selectedInputUID = $0
+                                model.persistBasicConfig()
+                            }
+                        )
+                    ) {
                         ForEach(model.inputDevices, id: \.uid) { d in
                             Text(d.name).tag(d.uid)
                         }
@@ -1666,10 +1975,16 @@ private struct MonitoringRuntimeSectionView: View {
                     .pickerStyle(.menu)
                 }
                 LabeledContent("Output") {
-                    Picker("", selection: Binding(
-                        get: { model.selectedOutputUID },
-                        set: { model.selectedOutputUID = $0; model.persistBasicConfig() }
-                    )) {
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { model.selectedOutputUID },
+                            set: {
+                                model.selectedOutputUID = $0
+                                model.persistBasicConfig()
+                            }
+                        )
+                    ) {
                         ForEach(model.outputDevices, id: \.uid) { d in
                             Text(d.name).tag(d.uid)
                         }
@@ -1677,18 +1992,30 @@ private struct MonitoringRuntimeSectionView: View {
                     .labelsHidden()
                     .pickerStyle(.menu)
                 }
-                Toggle("Enable Monitor Output", isOn: Binding(
-                    get: { model.monitorEnabled },
-                    set: { model.monitorEnabled = $0; model.persistBasicConfig() }
-                ))
+                Toggle(
+                    "Enable Monitor Output",
+                    isOn: Binding(
+                        get: { model.monitorEnabled },
+                        set: {
+                            model.monitorEnabled = $0
+                            model.persistBasicConfig()
+                        }
+                    )
+                )
                 .toggleStyle(.checkbox)
 
                 if model.monitorEnabled {
                     LabeledContent("Monitor Out") {
-                        Picker("", selection: Binding(
-                            get: { model.selectedMonitorUID },
-                            set: { model.selectedMonitorUID = $0; model.persistBasicConfig() }
-                        )) {
+                        Picker(
+                            "",
+                            selection: Binding(
+                                get: { model.selectedMonitorUID },
+                                set: {
+                                    model.selectedMonitorUID = $0
+                                    model.persistBasicConfig()
+                                }
+                            )
+                        ) {
                             ForEach(model.outputDevices, id: \.uid) { d in
                                 Text(d.name).tag(d.uid)
                             }
@@ -1724,13 +2051,14 @@ private struct MonitoringLevelsSectionView: View {
 
             LabeledContent("Input Gain") {
                 HStack(spacing: 12) {
-                    Slider(value: Binding(
-                        get: { model.inputGainDB },
-                        set: {
-                            model.inputGainDB = $0
-                            model.persistBasicConfig()
-                        }
-                    ), in: -24...24)
+                    Slider(
+                        value: Binding(
+                            get: { model.inputGainDB },
+                            set: {
+                                model.inputGainDB = $0
+                                model.persistBasicConfig()
+                            }
+                        ), in: -24...24)
                     Text(String(format: "%.1f dB", model.inputGainDB))
                         .font(.system(.caption, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -1739,26 +2067,35 @@ private struct MonitoringLevelsSectionView: View {
             }
 
             HStack(spacing: 14) {
-                Toggle("Sticky Peaks", isOn: Binding(
-                    get: { model.stickyPeaksEnabled },
-                    set: { model.stickyPeaksEnabled = $0 }
-                ))
+                Toggle(
+                    "Sticky Peaks",
+                    isOn: Binding(
+                        get: { model.stickyPeaksEnabled },
+                        set: { model.stickyPeaksEnabled = $0 }
+                    )
+                )
                 .toggleStyle(.checkbox)
                 Spacer(minLength: 12)
-                Picker("Hold", selection: Binding(
-                    get: { model.meterPeakHoldSeconds },
-                    set: { model.meterPeakHoldSeconds = $0 }
-                )) {
+                Picker(
+                    "Hold",
+                    selection: Binding(
+                        get: { model.meterPeakHoldSeconds },
+                        set: { model.meterPeakHoldSeconds = $0 }
+                    )
+                ) {
                     ForEach(holdOptions, id: \.self) { seconds in
                         Text(String(format: "%.1f s", seconds)).tag(seconds)
                     }
                 }
                 .pickerStyle(.menu)
                 .frame(width: 100)
-                Picker("Fall", selection: Binding(
-                    get: { model.meterPeakFallDBPerSecond },
-                    set: { model.meterPeakFallDBPerSecond = $0 }
-                )) {
+                Picker(
+                    "Fall",
+                    selection: Binding(
+                        get: { model.meterPeakFallDBPerSecond },
+                        set: { model.meterPeakFallDBPerSecond = $0 }
+                    )
+                ) {
                     ForEach(fallOptions, id: \.self) { value in
                         Text(String(format: "%.0f dB/s", value)).tag(value)
                     }
@@ -1772,10 +2109,18 @@ private struct MonitoringLevelsSectionView: View {
             .controlSize(.small)
             .font(.callout)
 
-            MeterRow(label: "Input L", valueText: model.inputLText, level: model.inputLLevel, peakLevel: model.inputLPeakHoldLevel, showsDBScale: true)
-            MeterRow(label: "Input R", valueText: model.inputRText, level: model.inputRLevel, peakLevel: model.inputRPeakHoldLevel, showsDBScale: true)
-            MeterRow(label: "MPX", valueText: model.outputText, level: model.outputLevel, peakLevel: model.outputPeakHoldLevel, showsDBScale: true)
-            MeterRow(label: "Modulation", valueText: model.modulationText, level: model.modulationLevel, peakLevel: model.modulationPeakHoldLevel, showsDBScale: false)
+            MeterRow(
+                label: "Input L", valueText: model.inputLText, level: model.inputLLevel,
+                peakLevel: model.inputLPeakHoldLevel, showsDBScale: true)
+            MeterRow(
+                label: "Input R", valueText: model.inputRText, level: model.inputRLevel,
+                peakLevel: model.inputRPeakHoldLevel, showsDBScale: true)
+            MeterRow(
+                label: "MPX", valueText: model.outputText, level: model.outputLevel,
+                peakLevel: model.outputPeakHoldLevel, showsDBScale: true)
+            MeterRow(
+                label: "Modulation", valueText: model.modulationText, level: model.modulationLevel,
+                peakLevel: model.modulationPeakHoldLevel, showsDBScale: false)
         }
     }
 }
@@ -1793,15 +2138,18 @@ private struct MonitoringDSPStatusSectionView: View {
                 )
                 DSPStateIndicator(
                     title: "Multiband",
-                    dotColor: model.multibandStateText.caseInsensitiveCompare("On") == .orderedSame ? .green : .secondary.opacity(0.45)
+                    dotColor: model.multibandStateText.caseInsensitiveCompare("On") == .orderedSame
+                        ? .green : .secondary.opacity(0.45)
                 )
                 DSPStateIndicator(
                     title: "Orbass",
-                    dotColor: model.orbassStateText.caseInsensitiveCompare("On") == .orderedSame ? .green : .secondary.opacity(0.45)
+                    dotColor: model.orbassStateText.caseInsensitiveCompare("On") == .orderedSame
+                        ? .green : .secondary.opacity(0.45)
                 )
                 DSPStateIndicator(
                     title: "Widener",
-                    dotColor: model.widenerStateText.caseInsensitiveCompare("On") == .orderedSame ? .green : .secondary.opacity(0.45)
+                    dotColor: model.widenerStateText.caseInsensitiveCompare("On") == .orderedSame
+                        ? .green : .secondary.opacity(0.45)
                 )
                 Spacer(minLength: 0)
             }
@@ -1813,7 +2161,9 @@ private struct MonitoringDSPStatusSectionView: View {
         if state.caseInsensitiveCompare("Idle") == .orderedSame {
             return .green
         }
-        if state.caseInsensitiveCompare("Off") == .orderedSame || state.caseInsensitiveCompare("Disabled") == .orderedSame {
+        if state.caseInsensitiveCompare("Off") == .orderedSame
+            || state.caseInsensitiveCompare("Disabled") == .orderedSame
+        {
             return .secondary.opacity(0.45)
         }
         return .red
@@ -1835,9 +2185,9 @@ private struct DSPStateIndicator: View {
     }
 }
 
-private extension View {
+extension View {
     @ViewBuilder
-    func sfToolbarTitleDisplayModeAutomatic() -> some View {
+    fileprivate func sfToolbarTitleDisplayModeAutomatic() -> some View {
         if #available(macOS 14.0, *) {
             self.toolbarTitleDisplayMode(.automatic)
         } else {
@@ -1857,10 +2207,16 @@ private struct RuntimeCardView: View {
                         .foregroundStyle(.secondary)
                 }
                 LabeledContent("Source") {
-                    Picker("", selection: Binding(
-                        get: { model.sourceMode },
-                        set: { model.sourceMode = $0; model.persistBasicConfig() }
-                    )) {
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { model.sourceMode },
+                            set: {
+                                model.sourceMode = $0
+                                model.persistBasicConfig()
+                            }
+                        )
+                    ) {
                         Text("input").tag("input")
                         Text("tone").tag("tone")
                     }
@@ -1868,10 +2224,16 @@ private struct RuntimeCardView: View {
                     .pickerStyle(.menu)
                 }
                 LabeledContent("Input") {
-                    Picker("", selection: Binding(
-                        get: { model.selectedInputUID },
-                        set: { model.selectedInputUID = $0; model.persistBasicConfig() }
-                    )) {
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { model.selectedInputUID },
+                            set: {
+                                model.selectedInputUID = $0
+                                model.persistBasicConfig()
+                            }
+                        )
+                    ) {
                         ForEach(model.inputDevices, id: \.uid) { d in
                             Text(d.name).tag(d.uid)
                         }
@@ -1880,10 +2242,16 @@ private struct RuntimeCardView: View {
                     .pickerStyle(.menu)
                 }
                 LabeledContent("Output") {
-                    Picker("", selection: Binding(
-                        get: { model.selectedOutputUID },
-                        set: { model.selectedOutputUID = $0; model.persistBasicConfig() }
-                    )) {
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { model.selectedOutputUID },
+                            set: {
+                                model.selectedOutputUID = $0
+                                model.persistBasicConfig()
+                            }
+                        )
+                    ) {
                         ForEach(model.outputDevices, id: \.uid) { d in
                             Text(d.name).tag(d.uid)
                         }
@@ -1892,17 +2260,28 @@ private struct RuntimeCardView: View {
                     .pickerStyle(.menu)
                 }
 
-                Toggle("Enable Monitor Output", isOn: Binding(
-                    get: { model.monitorEnabled },
-                    set: { model.monitorEnabled = $0; model.persistBasicConfig() }
-                ))
+                Toggle(
+                    "Enable Monitor Output",
+                    isOn: Binding(
+                        get: { model.monitorEnabled },
+                        set: {
+                            model.monitorEnabled = $0
+                            model.persistBasicConfig()
+                        }
+                    ))
 
                 if model.monitorEnabled {
                     LabeledContent("Monitor Out") {
-                        Picker("", selection: Binding(
-                            get: { model.selectedMonitorUID },
-                            set: { model.selectedMonitorUID = $0; model.persistBasicConfig() }
-                        )) {
+                        Picker(
+                            "",
+                            selection: Binding(
+                                get: { model.selectedMonitorUID },
+                                set: {
+                                    model.selectedMonitorUID = $0
+                                    model.persistBasicConfig()
+                                }
+                            )
+                        ) {
                             ForEach(model.outputDevices, id: \.uid) { d in
                                 Text(d.name).tag(d.uid)
                             }
@@ -1917,7 +2296,11 @@ private struct RuntimeCardView: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                 ProgressView(value: model.inputBufferValue, total: max(1.0, model.inputBufferMax))
-                    .tint(model.inputBufferValue >= model.inputBufferCritical ? .red : (model.inputBufferValue >= model.inputBufferWarning ? .yellow : .green))
+                    .tint(
+                        model.inputBufferValue >= model.inputBufferCritical
+                            ? .red
+                            : (model.inputBufferValue >= model.inputBufferWarning
+                                ? .yellow : .green))
                 Text(model.inputRingText)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -1945,13 +2328,14 @@ private struct LevelsCardView: View {
             VStack(alignment: .leading, spacing: 12) {
                 LabeledContent("Input Gain") {
                     HStack(spacing: 12) {
-                        Slider(value: Binding(
-                            get: { model.inputGainDB },
-                            set: {
-                                model.inputGainDB = $0
-                                model.persistBasicConfig()
-                            }
-                        ), in: -24...24)
+                        Slider(
+                            value: Binding(
+                                get: { model.inputGainDB },
+                                set: {
+                                    model.inputGainDB = $0
+                                    model.persistBasicConfig()
+                                }
+                            ), in: -24...24)
                         Text(String(format: "%.1f dB", model.inputGainDB))
                             .font(.system(.callout, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -1960,10 +2344,19 @@ private struct LevelsCardView: View {
                 }
 
                 Divider()
-                MeterRow(label: "Stereo Input L", valueText: model.inputLText, level: model.inputLLevel, peakLevel: model.inputLPeakHoldLevel, showsDBScale: true)
-                MeterRow(label: "Stereo Input R", valueText: model.inputRText, level: model.inputRLevel, peakLevel: model.inputRPeakHoldLevel, showsDBScale: true)
-                MeterRow(label: "MPX Output", valueText: model.outputText, level: model.outputLevel, peakLevel: model.outputPeakHoldLevel, showsDBScale: true)
-                MeterRow(label: "Modulation", valueText: model.modulationText, level: model.modulationLevel, peakLevel: model.modulationPeakHoldLevel, showsDBScale: false)
+                MeterRow(
+                    label: "Stereo Input L", valueText: model.inputLText, level: model.inputLLevel,
+                    peakLevel: model.inputLPeakHoldLevel, showsDBScale: true)
+                MeterRow(
+                    label: "Stereo Input R", valueText: model.inputRText, level: model.inputRLevel,
+                    peakLevel: model.inputRPeakHoldLevel, showsDBScale: true)
+                MeterRow(
+                    label: "MPX Output", valueText: model.outputText, level: model.outputLevel,
+                    peakLevel: model.outputPeakHoldLevel, showsDBScale: true)
+                MeterRow(
+                    label: "Modulation", valueText: model.modulationText,
+                    level: model.modulationLevel, peakLevel: model.modulationPeakHoldLevel,
+                    showsDBScale: false)
             }
             .controlSize(.regular)
         }
@@ -1977,7 +2370,10 @@ private struct MeterRow: View {
     let peakLevel: Double?
     let showsDBScale: Bool
 
-    init(label: String, valueText: String, level: Double, peakLevel: Double? = nil, showsDBScale: Bool = false) {
+    init(
+        label: String, valueText: String, level: Double, peakLevel: Double? = nil,
+        showsDBScale: Bool = false
+    ) {
         self.label = label
         self.valueText = valueText
         self.level = level
@@ -2037,7 +2433,7 @@ private struct MeterBar: View {
                             )
                         )
                         .frame(width: max(0.0, width))
-                    if let _ = peakLevel {
+                    if peakLevel != nil {
                         Rectangle()
                             .fill(Color.white.opacity(0.98))
                             .frame(width: 2, height: 14)
@@ -2073,20 +2469,24 @@ private struct DSPStatusCardView: View {
             VStack(alignment: .leading, spacing: 10) {
                 DSPStateIndicator(
                     title: "MPX Limiter",
-                    dotColor: MonitoringDSPStatusSectionView.limiterDotColor(for: model.limiterStateText)
+                    dotColor: MonitoringDSPStatusSectionView.limiterDotColor(
+                        for: model.limiterStateText)
                 )
                 HStack(spacing: 10) {
                     DSPStateIndicator(
                         title: "Multiband",
-                        dotColor: model.multibandStateText.caseInsensitiveCompare("On") == .orderedSame ? .green : .secondary.opacity(0.45)
+                        dotColor: model.multibandStateText.caseInsensitiveCompare("On")
+                            == .orderedSame ? .green : .secondary.opacity(0.45)
                     )
                     DSPStateIndicator(
                         title: "Orbass",
-                        dotColor: model.orbassStateText.caseInsensitiveCompare("On") == .orderedSame ? .green : .secondary.opacity(0.45)
+                        dotColor: model.orbassStateText.caseInsensitiveCompare("On") == .orderedSame
+                            ? .green : .secondary.opacity(0.45)
                     )
                     DSPStateIndicator(
                         title: "Widener",
-                        dotColor: model.widenerStateText.caseInsensitiveCompare("On") == .orderedSame ? .green : .secondary.opacity(0.45)
+                        dotColor: model.widenerStateText.caseInsensitiveCompare("On")
+                            == .orderedSame ? .green : .secondary.opacity(0.45)
                     )
                 }
             }
@@ -2103,10 +2503,13 @@ private struct ScopesCardView: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 14) {
                     LabeledContent("Window") {
-                        Picker("", selection: Binding(
-                            get: { model.scopeTimebaseMS },
-                            set: { model.scopeTimebaseMS = $0 }
-                        )) {
+                        Picker(
+                            "",
+                            selection: Binding(
+                                get: { model.scopeTimebaseMS },
+                                set: { model.scopeTimebaseMS = $0 }
+                            )
+                        ) {
                             ForEach(scopeTimebasesMS, id: \.self) { ms in
                                 Text("\(Int(ms)) ms").tag(ms)
                             }
@@ -2114,10 +2517,13 @@ private struct ScopesCardView: View {
                         .labelsHidden()
                         .pickerStyle(.menu)
                     }
-                    Toggle("Auto Gain", isOn: Binding(
-                        get: { model.scopeAutoGainEnabled },
-                        set: { model.scopeAutoGainEnabled = $0 }
-                    ))
+                    Toggle(
+                        "Auto Gain",
+                        isOn: Binding(
+                            get: { model.scopeAutoGainEnabled },
+                            set: { model.scopeAutoGainEnabled = $0 }
+                        )
+                    )
                     .toggleStyle(.checkbox)
                     Spacer()
                 }
@@ -2144,9 +2550,11 @@ private struct ScopesCardView: View {
                     )
                 }
 
-                Text(model.scopeAutoGainEnabled ? "Auto gain enabled." : "Fixed vertical scale: ±1.0")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(
+                    model.scopeAutoGainEnabled ? "Auto gain enabled." : "Fixed vertical scale: ±1.0"
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
     }
@@ -2158,7 +2566,8 @@ private struct ScopeView: View {
     var body: some View {
         Canvas { context, size in
             let rect = CGRect(origin: .zero, size: size)
-            context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(.black.opacity(0.22)))
+            context.fill(
+                Path(roundedRect: rect, cornerRadius: 8), with: .color(.black.opacity(0.22)))
 
             var grid = Path()
             let midY = size.height * 0.5
@@ -2203,14 +2612,15 @@ private struct MPXSpectrumView: View {
     private let markerFrequencies: [(freq: Double, label: String, color: Color)] = [
         (19_000.0, "19 kHz Pilot", .yellow),
         (38_000.0, "38 kHz L-R", .yellow),
-        (57_000.0, "57 kHz RDS", .yellow)
+        (57_000.0, "57 kHz RDS", .yellow),
     ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Canvas { context, size in
                 let rect = CGRect(origin: .zero, size: size)
-                context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(.black.opacity(0.30)))
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: 8), with: .color(.black.opacity(0.30)))
                 let maxDisplayHz = max(1_000.0, maxHz)
                 let nyquist = max(0.0, min(maxDisplayHz, nyquistHz))
                 let leftAxisWidth: CGFloat = 42
@@ -2287,9 +2697,13 @@ private struct MPXSpectrumView: View {
                     Color.yellow.opacity(0.80),
                     Color.green.opacity(0.72),
                     Color.cyan.opacity(0.66),
-                    Color.blue.opacity(0.58)
+                    Color.blue.opacity(0.58),
                 ])
-                context.fill(fill, with: .linearGradient(gradient, startPoint: CGPoint(x: 0, y: 0), endPoint: CGPoint(x: 0, y: size.height)))
+                context.fill(
+                    fill,
+                    with: .linearGradient(
+                        gradient, startPoint: CGPoint(x: 0, y: 0),
+                        endPoint: CGPoint(x: 0, y: size.height)))
                 context.stroke(line, with: .color(.white.opacity(0.85)), lineWidth: 1.4)
 
                 if nyquist > 0.0, nyquist < maxDisplayHz {
@@ -2397,39 +2811,65 @@ private struct ProcessingSectionView: View {
 
                 Card(title: "Core Processing") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Bypass Processing", isOn: Binding(
-                            get: { model.processingBypass },
-                            set: { _ in model.toggleBypass() }
-                        ))
+                        Toggle(
+                            "Bypass Processing",
+                            isOn: Binding(
+                                get: { model.processingBypass },
+                                set: { _ in model.toggleBypass() }
+                            ))
                         Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
                         Picker("Pre-emphasis", selection: model.configBinding(\.preemphasisUS)) {
                             Text("Off").tag(0)
                             Text("50 us").tag(50)
                             Text("75 us").tag(75)
                         }
-                        DoubleSliderRow(title: "Input Gain", value: Binding(
-                            get: { model.inputGainDB },
-                            set: {
-                                model.inputGainDB = $0
-                                model.persistBasicConfig()
-                            }
-                        ), range: -24...24, format: "%.1f dB")
-                        DoubleSliderRow(title: "Output Gain", value: model.configBinding(\.outputGainDB), range: -24...24, format: "%.1f dB")
-                        DoubleSliderRow(title: "HPF", value: model.configBinding(\.hpfHz), range: 10...180, format: "%.0f Hz")
-                        DoubleSliderRow(title: "HF Trim", value: model.configBinding(\.hfTrimDB), range: -12...12, format: "%.1f dB")
-                        DoubleSliderRow(title: "HF Trim Freq", value: model.configBinding(\.hfTrimHz), range: 1_000...12_000, format: "%.0f Hz")
-                        DoubleSliderRow(title: "Program Lowpass", value: model.configBinding(\.programLowpassHz), range: 8_000...17_000, format: "%.0f Hz")
+                        DoubleSliderRow(
+                            title: "Input Gain",
+                            value: Binding(
+                                get: { model.inputGainDB },
+                                set: {
+                                    model.inputGainDB = $0
+                                    model.persistBasicConfig()
+                                }
+                            ), range: -24...24, format: "%.1f dB")
+                        DoubleSliderRow(
+                            title: "Output Gain", value: model.configBinding(\.outputGainDB),
+                            range: -24...24, format: "%.1f dB")
+                        DoubleSliderRow(
+                            title: "HPF", value: model.configBinding(\.hpfHz), range: 10...180,
+                            format: "%.0f Hz")
+                        DoubleSliderRow(
+                            title: "HF Trim", value: model.configBinding(\.hfTrimDB),
+                            range: -12...12, format: "%.1f dB")
+                        DoubleSliderRow(
+                            title: "HF Trim Freq", value: model.configBinding(\.hfTrimHz),
+                            range: 1_000...12_000, format: "%.0f Hz")
+                        DoubleSliderRow(
+                            title: "Program Lowpass",
+                            value: model.configBinding(\.programLowpassHz), range: 8_000...17_000,
+                            format: "%.0f Hz")
                     }
                 }
 
                 Card(title: "Wideband AGC") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Enable Wideband AGC", isOn: model.configBinding(\.widebandAGCEnabled))
-                        DoubleSliderRow(title: "Target", value: model.configBinding(\.widebandAGCTargetDB), range: -36 ... -6, format: "%.1f dB")
-                        DoubleSliderRow(title: "Attack", value: model.configBinding(\.widebandAGCAttackMS), range: 1...150, format: "%.1f ms")
-                        DoubleSliderRow(title: "Release", value: model.configBinding(\.widebandAGCReleaseMS), range: 40...1200, format: "%.1f ms")
-                        DoubleSliderRow(title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB), range: 0...24, format: "%.1f dB")
-                        DoubleSliderRow(title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB), range: -24...0, format: "%.1f dB")
+                        Toggle(
+                            "Enable Wideband AGC", isOn: model.configBinding(\.widebandAGCEnabled))
+                        DoubleSliderRow(
+                            title: "Target", value: model.configBinding(\.widebandAGCTargetDB),
+                            range: -36 ... -6, format: "%.1f dB")
+                        DoubleSliderRow(
+                            title: "Attack", value: model.configBinding(\.widebandAGCAttackMS),
+                            range: 1...150, format: "%.1f ms")
+                        DoubleSliderRow(
+                            title: "Release", value: model.configBinding(\.widebandAGCReleaseMS),
+                            range: 40...1200, format: "%.1f ms")
+                        DoubleSliderRow(
+                            title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB),
+                            range: 0...24, format: "%.1f dB")
+                        DoubleSliderRow(
+                            title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB),
+                            range: -24...0, format: "%.1f dB")
                     }
                 }
 
@@ -2446,13 +2886,27 @@ private struct ProcessingSectionView: View {
                             }
                         }
                         Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled))
-                        DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount), range: 0...1.2, format: "%.2f")
-                        DoubleSliderRow(title: "Frequency", value: model.configBinding(\.orbassFreqHz), range: 40...180, format: "%.1f Hz")
-                        DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics), range: 0...1.2, format: "%.2f")
-                        DoubleSliderRow(title: "Drive", value: model.configBinding(\.orbassDrive), range: 0.2...2.0, format: "%.2f")
-                        DoubleSliderRow(title: "Density", value: model.configBinding(\.orbassDensity), range: 0...1.2, format: "%.2f")
-                        Toggle("Subharmonics", isOn: model.configBinding(\.orbassSubharmonicsEnabled))
-                        DoubleSliderRow(title: "Subharmonic Amount", value: model.configBinding(\.orbassSubharmonicsAmount), range: 0...1.2, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "Amount", value: model.configBinding(\.orbassAmount),
+                            range: 0...1.2, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "Frequency", value: model.configBinding(\.orbassFreqHz),
+                            range: 40...180, format: "%.1f Hz")
+                        DoubleSliderRow(
+                            title: "Harmonics", value: model.configBinding(\.orbassHarmonics),
+                            range: 0...1.2, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "Drive", value: model.configBinding(\.orbassDrive),
+                            range: 0.2...2.0, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "Density", value: model.configBinding(\.orbassDensity),
+                            range: 0...1.2, format: "%.2f")
+                        Toggle(
+                            "Subharmonics", isOn: model.configBinding(\.orbassSubharmonicsEnabled))
+                        DoubleSliderRow(
+                            title: "Subharmonic Amount",
+                            value: model.configBinding(\.orbassSubharmonicsAmount), range: 0...1.2,
+                            format: "%.2f")
                     }
                 }
 
@@ -2471,7 +2925,8 @@ private struct ProcessingSectionView: View {
                             }
                             .frame(width: 110)
                             Button("Load Preset") {
-                                model.applyMultibandPreset(id: multibandPresetID, intensity: multibandIntensity)
+                                model.applyMultibandPreset(
+                                    id: multibandPresetID, intensity: multibandIntensity)
                             }
                         }
                         Toggle("Enable Multiband", isOn: model.configBinding(\.multibandEnabled))
@@ -2480,43 +2935,107 @@ private struct ProcessingSectionView: View {
                             Text("3-band").tag(3)
                             Text("5-band").tag(5)
                         }
-                        DoubleSliderRow(title: "Knee", value: model.configBinding(\.multibandKneeDB), range: 0...12, format: "%.1f dB")
-                        DoubleSliderRow(title: "Link", value: model.configBinding(\.multibandLinkStrength), range: 0...1, format: "%.2f")
-                        Toggle("Program-dependent Release", isOn: model.configBinding(\.multibandReleaseProgramDependent))
-                        DoubleSliderRow(title: "X1 Crossover", value: model.configBinding(\.multibandX1Hz), range: 30...300, format: "%.0f Hz")
-                        DoubleSliderRow(title: "X2 Crossover", value: model.configBinding(\.multibandX2Hz), range: 120...1200, format: "%.0f Hz")
-                        DoubleSliderRow(title: "X3 Crossover", value: model.configBinding(\.multibandX3Hz), range: 600...4000, format: "%.0f Hz")
-                        DoubleSliderRow(title: "X4 Crossover", value: model.configBinding(\.multibandX4Hz), range: 2500...12000, format: "%.0f Hz")
-                        DoubleSliderRow(title: "Low Threshold", value: model.configBinding(\.multibandLowThresholdDB), range: -40 ... -6, format: "%.1f dB")
-                        DoubleSliderRow(title: "Mid Threshold", value: model.configBinding(\.multibandMidThresholdDB), range: -40 ... -6, format: "%.1f dB")
-                        DoubleSliderRow(title: "High Threshold", value: model.configBinding(\.multibandHighThresholdDB), range: -40 ... -6, format: "%.1f dB")
-                        DoubleSliderRow(title: "Low Ratio", value: model.configBinding(\.multibandLowRatio), range: 1...8, format: "%.2f")
-                        DoubleSliderRow(title: "Mid Ratio", value: model.configBinding(\.multibandMidRatio), range: 1...8, format: "%.2f")
-                        DoubleSliderRow(title: "High Ratio", value: model.configBinding(\.multibandHighRatio), range: 1...8, format: "%.2f")
-                        DoubleSliderRow(title: "Low Attack", value: model.configBinding(\.multibandLowAttackMS), range: 1...120, format: "%.1f ms")
-                        DoubleSliderRow(title: "Mid Attack", value: model.configBinding(\.multibandMidAttackMS), range: 1...120, format: "%.1f ms")
-                        DoubleSliderRow(title: "High Attack", value: model.configBinding(\.multibandHighAttackMS), range: 1...120, format: "%.1f ms")
-                        DoubleSliderRow(title: "Low Release", value: model.configBinding(\.multibandLowReleaseMS), range: 40...1200, format: "%.1f ms")
-                        DoubleSliderRow(title: "Mid Release", value: model.configBinding(\.multibandMidReleaseMS), range: 40...1200, format: "%.1f ms")
-                        DoubleSliderRow(title: "High Release", value: model.configBinding(\.multibandHighReleaseMS), range: 40...1200, format: "%.1f ms")
-                        DoubleSliderRow(title: "Makeup", value: model.configBinding(\.multibandMakeupDB), range: -12...18, format: "%.1f dB")
+                        DoubleSliderRow(
+                            title: "Knee", value: model.configBinding(\.multibandKneeDB),
+                            range: 0...12, format: "%.1f dB")
+                        DoubleSliderRow(
+                            title: "Link", value: model.configBinding(\.multibandLinkStrength),
+                            range: 0...1, format: "%.2f")
+                        Toggle(
+                            "Program-dependent Release",
+                            isOn: model.configBinding(\.multibandReleaseProgramDependent))
+                        DoubleSliderRow(
+                            title: "X1 Crossover", value: model.configBinding(\.multibandX1Hz),
+                            range: 30...300, format: "%.0f Hz")
+                        DoubleSliderRow(
+                            title: "X2 Crossover", value: model.configBinding(\.multibandX2Hz),
+                            range: 120...1200, format: "%.0f Hz")
+                        DoubleSliderRow(
+                            title: "X3 Crossover", value: model.configBinding(\.multibandX3Hz),
+                            range: 600...4000, format: "%.0f Hz")
+                        DoubleSliderRow(
+                            title: "X4 Crossover", value: model.configBinding(\.multibandX4Hz),
+                            range: 2500...12000, format: "%.0f Hz")
+                        DoubleSliderRow(
+                            title: "Low Threshold",
+                            value: model.configBinding(\.multibandLowThresholdDB),
+                            range: -40 ... -6, format: "%.1f dB")
+                        DoubleSliderRow(
+                            title: "Mid Threshold",
+                            value: model.configBinding(\.multibandMidThresholdDB),
+                            range: -40 ... -6, format: "%.1f dB")
+                        DoubleSliderRow(
+                            title: "High Threshold",
+                            value: model.configBinding(\.multibandHighThresholdDB),
+                            range: -40 ... -6, format: "%.1f dB")
+                        DoubleSliderRow(
+                            title: "Low Ratio", value: model.configBinding(\.multibandLowRatio),
+                            range: 1...8, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "Mid Ratio", value: model.configBinding(\.multibandMidRatio),
+                            range: 1...8, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "High Ratio", value: model.configBinding(\.multibandHighRatio),
+                            range: 1...8, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "Low Attack", value: model.configBinding(\.multibandLowAttackMS),
+                            range: 1...120, format: "%.1f ms")
+                        DoubleSliderRow(
+                            title: "Mid Attack", value: model.configBinding(\.multibandMidAttackMS),
+                            range: 1...120, format: "%.1f ms")
+                        DoubleSliderRow(
+                            title: "High Attack",
+                            value: model.configBinding(\.multibandHighAttackMS), range: 1...120,
+                            format: "%.1f ms")
+                        DoubleSliderRow(
+                            title: "Low Release",
+                            value: model.configBinding(\.multibandLowReleaseMS), range: 40...1200,
+                            format: "%.1f ms")
+                        DoubleSliderRow(
+                            title: "Mid Release",
+                            value: model.configBinding(\.multibandMidReleaseMS), range: 40...1200,
+                            format: "%.1f ms")
+                        DoubleSliderRow(
+                            title: "High Release",
+                            value: model.configBinding(\.multibandHighReleaseMS), range: 40...1200,
+                            format: "%.1f ms")
+                        DoubleSliderRow(
+                            title: "Makeup", value: model.configBinding(\.multibandMakeupDB),
+                            range: -12...18, format: "%.1f dB")
                     }
                 }
 
                 Card(title: "Stereo Widener & Limiter") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled))
-                        DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth), range: 0...1, format: "%.2f")
-                        DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter), range: 0...1, format: "%.2f")
-                        DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix), range: 0...1, format: "%.2f")
+                        Toggle(
+                            "Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled)
+                        )
+                        DoubleSliderRow(
+                            title: "Width", value: model.configBinding(\.stereoWidenWidth),
+                            range: 0...1, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "Center", value: model.configBinding(\.stereoWidenCenter),
+                            range: 0...1, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "Mix", value: model.configBinding(\.stereoWidenMix),
+                            range: 0...1, format: "%.2f")
 
                         Divider()
 
                         Toggle("Enable MPX Limiter", isOn: model.configBinding(\.limitMPX))
-                        Toggle("Enable Lookahead", isOn: model.configBinding(\.limitLookaheadEnabled))
-                        DoubleSliderRow(title: "Lookahead", value: model.configBinding(\.limitLookaheadMS), range: 0...30, format: "%.1f ms")
-                        DoubleSliderRow(title: "Limiter Threshold", value: model.configBinding(\.limitThreshold), range: 0.70...0.999, format: "%.3f")
-                        DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz), range: 40...90, format: "%.1f kHz")
+                        Toggle(
+                            "Enable Lookahead", isOn: model.configBinding(\.limitLookaheadEnabled))
+                        DoubleSliderRow(
+                            title: "Lookahead", value: model.configBinding(\.limitLookaheadMS),
+                            range: 0...30, format: "%.1f ms")
+                        DoubleSliderRow(
+                            title: "Limiter Threshold",
+                            value: model.configBinding(\.limitThreshold), range: 0.70...0.999,
+                            format: "%.3f")
+                        DoubleSliderRow(
+                            title: "Composite Deviation",
+                            value: model.configBinding(\.mpxDeviationKHz), range: 40...90,
+                            format: "%.1f kHz")
                     }
                 }
             }
@@ -2562,17 +3081,28 @@ private struct SystemSectionView: View {
                                 Text("\(size)").tag(size)
                             }
                         }
-                        IntStepperRow(title: "Processing Rate", value: model.configBinding(\.processingRateHz), range: 0...384_000, step: 1_000, format: "%d Hz (0 = hardware)")
-                        Toggle("Auto Start at Launch", isOn: model.configBinding(\.rdsAutoStart, restartRequired: false))
+                        IntStepperRow(
+                            title: "Processing Rate",
+                            value: model.configBinding(\.processingRateHz), range: 0...384_000,
+                            step: 1_000, format: "%d Hz (0 = hardware)")
+                        Toggle(
+                            "Auto Start at Launch",
+                            isOn: model.configBinding(\.rdsAutoStart, restartRequired: false))
                     }
                 }
 
                 Card(title: "Source") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Picker("Source Mode", selection: Binding(
-                            get: { model.sourceMode },
-                            set: { model.sourceMode = $0; model.persistBasicConfig() }
-                        )) {
+                        Picker(
+                            "Source Mode",
+                            selection: Binding(
+                                get: { model.sourceMode },
+                                set: {
+                                    model.sourceMode = $0
+                                    model.persistBasicConfig()
+                                }
+                            )
+                        ) {
                             Text("Audio Input").tag("input")
                             Text("Tone Generator").tag("tone")
                         }
@@ -2582,16 +3112,24 @@ private struct SystemSectionView: View {
                             Text("right").tag("right")
                             Text("stereo").tag("stereo")
                         }
-                        DoubleSliderRow(title: "Tone Frequency", value: model.configBinding(\.testToneFreq), range: 50...18_000, format: "%.0f Hz")
+                        DoubleSliderRow(
+                            title: "Tone Frequency", value: model.configBinding(\.testToneFreq),
+                            range: 50...18_000, format: "%.0f Hz")
                     }
                 }
 
                 Card(title: "Composite Mix") {
                     VStack(alignment: .leading, spacing: 10) {
                         Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
-                        DoubleSliderRow(title: "Pilot Level", value: model.configBinding(\.pilotLevel), range: 0...0.2, format: "%.3f")
-                        DoubleSliderRow(title: "Sum Level", value: model.configBinding(\.sumLevel), range: 0...1.5, format: "%.2f")
-                        DoubleSliderRow(title: "Diff Level", value: model.configBinding(\.diffLevel), range: 0...1.5, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "Pilot Level", value: model.configBinding(\.pilotLevel),
+                            range: 0...0.2, format: "%.3f")
+                        DoubleSliderRow(
+                            title: "Sum Level", value: model.configBinding(\.sumLevel),
+                            range: 0...1.5, format: "%.2f")
+                        DoubleSliderRow(
+                            title: "Diff Level", value: model.configBinding(\.diffLevel),
+                            range: 0...1.5, format: "%.2f")
                     }
                 }
             }
@@ -2610,17 +3148,29 @@ private struct InterfacesSectionView: View {
 
                 Card(title: "Device Routing") {
                     VStack(alignment: .leading, spacing: 10) {
-                        Picker("Source", selection: Binding(
-                            get: { model.sourceMode },
-                            set: { model.sourceMode = $0; model.persistBasicConfig() }
-                        )) {
+                        Picker(
+                            "Source",
+                            selection: Binding(
+                                get: { model.sourceMode },
+                                set: {
+                                    model.sourceMode = $0
+                                    model.persistBasicConfig()
+                                }
+                            )
+                        ) {
                             Text("Audio Input").tag("input")
                             Text("Tone Generator").tag("tone")
                         }
-                        Picker("Input Device", selection: Binding(
-                            get: { model.selectedInputUID },
-                            set: { model.selectedInputUID = $0; model.persistBasicConfig() }
-                        )) {
+                        Picker(
+                            "Input Device",
+                            selection: Binding(
+                                get: { model.selectedInputUID },
+                                set: {
+                                    model.selectedInputUID = $0
+                                    model.persistBasicConfig()
+                                }
+                            )
+                        ) {
                             if model.inputDevices.isEmpty {
                                 Text("No input devices").tag("")
                             } else {
@@ -2629,10 +3179,16 @@ private struct InterfacesSectionView: View {
                                 }
                             }
                         }
-                        Picker("Output Device", selection: Binding(
-                            get: { model.selectedOutputUID },
-                            set: { model.selectedOutputUID = $0; model.persistBasicConfig() }
-                        )) {
+                        Picker(
+                            "Output Device",
+                            selection: Binding(
+                                get: { model.selectedOutputUID },
+                                set: {
+                                    model.selectedOutputUID = $0
+                                    model.persistBasicConfig()
+                                }
+                            )
+                        ) {
                             if model.outputDevices.isEmpty {
                                 Text("No output devices").tag("")
                             } else {
@@ -2641,15 +3197,26 @@ private struct InterfacesSectionView: View {
                                 }
                             }
                         }
-                        Toggle("Enable Monitor Output", isOn: Binding(
-                            get: { model.monitorEnabled },
-                            set: { model.monitorEnabled = $0; model.persistBasicConfig() }
-                        ))
+                        Toggle(
+                            "Enable Monitor Output",
+                            isOn: Binding(
+                                get: { model.monitorEnabled },
+                                set: {
+                                    model.monitorEnabled = $0
+                                    model.persistBasicConfig()
+                                }
+                            ))
                         if model.monitorEnabled {
-                            Picker("Monitor Device", selection: Binding(
-                                get: { model.selectedMonitorUID },
-                                set: { model.selectedMonitorUID = $0; model.persistBasicConfig() }
-                            )) {
+                            Picker(
+                                "Monitor Device",
+                                selection: Binding(
+                                    get: { model.selectedMonitorUID },
+                                    set: {
+                                        model.selectedMonitorUID = $0
+                                        model.persistBasicConfig()
+                                    }
+                                )
+                            ) {
                                 if model.outputDevices.isEmpty {
                                     Text("No output devices").tag("")
                                 } else {
@@ -2703,7 +3270,9 @@ private struct RDSSectionView: View {
                         if model.value(for: \.rdsRTManualBuffers) {
                             TextField("RT Buffer A", text: model.configBinding(\.rdsRTA))
                             TextField("RT Buffer B", text: model.configBinding(\.rdsRTB))
-                            Picker("Active Buffer", selection: model.configBinding(\.rdsRTActiveBuffer)) {
+                            Picker(
+                                "Active Buffer", selection: model.configBinding(\.rdsRTActiveBuffer)
+                            ) {
                                 Text("A").tag(0)
                                 Text("B").tag(1)
                             }
@@ -2716,8 +3285,13 @@ private struct RDSSectionView: View {
                         }
                         Toggle("Cycle A/B", isOn: model.configBinding(\.rdsRTCycle))
                         Toggle("Cycle Same Message A/B", isOn: model.configBinding(\.rdsRTCycleAB))
-                        DoubleSliderRow(title: "Cycle Time", value: model.configBinding(\.rdsRTCycleTime), range: 1...20, format: "%.1f s")
-                        IntStepperRow(title: "AB Cycle Count", value: model.configBinding(\.rdsRTABCycleCount), range: 1...99, step: 1, format: "%d")
+                        DoubleSliderRow(
+                            title: "Cycle Time", value: model.configBinding(\.rdsRTCycleTime),
+                            range: 1...20, format: "%.1f s")
+                        IntStepperRow(
+                            title: "AB Cycle Count",
+                            value: model.configBinding(\.rdsRTABCycleCount), range: 1...99, step: 1,
+                            format: "%d")
                         Toggle("Center RT", isOn: model.configBinding(\.rdsRTCentered))
                         Toggle("Append CR", isOn: model.configBinding(\.rdsRTCR))
                         Toggle("Enable RT+", isOn: model.configBinding(\.rdsEnableRTPlus))
@@ -2758,8 +3332,12 @@ private struct RDSSectionView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         TextField("Group Sequence", text: model.configBinding(\.rdsGroupSequence))
                         Toggle("Scheduler Auto", isOn: model.configBinding(\.rdsSchedulerAuto))
-                        Toggle("Use Standard Schedule", isOn: model.configBinding(\.rdsSchedulerStandard))
-                        Toggle("Include LPS in Standard Schedule", isOn: model.configBinding(\.rdsSchedulerStandardLPS))
+                        Toggle(
+                            "Use Standard Schedule",
+                            isOn: model.configBinding(\.rdsSchedulerStandard))
+                        Toggle(
+                            "Include LPS in Standard Schedule",
+                            isOn: model.configBinding(\.rdsSchedulerStandardLPS))
                         Toggle("Enable CT (4A)", isOn: model.configBinding(\.rdsEnableCT))
                         Toggle("Enable ID (1A)", isOn: model.configBinding(\.rdsEnableID))
 
@@ -2775,17 +3353,27 @@ private struct RDSSectionView: View {
                                 .font(.system(.body, design: .monospaced))
                                 .frame(width: 80)
                         }
-                        DoubleSliderRow(title: "Clock Offset", value: model.configBinding(\.rdsTZOffset), range: -12...14, format: "%.1f h")
+                        DoubleSliderRow(
+                            title: "Clock Offset", value: model.configBinding(\.rdsTZOffset),
+                            range: -12...14, format: "%.1f h")
                     }
                 }
 
                 Card(title: "RDS Carrier") {
                     VStack(alignment: .leading, spacing: 10) {
-                        DoubleSliderRow(title: "RDS Level", value: model.configBinding(\.rdsLevel), range: 0...7.5, format: "%.2f kHz")
-                        DoubleSliderRow(title: "Subcarrier Frequency", value: model.configBinding(\.rdsFreq), range: 40_000...80_000, format: "%.0f Hz")
+                        DoubleSliderRow(
+                            title: "RDS Level", value: model.configBinding(\.rdsLevel),
+                            range: 0...7.5, format: "%.2f kHz")
+                        DoubleSliderRow(
+                            title: "Subcarrier Frequency", value: model.configBinding(\.rdsFreq),
+                            range: 40_000...80_000, format: "%.0f Hz")
                         Toggle("Gaussian Shaping", isOn: model.configBinding(\.rdsGaussianEnabled))
-                        DoubleSliderRow(title: "Gaussian BW", value: model.configBinding(\.rdsGaussianBWHZ), range: 600...6_000, format: "%.0f Hz")
-                        IntStepperRow(title: "Gaussian Taps", value: model.oddTapBinding(), range: 9...401, step: 2, format: "%d")
+                        DoubleSliderRow(
+                            title: "Gaussian BW", value: model.configBinding(\.rdsGaussianBWHZ),
+                            range: 600...6_000, format: "%.0f Hz")
+                        IntStepperRow(
+                            title: "Gaussian Taps", value: model.oddTapBinding(), range: 9...401,
+                            step: 2, format: "%d")
                     }
                 }
             }
@@ -2832,9 +3420,11 @@ private struct AboutSectionView: View {
         ScrollView {
             VStack(spacing: 16) {
                 Card(title: "About") {
-                    Text("StereoFool is SwiftUI-first. DSP and audio routing remain native CoreAudio/AVAudioEngine.")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(
+                        "StereoFool is SwiftUI-first. DSP and audio routing remain native CoreAudio/AVAudioEngine."
+                    )
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .padding(20)
@@ -2845,22 +3435,32 @@ private struct AboutSectionView: View {
 private struct PendingApplyCard: View {
     @ObservedObject var model: StereoFoolViewModel
 
+    
+
     var body: some View {
-        if model.runtimeApplyPending {
-            Card(title: "Apply Pending") {
-                HStack {
-                    Text("Changes were saved. Restart runtime to apply them to audio output.")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Apply Now") {
-                        model.applyPendingRuntimeChanges()
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-        }
+        // Empty view — never shown
+        EmptyView()
+        
+        // Or completely remove the if and Card, leaving just:
+        // EmptyView()
     }
+    //     if model.runtimeApplyPending {
+    //         Card(title: "Apply Pending") {
+    //             HStack {
+    //                 Text("Changes were saved. Restart runtime to apply them to audio output.")
+    //                     .foregroundStyle(.secondary)
+    //                 Spacer()
+    //                 Button("Apply Now") {
+    //                     model.applyPendingRuntimeChanges()
+    //                 }
+    //                 .buttonStyle(.borderedProminent)
+    //             }
+    //         }
+    //         .hidden()
+    //     }
 }
+    
+
 
 private struct DoubleSliderRow: View {
     let title: String

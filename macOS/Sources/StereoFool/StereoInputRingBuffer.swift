@@ -22,7 +22,9 @@ final class StereoInputRingBuffer {
         self.right = Array(repeating: 0.0, count: n)
     }
 
-    func write(left inLeft: UnsafePointer<Float>, right inRight: UnsafePointer<Float>, frameCount: Int) {
+    func write(
+        left inLeft: UnsafePointer<Float>, right inRight: UnsafePointer<Float>, frameCount: Int
+    ) {
         guard frameCount > 0 else { return }
         lock.lock()
         defer { lock.unlock() }
@@ -158,7 +160,7 @@ final class StereoInputRingBuffer {
             // Always direct copy - don't condition on buffer level
             let available_ = min(frameCount, available)
             var missing = 0
-            
+
             if available_ > 0 {
                 var remaining = available_
                 var dstOffset = 0
@@ -185,7 +187,7 @@ final class StereoInputRingBuffer {
                 lastRight = outRight[available_ - 1]
                 readIndex = (readIndex + available_) % capacity
                 count -= available_
-                
+
                 if available_ < frameCount {
                     for i in available_..<frameCount {
                         outLeft[i] = lastLeft
@@ -202,7 +204,7 @@ final class StereoInputRingBuffer {
                 missing = frameCount
                 underflowCount += UInt64(missing)
             }
-            
+
             // Reset adaptive state when using direct copy
             resamplePhase = 0.0
             resampleRatioTrim = 0.0
