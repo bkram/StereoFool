@@ -11,7 +11,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case system = "System"
     case interfaces = "Interfaces"
     case processing = "Processing"
-    case levels = "Levels"
+    case scopes = "Scopes"
     case rds = "RDS"
     case settings = "Settings"
     case about = "About"
@@ -24,7 +24,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .system: return "cpu"
         case .interfaces: return "cable.connector"
         case .processing: return "slider.horizontal.3"
-        case .levels: return "gauge"
+        case .scopes: return "waveform.path"
         case .rds: return "dot.radiowaves.left.and.right"
         case .settings: return "gearshape"
         case .about: return "info.circle"
@@ -209,6 +209,8 @@ private final class SwiftUIAppDelegate: NSObject, NSApplicationDelegate {
     private let runSeconds: Double?
     private var window: NSWindow?
     private var model: StereoFoolViewModel?
+    private var scopesWindow: NSWindow?
+    private var levelsWindow: NSWindow?
 
     init(configPath: String, runSeconds: Double?) {
         self.configPath = configPath
@@ -327,13 +329,21 @@ private final class SwiftUIAppDelegate: NSObject, NSApplicationDelegate {
         transportItem.submenu = transportMenu
         mainMenu.addItem(transportItem)
 
-        // Window and Help menus (unchanged)
+        // Window Menu
         let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "Window")
+        windowMenu.addItem(
+            withTitle: "New Main", action: #selector(showMainWindow), keyEquivalent: "n")
+        windowMenu.addItem(NSMenuItem.separator())
         windowMenu.addItem(
             withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
         windowMenu.addItem(
             withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        windowMenu.addItem(NSMenuItem.separator())
+        windowMenu.addItem(
+            withTitle: "Scopes", action: #selector(showScopesWindow), keyEquivalent: "0")
+        windowMenu.addItem(
+            withTitle: "Levels", action: #selector(showLevelsWindow), keyEquivalent: "9")
         windowMenu.addItem(NSMenuItem.separator())
         windowMenu.addItem(
             withTitle: "Bring All to Front", action: #selector(NSApplication.arrangeInFront(_:)),
@@ -375,6 +385,75 @@ private final class SwiftUIAppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func applyPendingChanges() {
         model?.applyPendingRuntimeChanges()
+    }
+
+    @objc private func showMainWindow() {
+        let app = NSApplication.shared
+        if let existing = window {
+            existing.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            return
+        }
+        guard let vm = model else { return }
+        let root = RootView(model: vm)
+        let host = NSHostingView(rootView: root)
+        let w = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1180, height: 780),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        w.center()
+        w.title = "StereoFool"
+        w.titleVisibility = .visible
+        w.toolbarStyle = .unified
+        w.minSize = NSSize(width: 900, height: 620)
+        w.contentView = host
+        w.makeKeyAndOrderFront(nil)
+        window = w
+        app.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showScopesWindow() {
+        let app = NSApplication.shared
+        if let existing = scopesWindow {
+            existing.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            return
+        }
+        guard let vm = model else { return }
+        let scopesView = ScopesOnlyView(model: vm)
+        let hostingController = NSHostingController(rootView: scopesView)
+        let w = NSWindow(contentViewController: hostingController)
+        w.title = "Scopes"
+        w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        w.setContentSize(NSSize(width: 800, height: 500))
+        w.minSize = NSSize(width: 600, height: 400)
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        scopesWindow = w
+        app.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showLevelsWindow() {
+        let app = NSApplication.shared
+        if let existing = levelsWindow {
+            existing.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            return
+        }
+        guard let vm = model else { return }
+        let levelsView = LevelsOnlyView(model: vm)
+        let hostingController = NSHostingController(rootView: levelsView)
+        let w = NSWindow(contentViewController: hostingController)
+        w.title = "Levels"
+        w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        w.setContentSize(NSSize(width: 500, height: 400))
+        w.minSize = NSSize(width: 400, height: 300)
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        levelsWindow = w
+        app.activate(ignoringOtherApps: true)
     }
 
     @objc private func openConfig() {
@@ -921,7 +1000,7 @@ final class StereoFoolViewModel: ObservableObject {
 
     private func refreshMonitoringSnapshot() {
         let now = Date().timeIntervalSinceReferenceDate
-        let realtimeSection = (selectedSection == .monitoring || selectedSection == .levels)
+        let realtimeSection = (selectedSection == .monitoring || selectedSection == .scopes)
         let minRefreshInterval = realtimeSection ? (1.0 / 60.0) : (1.0 / 20.0)
         if let last = lastMonitorRefreshTime, (now - last) < minRefreshInterval {
             return
@@ -1728,8 +1807,8 @@ private struct RootView: View {
                     InterfacesSectionView(model: model)
                 case .processing:
                     ProcessingSectionView(model: model)
-                case .levels:
-                    LevelsOnlyView(model: model)
+                case .scopes:
+                    ScopesOnlyView(model: model)
                 case .rds:
                     RDSSectionView(model: model)
                 case .settings:
@@ -1763,40 +1842,25 @@ private struct MonitoringDashboardView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Text("Monitoring")
-                        .font(.title3.weight(.semibold))
-                    Spacer()
-                }
+        Form {
+            Section {
                 MonitoringHealthSummaryRow(health: model.streamHealth)
-                Divider()
-                HStack(alignment: .top, spacing: 24) {
-                    MonitoringRuntimeSectionView(model: model)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    MonitoringRDSSnapshotSectionView(model: model)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                Divider()
-
-                MonitoringLevelsSectionView(model: model)
-                Divider()
-
-                MonitoringDSPStatusSectionView(model: model)
-                Divider()
-
-                ScopesCardView(model: model)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(20)
-            .frame(maxWidth: 980, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .controlSize(.small)
+
+            Section("Runtime") {
+                MonitoringRuntimeSectionView(model: model)
+            }
+
+            Section("RDS Snapshot") {
+                MonitoringRDSSnapshotSectionView(model: model)
+            }
+
+            Section("DSP Status") {
+                MonitoringDSPStatusSectionView(model: model)
+            }
         }
-        .safeAreaInset(edge: .top) {
-            MonitoringTransportHeader(model: model)
-        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 }
 
@@ -3499,5 +3563,74 @@ private struct IntStepperRow: View {
                     .frame(width: 180, alignment: .trailing)
             }
         }
+    }
+}
+
+struct ScopesOnlyView: View {
+    @ObservedObject var model: StereoFoolViewModel
+    private let scopeTimebasesMS: [Double] = [2.0, 5.0, 10.0, 20.0, 50.0]
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack {
+                Text("Scopes")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+                LabeledContent("Window") {
+                    Picker(
+                        "",
+                        selection: Binding(
+                            get: { model.scopeTimebaseMS },
+                            set: { model.scopeTimebaseMS = $0 }
+                        )
+                    ) {
+                        ForEach(scopeTimebasesMS, id: \.self) { ms in
+                            Text("\(Int(ms)) ms").tag(ms)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
+                }
+                Toggle(
+                    "Auto Gain",
+                    isOn: Binding(
+                        get: { model.scopeAutoGainEnabled },
+                        set: { model.scopeAutoGainEnabled = $0 }
+                    )
+                )
+                .toggleStyle(.checkbox)
+            }
+            .padding(.horizontal)
+
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Stereo Input").font(.subheadline).foregroundStyle(.secondary)
+                    ScopeView(samples: model.inputScope)
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("MPX Output").font(.subheadline).foregroundStyle(.secondary)
+                    ScopeView(samples: model.outputScope)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("MPX FFT Analyzer").font(.subheadline).foregroundStyle(.secondary)
+                MPXSpectrumView(
+                    dbBins: model.mpxSpectrumDB,
+                    maxHz: model.mpxSpectrumMaxHz,
+                    nyquistHz: model.mpxSpectrumNyquistHz
+                )
+            }
+            .frame(maxWidth: .infinity, maxHeight: 200)
+
+            Text(
+                model.scopeAutoGainEnabled ? "Auto gain enabled." : "Fixed vertical scale: ±1.0"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.bottom)
+        }
+        .padding()
     }
 }
