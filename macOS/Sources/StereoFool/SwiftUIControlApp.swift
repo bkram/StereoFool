@@ -193,6 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var window: NSWindow?
     private var model: StereoFoolViewModel?
     private var scopesWindow: NSWindow?
+    private var spectrumWindow: NSWindow?
     private var levelsWindow: NSWindow?
 
     init(configPath: String, runSeconds: Double?) {
@@ -332,6 +333,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         windowMenu.addItem(
             withTitle: "Scopes", action: #selector(showScopesWindow), keyEquivalent: "0")
         windowMenu.addItem(
+            withTitle: "Spectrum", action: #selector(showSpectrumWindow), keyEquivalent: "8")
+        windowMenu.addItem(
             withTitle: "Levels", action: #selector(showLevelsWindow), keyEquivalent: "9")
         windowMenu.addItem(NSMenuItem.separator())
         windowMenu.addItem(
@@ -421,6 +424,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         w.center()
         w.makeKeyAndOrderFront(nil)
         scopesWindow = w
+        app.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showSpectrumWindow() {
+        let app = NSApplication.shared
+        if let existing = spectrumWindow {
+            existing.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            return
+        }
+        guard let vm = model else { return }
+        let spectrumView = SpectrumOnlyView(model: vm)
+        let hostingController = NSHostingController(rootView: spectrumView)
+        let w = NSWindow(contentViewController: hostingController)
+        w.title = "Spectrum"
+        w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        w.setContentSize(NSSize(width: 800, height: 400))
+        w.minSize = NSSize(width: 600, height: 300)
+        w.isReleasedWhenClosed = false
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        spectrumWindow = w
         app.activate(ignoringOtherApps: true)
     }
 
@@ -3598,16 +3623,6 @@ struct ScopesOnlyView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text("MPX FFT Analyzer").font(.subheadline).foregroundStyle(.secondary)
-                MPXSpectrumView(
-                    dbBins: model.mpxSpectrumDB,
-                    maxHz: model.mpxSpectrumMaxHz,
-                    nyquistHz: model.mpxSpectrumNyquistHz
-                )
-            }
-            .frame(maxWidth: .infinity, maxHeight: 200)
-
             Text(
                 model.scopeAutoGainEnabled ? "Auto gain enabled." : "Fixed vertical scale: ±1.0"
             )
@@ -3616,5 +3631,31 @@ struct ScopesOnlyView: View {
             .padding(.bottom)
         }
         .padding()
+    }
+}
+
+struct SpectrumOnlyView: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        VStack(spacing: 16) {
+            HStack {
+                Text("MPX Spectrum")
+                    .font(.title2.weight(.semibold))
+                Spacer()
+            }
+            .padding(.horizontal)
+
+            VStack(alignment: .leading, spacing: 6) {
+                MPXSpectrumView(
+                    dbBins: model.mpxSpectrumDB,
+                    maxHz: model.mpxSpectrumMaxHz,
+                    nyquistHz: model.mpxSpectrumNyquistHz
+                )
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding()
+        }
+        .frame(minWidth: 600, minHeight: 300)
     }
 }
