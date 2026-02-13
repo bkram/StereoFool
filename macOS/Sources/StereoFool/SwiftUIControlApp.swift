@@ -6,6 +6,21 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+private struct MonitoringStatusLine: View {
+    let isRunning: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(isRunning ? .green : .gray)
+                .frame(width: 8, height: 8)
+
+            Text(isRunning ? "Running" : "Stopped")
+                .font(.body.weight(.medium))
+        }
+    }
+}
+
 enum AppSection: String, CaseIterable, Identifiable {
     case monitoring = "Monitoring"
     case system = "System"
@@ -1817,6 +1832,9 @@ private struct RootView: View {
         .navigationSplitViewStyle(.balanced)
         .navigationTitle("StereoFool")
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                MonitoringStatusLine(isRunning: model.isRunning)
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button(model.isRunning ? "Stop" : "Start") {
                     model.startOrStopTransport()
@@ -1828,12 +1846,6 @@ private struct RootView: View {
                     model.toggleBypass()
                 }
                 .disabled(model.isBusy)
-
-                if model.runtimeApplyPending {
-                    Button("Apply") {
-                        model.applyPendingRuntimeChanges()
-                    }
-                }
             }
         }
         .toolbarTitleDisplayMode(.inline)
@@ -1859,24 +1871,28 @@ private struct MonitoringDashboardView: View {
 
     var body: some View {
         Form {
-            Section {
+            Section("Status") {
                 MonitoringHealthSummaryRow(health: model.streamHealth)
             }
 
-            Section("Runtime") {
-                MonitoringRuntimeSectionView(model: model)
+            Section("Routing") {
+                LabeledContent("Input") {
+                    Text(model.selectedInputUID.isEmpty ? "—" : model.inputDevices.first { $0.uid == model.selectedInputUID }?.name ?? "—")
+                }
+                LabeledContent("Output") {
+                    Text(model.selectedOutputUID.isEmpty ? "—" : model.outputDevices.first { $0.uid == model.selectedOutputUID }?.name ?? "—")
+                }
             }
 
-            Section("RDS Snapshot") {
+            Section("RDS") {
                 MonitoringRDSSnapshotSectionView(model: model)
             }
 
-            Section("DSP Status") {
+            Section("DSP") {
                 MonitoringDSPStatusSectionView(model: model)
             }
         }
         .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
     }
 }
 
@@ -1926,11 +1942,12 @@ private struct MonitoringHealthSummaryRow: View {
                 Circle()
                     .fill(indicatorColor)
                     .frame(width: 8, height: 8)
-                Text(summaryText)
-                    .font(.callout)
+                Text(health.isRunning ? "Running" : "Stopped")
+                    .font(.body.weight(.medium))
+                Text("• Buffer \(health.bufferSummary)")
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button(showDetails ? "Hide Details" : "Details") {
+                Button(showDetails ? "Less" : "More") {
                     showDetails.toggle()
                 }
                 .buttonStyle(.link)
@@ -2114,7 +2131,7 @@ private struct MonitoringRDSSnapshotSectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("RDS Snapshot").font(.headline)
+            Text("Live view").font(.headline)
             KeyValueGrid(rows: model.rdsRows)
         }
     }
@@ -2534,7 +2551,7 @@ private struct DSPStatusCardView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        Card(title: "DSP Status") {
+        Card(title: "DSP Overview") {
             VStack(alignment: .leading, spacing: 10) {
                 DSPStateIndicator(
                     title: "MPX Limiter",
