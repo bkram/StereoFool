@@ -11,7 +11,6 @@ enum AppSection: String, CaseIterable, Identifiable {
     case system = "System"
     case interfaces = "Interfaces"
     case processing = "Processing"
-    case scopes = "Scopes"
     case rds = "RDS"
     case settings = "Settings"
     case about = "About"
@@ -24,7 +23,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .system: return "cpu"
         case .interfaces: return "cable.connector"
         case .processing: return "slider.horizontal.3"
-        case .scopes: return "waveform.path"
         case .rds: return "dot.radiowaves.left.and.right"
         case .settings: return "gearshape"
         case .about: return "info.circle"
@@ -189,22 +187,7 @@ enum MultibandPresetIntensity: String, CaseIterable, Identifiable {
 }
 
 @MainActor
-enum NativeSwiftUIApp {
-hi    private nonisolated(unsafe) static var retainedDelegate: SwiftUIAppDelegate?
-
-    static func run(configPath: String, runSeconds: Double? = nil) throws {
-        let app = NSApplication.shared
-        let delegate = SwiftUIAppDelegate(configPath: configPath, runSeconds: runSeconds)
-        retainedDelegate = delegate
-        app.setActivationPolicy(.regular)
-        app.delegate = delegate
-        app.activate(ignoringOtherApps: true)
-        app.run()
-    }
-}
-
-@MainActor
-private final class SwiftUIAppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let configPath: String
     private let runSeconds: Double?
     private var window: NSWindow?
@@ -1006,8 +989,7 @@ final class StereoFoolViewModel: ObservableObject {
 
     private func refreshMonitoringSnapshot() {
         let now = Date().timeIntervalSinceReferenceDate
-        let realtimeSection = (selectedSection == .monitoring || selectedSection == .scopes)
-        let minRefreshInterval = realtimeSection ? (1.0 / 60.0) : (1.0 / 20.0)
+        let minRefreshInterval = 1.0 / 60.0
         if let last = lastMonitorRefreshTime, (now - last) < minRefreshInterval {
             return
         }
@@ -1094,9 +1076,7 @@ final class StereoFoolViewModel: ObservableObject {
                 engineStartReference = now
             }
 
-            if realtimeSection {
-                updateScopes(engine: engine, inputPeak: inputPeak, outputPeak: outputPeak)
-            }
+            updateScopes(engine: engine, inputPeak: inputPeak, outputPeak: outputPeak)
             if selectedSection == .monitoring {
                 updateMPXSpectrum(engine: engine, now: now)
             }
@@ -1813,8 +1793,6 @@ private struct RootView: View {
                     InterfacesSectionView(model: model)
                 case .processing:
                     ProcessingSectionView(model: model)
-                case .scopes:
-                    ScopesOnlyView(model: model)
                 case .rds:
                     RDSSectionView(model: model)
                 case .settings:

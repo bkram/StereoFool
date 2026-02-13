@@ -115,12 +115,12 @@ do {
     }
 
     if options.gui {
-        do {
-            try NativeSwiftUIApp.run(configPath: configPath, runSeconds: options.runSeconds)
-        } catch {
-            fputs("Error: \(error)\n", stderr)
-            exit(1)
-        }
+        let app = NSApplication.shared
+        let delegate = AppDelegate(configPath: configPath, runSeconds: options.runSeconds)
+        app.delegate = delegate
+        app.setActivationPolicy(.regular)
+        app.activate(ignoringOtherApps: true)
+        app.run()
         exit(0)
     }
     let config = try AppConfig.load(fromINI: configPath)
