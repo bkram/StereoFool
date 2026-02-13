@@ -3218,19 +3218,6 @@ private struct InterfacesSectionView: View {
                 Card(title: "Device Routing") {
                     VStack(alignment: .leading, spacing: 10) {
                         Picker(
-                            "Source",
-                            selection: Binding(
-                                get: { model.sourceMode },
-                                set: {
-                                    model.sourceMode = $0
-                                    model.persistBasicConfig()
-                                }
-                            )
-                        ) {
-                            Text("Audio Input").tag("input")
-                            Text("Tone Generator").tag("tone")
-                        }
-                        Picker(
                             "Input Device",
                             selection: Binding(
                                 get: { model.selectedInputUID },
