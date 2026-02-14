@@ -202,7 +202,7 @@ enum MultibandPresetIntensity: String, CaseIterable, Identifiable {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSWindowDelegate {
     private let configPath: String
     private let runSeconds: Double?
     private var window: NSWindow?
@@ -214,6 +214,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     init(configPath: String, runSeconds: Double?) {
         self.configPath = configPath
         self.runSeconds = runSeconds
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender == scopesWindow {
+            scopesWindow = nil
+        } else if sender == spectrumWindow {
+            spectrumWindow = nil
+        } else if sender == levelsWindow {
+            levelsWindow = nil
+        }
+        return true
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -423,6 +434,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         w.setContentSize(NSSize(width: 800, height: 500))
         w.minSize = NSSize(width: 600, height: 400)
+        w.isReleasedWhenClosed = false
+        w.delegate = self
         w.center()
         w.makeKeyAndOrderFront(nil)
         scopesWindow = w
@@ -445,6 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         w.setContentSize(NSSize(width: 800, height: 400))
         w.minSize = NSSize(width: 600, height: 300)
         w.isReleasedWhenClosed = false
+        w.delegate = self
         w.center()
         w.makeKeyAndOrderFront(nil)
         spectrumWindow = w
@@ -466,6 +480,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         w.setContentSize(NSSize(width: 500, height: 400))
         w.minSize = NSSize(width: 400, height: 300)
+        w.isReleasedWhenClosed = false
+        w.delegate = self
         w.center()
         w.makeKeyAndOrderFront(nil)
         levelsWindow = w

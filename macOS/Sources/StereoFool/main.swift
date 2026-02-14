@@ -15,7 +15,7 @@ func applyRealtimePriorityHints() -> Bool {
 }
 
 struct CLIOptions {
-    var configPath: String = "macOS/StereFool.ini"
+    var configPath: String = "macOS/StereoFool.ini"
     var configPathExplicit: Bool = false
     var runSeconds: Double?
     var gui: Bool = true
@@ -68,10 +68,10 @@ func printUsage() {
         StereoFool
 
         Usage:
-          StereoFool [--config macOS/StereFool.ini] [--seconds 30] [--gui|--nogui]
+          StereoFool [--config macOS/StereoFool.ini] [--seconds 30] [--gui|--nogui]
 
         Options:
-          --config   Path to macOS INI config (default: macOS/StereFool.ini)
+          --config   Path to macOS INI config (default: macOS/StereoFool.ini)
           --seconds  Auto-stop after N seconds (GUI or headless)
           --gui      Launch native SwiftUI macOS window (default)
           --nogui    Run headless

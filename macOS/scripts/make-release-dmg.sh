@@ -12,7 +12,7 @@ Builds StereoFool macOS release artifacts:
 Options:
   -v, --version VERSION     Release version (default: YYYY.MM.DD+<git-sha>)
   -o, --out-dir DIR         Output directory (default: macOS/dist)
-  -c, --config PATH         Default INI to bundle (default: macOS/StereFool.ini)
+  -c, --config PATH         Default INI to bundle (default: macOS/StereoFool.ini)
   -h, --help                Show this help
 EOF
 }
@@ -26,7 +26,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MACOS_DIR="$ROOT_DIR/macOS"
 
 OUT_DIR="$MACOS_DIR/dist"
-CONFIG_PATH="$MACOS_DIR/StereFool.ini"
+CONFIG_PATH="$MACOS_DIR/StereoFool.ini"
 
 default_version() {
   local stamp sha
@@ -139,7 +139,7 @@ cat >"$APP_DIR/Contents/Info.plist" <<EOF
 EOF
 
 cp "$BIN_PATH" "$APP_DIR/Contents/Resources/bin/StereoFool-bin"
-cp "$CONFIG_PATH" "$APP_DIR/Contents/Resources/StereFool.ini"
+cp "$CONFIG_PATH" "$APP_DIR/Contents/Resources/StereoFool.ini"
 cp "$MACOS_DIR/README.md" "$APP_DIR/Contents/Resources/README.txt"
 cp "$ICON_PATH" "$APP_DIR/Contents/Resources/AppIcon.icns"
 
@@ -148,7 +148,7 @@ cat >"$APP_DIR/Contents/MacOS/${APP_NAME}" <<'EOF'
 set -euo pipefail
 APP_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BIN="$APP_ROOT/Resources/bin/StereoFool-bin"
-DEFAULT_CFG="$APP_ROOT/Resources/StereFool.ini"
+DEFAULT_CFG="$APP_ROOT/Resources/StereoFool.ini"
 exec "$BIN" --config "$DEFAULT_CFG" "$@"
 EOF
 

@@ -6,7 +6,7 @@ Native macOS audio prototype in Swift.
 
 - realtime output via `AVAudioEngine` + `AVAudioSourceNode`
 - realtime input capture via `AVAudioEngine` input tap + ring buffer feeding output callback
-- dedicated macOS config file: `macOS/StereFool.ini`
+- dedicated macOS config file: `macOS/StereoFool.ini`
 - MPX tone-path DSP blocks:
   - input gain
   - optional wideband AGC
