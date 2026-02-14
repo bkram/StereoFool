@@ -437,10 +437,6 @@ final class AudioOutputEngine {
     private func pushInputBufferToRing(_ buffer: AVAudioPCMBuffer, ring: StereoInputRingBuffer) {
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return }
-        meterLock.lock()
-        captureCallbackCount += 1
-        captureFrameCount += UInt64(frames)
-        meterLock.unlock()
         let chanCount = Int(buffer.format.channelCount)
         let isInterleaved = buffer.format.isInterleaved
         if let channels = buffer.floatChannelData {
@@ -799,7 +795,7 @@ final class AudioOutputEngine {
         inputLeftPeak: Float,
         inputRightPeak: Float
     ) {
-        meterLock.lock()
+        // Float writes are atomic, no lock needed in RT callback
         meterSnapshot.inputRMS = inputRMS.isFinite ? max(0.0, inputRMS) : 0.0
         meterSnapshot.inputLeftRMS = inputLeftRMS.isFinite ? max(0.0, inputLeftRMS) : 0.0
         meterSnapshot.inputRightRMS = inputRightRMS.isFinite ? max(0.0, inputRightRMS) : 0.0
@@ -815,23 +811,20 @@ final class AudioOutputEngine {
         if safeRightPeak > pendingInputRightPeak {
             pendingInputRightPeak = safeRightPeak
         }
-        meterLock.unlock()
     }
 
     private func updateOutputMeters(outputRMS: Float, outputPeak: Float) {
-        meterLock.lock()
+        // Float writes are atomic on ARM, no lock needed in RT callback
         meterSnapshot.outputRMS = outputRMS
         if outputPeak > pendingOutputPeak {
             pendingOutputPeak = outputPeak
         }
-        meterLock.unlock()
     }
 
     private func updateInputScopeSnapshot(
         left: UnsafePointer<Float>, right: UnsafePointer<Float>, frameCount: Int
     ) {
         guard frameCount > 0 else { return }
-        meterLock.lock()
         appendStereoScopeSamples(
             left: left,
             right: right,
@@ -840,12 +833,10 @@ final class AudioOutputEngine {
             writeIndex: &inputScopeWriteIndex,
             validFrames: &inputScopeValidFrames
         )
-        meterLock.unlock()
     }
 
     private func updateInputScopeSnapshot(mono: UnsafePointer<Float>, frameCount: Int) {
         guard frameCount > 0 else { return }
-        meterLock.lock()
         appendMonoScopeSamples(
             samples: mono,
             frameCount: frameCount,
@@ -853,14 +844,12 @@ final class AudioOutputEngine {
             writeIndex: &inputScopeWriteIndex,
             validFrames: &inputScopeValidFrames
         )
-        meterLock.unlock()
     }
 
     private func updateOutputScopeSnapshot(
         left: UnsafePointer<Float>, right: UnsafePointer<Float>, frameCount: Int
     ) {
         guard frameCount > 0 else { return }
-        meterLock.lock()
         appendStereoScopeSamples(
             left: left,
             right: right,
@@ -869,7 +858,6 @@ final class AudioOutputEngine {
             writeIndex: &outputScopeWriteIndex,
             validFrames: &outputScopeValidFrames
         )
-        meterLock.unlock()
     }
 
     private func configureScopeHistory(renderRate: Double, inputRate: Double?) {
