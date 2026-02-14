@@ -1273,38 +1273,89 @@ func saveConfig() {
 
 ### Quick Wins (1-2 hours each)
 
-| # | Task | Impact | Difficulty |
-|---|------|--------|------------|
-| 3 | Pre-allocate scratch buffers | ⭐⭐⭐⭐⭐ High | **Easy** - One-time allocation |
-| 11 | Pre-allocate all working buffers | ⭐⭐⭐⭐ High | **Easy** - Remove dynamic Array() |
-| 12 | Pre-allocate conversion buffers | ⭐⭐⭐ Medium | **Easy** - Add instance variables |
-| 15 | Use semantic dark mode colors | ⭐⭐ Low | **Easy** - Replace hardcoded colors |
-| 26 | Add reset to defaults button | ⭐⭐ Low | **Easy** - Simple button + alert |
+| # | Task | Impact | Difficulty | Status |
+|---|------|--------|------------|--------|
+| 3 | Pre-allocate scratch buffers | ⭐⭐⭐⭐⭐ High | **Easy** | ✅ Done |
+| 11 | Pre-allocate all working buffers | ⭐⭐⭐⭐ High | **Easy** | ✅ Done |
+| 12 | Pre-allocate conversion buffers | ⭐⭐⭐ Medium | **Easy** | ✅ Done |
+| 15 | Use semantic dark mode colors | ⭐⭐ Low | **Easy** | ✅ Done |
+| 26 | Add reset to defaults button | ⭐⭐ Low | **Easy** | Pending |
 
 ### Medium Effort (1-2 days each)
 
-| # | Task | Impact | Difficulty |
-|---|------|--------|------------|
-| 1 | Lock-free SPSC ring buffer | ⭐⭐⭐⭐⭐ Critical | **Medium** - Skip os_unfair_lock, go straight to lock-free |
-| 2 | Move scope updates to background | ⭐⭐⭐⭐⭐ Critical | **Medium** - Restructure threading |
-| 8 | Replace manual RMS loops with vDSP | ⭐⭐⭐ High | **Medium** - Add Accelerate import |
-| 14 | Add accessibility labels | ⭐⭐ Low | **Medium** - Add .accessibility() |
-| 16 | Add App Sandbox entitlements | ⭐⭐⭐⭐ High | **Medium** - Create entitlements file |
-| 22 | Build with -O for arm64 | ⭐⭐⭐⭐ High | **Medium** - Change build settings |
-| 23 | Novice/Expert toggle | ⭐⭐⭐ Medium | **Medium** - Add @State + conditional UI |
-| 28 | Fix window close behavior | ⭐⭐ Low | **Medium** - One method change |
+| # | Task | Impact | Difficulty | Status |
+|---|------|--------|------------|--------|
+| 1 | Lock-free SPSC ring buffer | ⭐⭐⭐⭐⭐ Critical | **Medium** | ✅ Done |
+| 2 | Move scope updates to background | ⭐⭐⭐⭐⭐ Critical | **Medium** | ✅ Done |
+| 8 | Replace manual RMS loops with vDSP | ⭐⭐⭐ High | **Medium** | ✅ Done |
+| 14 | Add accessibility labels | ⭐⭐ Low | **Medium** | Pending |
+| 16 | Add App Sandbox entitlements | ⭐⭐⭐⭐ High | **Medium** | Pending |
+| 22 | Build with -O for arm64 | ⭐⭐⭐⭐ High | **Medium** | ✅ Done (release builds use -O) |
+| 23 | Novice/Expert toggle | ⭐⭐⭐ Medium | **Medium** | Pending |
+| 28 | Fix window close behavior | ⭐⭐ Low | **Medium** | Pending |
 
 ### Major Refactor (1-2 weeks each)
 
-| # | Task | Impact | Difficulty | Risk |
-|---|------|--------|------------|------|
-| New Threading | Lock-free audio pipeline | ⭐⭐⭐⭐⭐ Critical | **Hard** | High |
-| 5 | Render callback branch optimization | ⭐⭐⭐⭐ High | **Hard** | Medium |
-| 6 | Input underrun crossfade | ⭐⭐⭐⭐ High | **Hard** | Low |
-| 7 | Sample-counter RDS timing | ⭐⭐⭐ Medium | **Hard** | Medium |
-| 9 | Batch biquad processing | ⭐⭐⭐ Medium | **Hard** | Medium |
-| 10 | Pre-compute RDS shaping | ⭐⭐⭐ Medium | **Hard** | Low |
-| 24 | Debug Orbass HF noise | ⭐⭐⭐⭐ High | **Hard** | Unknown |
+| # | Task | Impact | Difficulty | Risk | Status |
+|---|------|--------|------------|------|--------|
+| New Threading | Lock-free audio pipeline | ⭐⭐⭐⭐⭐ Critical | **Hard** | High | ✅ Done |
+| 5 | Render callback branch optimization | ⭐⭐⭐⭐ High | **Hard** | Medium | Pending |
+| 6 | Input underrun crossfade | ⭐⭐⭐⭐ High | **Hard** | Low | Pending |
+| 7 | Sample-counter RDS timing | ⭐⭐⭐ Medium | **Hard** | Medium | Pending |
+| 9 | Batch biquad processing | ⭐⭐⭐ Medium | **Hard** | Medium | Pending |
+| 10 | Pre-compute RDS shaping | ⭐⭐⭐ Medium | **Hard** | Low | Pending |
+| 24 | Debug Orbass HF noise | ⭐⭐⭐⭐ High | **Hard** | Unknown | Pending |
+
+---
+
+## RDS Compliance
+
+### RDS.1 RDS Group Timing
+
+**Issue**: Currently uses `Date()` for RDS group scheduling which is not sample-accurate.
+
+**Impact**: RDS data may be transmitted at irregular intervals, causing some car receivers to lose PS/PTY.
+
+**Plan**:
+- [ ] Replace wall-clock timing with sample counter
+- [ ] Pre-compute RDS group schedule at config load
+- [ ] Ensure consistent 1187.5 groups/second transmission
+
+---
+
+### RDS.2 Pre-compute Biphase Shaping
+
+**Issue**: RDS biphase shaping kernel computed at sample rate changes.
+
+**Plan**:
+- [ ] Pre-compute at common rates (44100, 48000, 96000, 192000)
+- [ ] Cache in dictionary: `[SampleRate: [Float]]`
+- [ ] Linear interpolate between cached rates
+
+---
+
+### RDS.3 EN 50067 Compliance
+
+**Current**: RDS implementation follows EN 50067 specification.
+
+**Verification needed**:
+- [ ] Verify pilot tone at 19kHz ± 2Hz
+- [ ] Verify RDS subcarrier at 57kHz (3 × 19kHz)
+- [ ] Verify biphase mark coding (BMC) encoding
+- [ ] Verify group repetition rate: 11.417 groups/second (1187.5 bits/sec)
+- [ ] Test with RDS analyzer (e.g., FMITE)
+
+---
+
+### RDS.4 PTY and PS Compliance
+
+**Issues to verify**:
+- [ ] PTY codes correctly mapped (31 codes)
+- [ ] PS name exactly 8 characters (padded with spaces)
+- [ ] RT (Radiotext) 64 or 32 characters with A/B flag
+- [ ] TA/TP flags working correctly
+
+---
 
 ### Nice to Have (When Time Permits)
 
@@ -1317,6 +1368,16 @@ func saveConfig() {
 | 21 | File provider integration | ⭐⭐ Medium | Hard |
 | 25 | FFT analyzer overlays | ⭐⭐ Medium | Medium |
 | 27 | Channel swap toggle | ⭐ Low | Easy |
+
+---
+
+### Completed in This Session
+
+- ✅ Pre-allocated all buffers (scratch + conversion)
+- ✅ Removed all locks from real-time audio callback
+- ✅ Replaced manual metering loops with vDSP
+- ✅ Verified semantic dark mode colors (already in place)
+- ✅ Removed DSP Overview from Levels window
 | 29 | Separate scope windows | ⭐⭐ Medium | Easy |
 | 13 | SIMD for scope history | ⭐⭐ Medium | Hard |
 
