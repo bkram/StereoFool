@@ -341,75 +341,63 @@ struct ProgramLowpass {
 
 struct PreemphasisFilter {
     var enabled: Bool = false
-    var b0: Float = 1.0
-    var b1: Float = 0.0
-    var a1: Float = 0.0
-    var z1: Float = 0.0
+    private var a: Float = 0.0
+    private var invOneMinusA: Float = 1.0
+    private var x1: Float = 0.0
 
     mutating func configure(tauUS: Int, sampleRate: Float) {
         guard tauUS > 0 else {
             enabled = false
-            b0 = 1.0; b1 = 0.0; a1 = 0.0; z1 = 0.0
+            a = 0.0
+            invOneMinusA = 1.0
+            x1 = 0.0
             return
         }
         enabled = true
-
-        let sr = max(8_000.0, sampleRate)
+        let sr = max(8_000.0 as Float, sampleRate)
         let tau = Float(tauUS) * 1e-6
-        let k = 2.0 * tau * sr
-
-        b0 = 1.0 + k
-        b1 = 1.0 - k
-        a1 = -1.0
-
-        z1 = 0.0
+        a = expf(-1.0 / (tau * sr))
+        invOneMinusA = 1.0 / max(1e-9, (1.0 - a))
+        x1 = 0.0
     }
 
     mutating func process(_ x: Float) -> Float {
         guard enabled else { return x }
-        let y = b0 * x + z1
-        z1 = b1 * x - a1 * y
+        let y = (x - a * x1) * invOneMinusA
+        x1 = x
         return y
     }
 
-    mutating func reset() { z1 = 0.0 }
+    mutating func reset() { x1 = 0.0 }
 }
 
 struct DeemphasisFilter {
     var enabled: Bool = false
-    var b0: Float = 1.0
-    var b1: Float = 0.0
-    var a1: Float = 0.0
-    var z1: Float = 0.0
+    private var a: Float = 0.0
+    private var y1: Float = 0.0
 
     mutating func configure(tauUS: Int, sampleRate: Float) {
         guard tauUS > 0 else {
             enabled = false
-            b0 = 1.0; b1 = 0.0; a1 = 0.0; z1 = 0.0
+            a = 0.0
+            y1 = 0.0
             return
         }
         enabled = true
-
-        let sr = max(8_000.0, sampleRate)
+        let sr = max(8_000.0 as Float, sampleRate)
         let tau = Float(tauUS) * 1e-6
-        let k = 2.0 * tau * sr
-
-        let inv = 1.0 / (1.0 + k)
-        b0 = inv
-        b1 = inv
-        a1 = (k - 1.0) * inv
-
-        z1 = 0.0
+        a = expf(-1.0 / (tau * sr))
+        y1 = 0.0
     }
 
     mutating func process(_ x: Float) -> Float {
         guard enabled else { return x }
-        let y = b0 * x + z1
-        z1 = b1 * x - a1 * y
+        let y = (1.0 - a) * x + a * y1
+        y1 = y
         return y
     }
 
-    mutating func reset() { z1 = 0.0 }
+    mutating func reset() { y1 = 0.0 }
 }
 
 struct EnvelopeFollower {
