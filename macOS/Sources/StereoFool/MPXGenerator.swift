@@ -2928,7 +2928,7 @@ final class MPXGenerator {
         rdsCoder?.updateRDSPilotPhase(pilotPhaseForRDS)
         let rds = rdsSupported ? (rdsCoder?.nextSampleWithPilotLock() ?? 0.0) : 0.0
         
-        var mpx = (base + (diff * sub) + pilot + rds) * deviationScale * outputGain
+        var mpx = (base + (diff * sub) + pilot + rds) * deviationScale
 
         if compositeLimiterEnabled {
             mpx = compositeLimiter.process(mpx)
