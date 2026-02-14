@@ -15,6 +15,11 @@ private func lerpf(_ a: Float, _ b: Float, _ t: Float) -> Float {
     return a + ((b - a) * t)
 }
 
+@inline(__always)
+private func zapDenorm(_ x: Float) -> Float {
+    return (fabsf(x) < 1e-20) ? 0.0 : x
+}
+
 struct SineCosOsc {
     var s: Float = 0.0
     var c: Float = 1.0
@@ -59,6 +64,162 @@ struct SineCosOsc {
 
     @inline(__always) mutating func sin2x() -> Float {
         return 2.0 * s * c
+    }
+}
+
+struct Halfband2xFIR {
+    private static let h: [Float] = [
+        -0.0016820, 0.0,
+         0.0102060, 0.0,
+        -0.0340400, 0.0,
+         0.0902570, 0.0,
+         0.5000000, 0.0,
+         0.0902570, 0.0,
+        -0.0340400, 0.0,
+         0.0102060, 0.0,
+        -0.0016820
+    ]
+
+    private var z: [Float] = Array(repeating: 0.0, count: h.count)
+    private var zi: Int = 0
+
+    mutating func reset() {
+        for i in 0..<z.count { z[i] = 0.0 }
+        zi = 0
+    }
+
+    @inline(__always)
+    private mutating func push(_ x: Float) {
+        z[zi] = x
+        zi &+= 1
+        if zi >= z.count { zi = 0 }
+    }
+
+    @inline(__always)
+    private func convolve() -> Float {
+        var acc: Float = 0.0
+        var idx = zi
+        for k in 0..<Self.h.count {
+            idx &-= 1
+            if idx < 0 { idx = z.count - 1 }
+            acc += z[idx] * Self.h[k]
+        }
+        return acc
+    }
+
+    @inline(__always)
+    mutating func up2(_ x: Float) -> (Float, Float) {
+        push(x)
+        let odd = convolve()
+        let even = odd
+        return (even, odd)
+    }
+
+    @inline(__always)
+    mutating func down2(_ x0: Float, _ x1: Float) -> Float {
+        push(x0)
+        _ = convolve()
+        push(x1)
+        return convolve()
+    }
+}
+
+struct DCBlocker1p {
+    private var r: Float = 0.995
+    private var x1: Float = 0.0
+    private var y1: Float = 0.0
+
+    mutating func configure(cutoffHz: Float, sampleRate: Float) {
+        let sr = max(8_000.0, sampleRate)
+        let fc = max(1.0, min(50.0, cutoffHz))
+        r = expf(-twoPi * fc / sr)
+        x1 = 0.0
+        y1 = 0.0
+    }
+
+    @inline(__always)
+    mutating func process(_ x: Float) -> Float {
+        let y = x - x1 + r * y1
+        x1 = x
+        y1 = zapDenorm(y)
+        return y
+    }
+}
+
+struct OrbassBroadcastClean {
+    var enabled: Bool = false
+    var amount: Float = 0.0
+    var drive: Float = 0.0
+    var harmonics: Float = 0.0
+    var freqHz: Float = 90.0
+
+    private var sampleRate: Float = 48_000.0
+
+    private var bassLP = BiquadCascade6()
+    private var enhLP = BiquadCascade6()
+    private var harmHP = BiquadCascade6()
+
+    private var wet: Float = 1.0
+    private var wetTarget: Float = 1.0
+    private var wetCoeff: Float = 0.0
+
+    mutating func configure(sampleRate: Float) {
+        self.sampleRate = max(8_000.0, sampleRate)
+
+        let fadeS: Float = 0.010
+        wetCoeff = expf(-1.0 / (fadeS * self.sampleRate))
+        wet = wetTarget
+
+        let bassCut = clampf(freqHz, 45.0, min(250.0, (self.sampleRate * 0.5) - 500.0))
+        bassLP.configureLowpass(cutoffHz: bassCut, sampleRate: self.sampleRate)
+
+        enhLP.configureLowpass(cutoffHz: 420.0, sampleRate: self.sampleRate)
+        harmHP.configureHighpass(cutoffHz: 120.0, sampleRate: self.sampleRate)
+    }
+
+    mutating func setEnabled(_ on: Bool) {
+        wetTarget = on ? 1.0 : 0.0
+    }
+
+    @inline(__always)
+    mutating func process(left: Float, right: Float) -> (Float, Float) {
+        wet = (wetCoeff * wet) + ((1.0 - wetCoeff) * wetTarget)
+        wet = clampf(wet, 0.0, 1.0)
+
+        if wet < 1e-4 { return (left, right) }
+
+        let processed = processCore(left: left, right: right)
+        let outL = lerpf(left, processed.0, wet)
+        let outR = lerpf(right, processed.1, wet)
+        return (outL, outR)
+    }
+
+    private mutating func processCore(left: Float, right: Float) -> (Float, Float) {
+        let amt = clampf(amount, 0.0, 1.0)
+        let harm = clampf(harmonics, 0.0, 1.0)
+        if amt <= 1e-4, harm <= 1e-4 { return (left, right) }
+
+        let mid = 0.5 * (left + right)
+        let side = 0.5 * (left - right)
+
+        let bass = bassLP.process(mid)
+
+        let dRaw = 1.0 + clampf(drive, 0.0, 2.5) * (1.2 + 2.0 * harm + 1.5 * amt)
+        let d = clampf(dRaw, 0.5, 12.0)
+
+        let soft = tanhf(bass * d)
+        let hard = tanhf(bass * d * 2.5)
+        let harmonicOnly = hard - soft
+
+        var enh = (bass * (0.9 * amt)) + (harmonicOnly * (0.65 * harm))
+
+        enh = enhLP.process(harmHP.process(enh))
+
+        let midOut = mid + enh
+
+        let outL = midOut + side
+        let outR = midOut - side
+        return (outL, outR)
     }
 }
 
@@ -130,6 +291,7 @@ struct OnePoleLP {
 
     mutating func process(_ x: Float) -> Float {
         state += alpha * (x - state)
+        state = zapDenorm(state)
         return state
     }
 }
@@ -244,6 +406,8 @@ struct Biquad {
         let y = (b0 * x) + z1
         z1 = (b1 * x) - (a1 * y) + z2
         z2 = (b2 * x) - (a2 * y)
+        z1 = zapDenorm(z1)
+        z2 = zapDenorm(z2)
         return y
     }
 
@@ -364,7 +528,7 @@ struct PreemphasisFilter {
     mutating func process(_ x: Float) -> Float {
         guard enabled else { return x }
         let y = (x - a * x1) * invOneMinusA
-        x1 = x
+        x1 = zapDenorm(x)
         return y
     }
 
@@ -393,7 +557,7 @@ struct DeemphasisFilter {
     mutating func process(_ x: Float) -> Float {
         guard enabled else { return x }
         let y = (1.0 - a) * x + a * y1
-        y1 = y
+        y1 = zapDenorm(y)
         return y
     }
 
@@ -420,6 +584,7 @@ struct EnvelopeFollower {
         } else {
             value = (releaseCoeff * value) + ((1.0 - releaseCoeff) * ax)
         }
+        value = zapDenorm(value)
         return value
     }
 }
@@ -2094,6 +2259,7 @@ final class MPXGenerator {
     private let orbassSubharmonicsEnabled: Bool
     private let orbassSubharmonicsAmount: Float
     private let orbassFreqHz: Float
+    private var orbassClean = OrbassBroadcastClean()
     private var orbassLP = OnePoleLP()
     private var orbassSubLP = OnePoleLP()
     private var orbassHarmHPF = Biquad()
@@ -2498,6 +2664,13 @@ final class MPXGenerator {
         let harmLPFCutoff = clampf(max(280.0, orbassFreqHz * 5.0), harmLPFMin, nyquist)
         orbassHarmHPF.configureHighpass(cutoffHz: harmHPFCutoff, sampleRate: sampleRate)
         orbassHarmLPF.configureLowpass(cutoffHz: harmLPFCutoff, sampleRate: sampleRate)
+
+        orbassClean.enabled = orbassEnabled
+        orbassClean.amount = orbassAmount
+        orbassClean.drive = orbassDrive
+        orbassClean.harmonics = orbassHarmonics
+        orbassClean.freqHz = orbassFreqHz
+        orbassClean.configure(sampleRate: sampleRate)
     }
 
     private func configureMultibandFilters() {
@@ -2852,11 +3025,10 @@ final class MPXGenerator {
             l = trimmed.0
             r = trimmed.1
 
-            if orbassEnabled {
-                let orbassOut = processOrbass(left: l, right: r)
-                l = orbassOut.0
-                r = orbassOut.1
-            }
+            orbassClean.setEnabled(orbassEnabled)
+            let orbassOut = orbassClean.process(left: l, right: r)
+            l = orbassOut.0
+            r = orbassOut.1
 
             if multibandEnabled {
                 let mbOut = processMultibandStereo(left: l, right: r)
