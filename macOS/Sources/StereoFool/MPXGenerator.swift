@@ -2236,8 +2236,7 @@ final class MPXGenerator {
     private func updateDerivedRates() {
         toneStep = twoPi * toneFreq / sampleRate
         pilotStep = twoPi * pilotFreq / sampleRate
-        // Stereo subcarrier is exactly 2x pilot frequency for phase coherence
-        subStep = pilotStep * 2.0
+        subStep = twoPi * subcarrierFreq / sampleRate
         updateMonitorRecoveryRates()
     }
 
@@ -2803,6 +2802,7 @@ final class MPXGenerator {
         let sub = stereoSubcarrierSupported ? sinf(subPhase) : 0.0
         lastSubcarrierSample = sub
         let rds = rdsSupported ? (rdsCoder?.nextSampleWithPilotLock() ?? 0.0) : 0.0
+        
         var mpx = (base + (diff * sub) + pilot + rds) * deviationScale
 
         if limitEnabled {
@@ -2815,13 +2815,13 @@ final class MPXGenerator {
         mpx *= outputGain
         mpx = clampf(mpx, -1.0, 1.0)
 
-        // Update phase accumulators
         tonePhase += toneStep
         pilotPhase += pilotStep
-        subPhase += subStep
+        // Phase-lock subcarrier to pilot: subcarrier is 2x pilot frequency (38kHz = 2 * 19kHz)
+        // This prevents stereo phase drift that causes center-pulling/oscillation over time
+        subPhase = fmodf(2.0 * pilotPhase, twoPi)
         if tonePhase >= twoPi { tonePhase -= twoPi }
         if pilotPhase >= twoPi { pilotPhase -= twoPi }
-        if subPhase >= twoPi { subPhase -= twoPi }
         return mpx
     }
 
