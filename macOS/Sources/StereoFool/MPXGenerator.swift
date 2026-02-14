@@ -2726,8 +2726,6 @@ final class MPXGenerator {
                 l = m
                 r = m
             }
-            l = clampf(l * outputGain, -1.0, 1.0)
-            r = clampf(r * outputGain, -1.0, 1.0)
             left[i] = l
             right[i] = r
         }
@@ -2784,8 +2782,8 @@ final class MPXGenerator {
                 l = m
                 r = m
             }
-            left[i] = clampf(l * inputGain * outputGain, -1.0, 1.0)
-            right[i] = clampf(r * inputGain * outputGain, -1.0, 1.0)
+            left[i] = clampf(l * inputGain, -1.0, 1.0)
+            right[i] = clampf(r * inputGain, -1.0, 1.0)
             tonePhase += toneStep
             if tonePhase >= twoPi { tonePhase -= twoPi }
         }
