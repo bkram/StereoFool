@@ -1048,6 +1048,7 @@ final class StereoFoolViewModel: ObservableObject {
         if let last = lastMonitorRefreshTime, (now - last) < minRefreshInterval {
             return
         }
+
         let dt = max(1.0 / 120.0, min(0.25, now - (lastMonitorRefreshTime ?? (now - (1.0 / 30.0)))))
         lastMonitorRefreshTime = now
 

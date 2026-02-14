@@ -1303,7 +1303,7 @@ func saveConfig() {
 | # | Task | Impact | Difficulty | Risk | Status |
 |---|------|--------|------------|------|--------|
 | New Threading | Lock-free audio pipeline | ⭐⭐⭐⭐⭐ Critical | **Hard** | High | ⚠️ Not done |
-| RDS.3 | Phase-lock RDS subcarrier to pilot | ⭐⭐⭐⭐ High | **Hard** | Low | Pending |
+| RDS.3 | Phase-lock RDS subcarrier to pilot | ⭐⭐⭐⭐ High | **Hard** | Low | ✅ Done |
 | 5 | Render callback branch optimization | ⭐⭐⭐⭐ High | **Hard** | Medium | Pending |
 | 6 | Input underrun crossfade | ⭐⭐⭐⭐ High | **Hard** | Low | Pending |
 | 7 | Sample-counter RDS timing | ⭐⭐⭐ Medium | **Hard** | Medium | Pending |
@@ -1341,16 +1341,13 @@ func saveConfig() {
 
 ### RDS.3 EN 50067 Compliance
 
-**Current**: RDS implementation follows EN 50067 specification.
-
-**ISSUE FOUND**: RDS subcarrier (57kHz) is NOT phase-locked to pilot.
-- Current: `carrierPhase += carrierStep` (independent accumulator)
-- Should be: `rdsPhase = fmodf(3.0 * pilotPhase, twoPi)` (derived from pilot)
-- EN 50067 requires RDS at exactly 3× pilot frequency (57kHz = 3 × 19kHz)
+**FIXED**: RDS subcarrier (57kHz) is now phase-locked to pilot.
+- Uses: `rdsPhase = fmodf(3.0 * pilotPhase, twoPi)` (derived from pilot)
+- RDS coder now has `nextSampleWithPilotPhase(_:)` method that derives carrier from pilot
 
 **Verification needed**:
 - [ ] Verify pilot tone at 19kHz ± 2Hz
-- [ ] Verify RDS subcarrier at 57kHz (3 × 19kHz) - **FIX NEEDED**
+- [x] Verify RDS subcarrier at 57kHz (3 × 19kHz) - **FIXED**
 - [ ] Verify biphase mark coding (BMC) encoding
 - [ ] Verify group repetition rate: 11.417 groups/second (1187.5 bits/sec)
 - [ ] Test with RDS analyzer (e.g., FMITE)

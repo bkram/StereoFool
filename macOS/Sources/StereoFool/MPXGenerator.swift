@@ -686,6 +686,30 @@ private final class BasicRDSCoder {
         return normalized * carrier * levelScale
     }
 
+    func nextSampleWithPilotPhase(_ pilotPhase: Float) -> Float {
+        guard enabled else { return 0.0 }
+        let rdsPhase = fmodf(3.0 * pilotPhase, twoPi)
+
+        let previousPhase = bitPhase
+        var impulse: Float = 0.0
+        bitPhase += Self.bitrate / sampleRate
+        while bitPhase >= 1.0 {
+            bitPhase -= 1.0
+            let nextBit = dequeueBit()
+            differentialBit ^= Int(nextBit)
+            impulse += differentialBit == 0 ? -1.0 : 1.0
+        }
+        if previousPhase < 0.5, bitPhase >= 0.5 {
+            impulse += differentialBit == 0 ? 1.0 : -1.0
+        }
+
+        let shaped = nextShapingSample(impulse: impulse)
+
+        let carrier = sinf(rdsPhase)
+        let normalized = shaped / max(1e-6, shapingPeak)
+        return normalized * carrier * levelScale
+    }
+
     private func updateDerivedRates() {
         carrierStep = twoPi * rdsFreqHz / sampleRate
     }
@@ -2763,7 +2787,7 @@ final class MPXGenerator {
         let pilot = pilotSupported ? (sinf(pilotPhase) * pilotLevel) : 0.0
         let sub = stereoSubcarrierSupported ? sinf(subPhase) : 0.0
         lastSubcarrierSample = sub
-        let rds = rdsSupported ? (rdsCoder?.nextSample() ?? 0.0) : 0.0
+        let rds = rdsSupported ? (rdsCoder?.nextSampleWithPilotPhase(pilotPhase) ?? 0.0) : 0.0
         var mpx = (base + (diff * sub) + pilot + rds) * deviationScale
 
         if limitEnabled {

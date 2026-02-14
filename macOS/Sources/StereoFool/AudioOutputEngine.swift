@@ -176,25 +176,39 @@ final class AudioOutputEngine {
                         self.inputPrimed = false
                     }
                     if self.outputMode == .monitorAudio {
-                        self.ensureMonitorScratchCapacity(frames: frames)
-                        self.monitorMPXLeftScratch.withUnsafeMutableBufferPointer { mpxL in
-                            self.monitorMPXRightScratch.withUnsafeMutableBufferPointer { mpxR in
-                                guard let mpxLeft = mpxL.baseAddress,
-                                    let mpxRight = mpxR.baseAddress
-                                else { return }
-                                self.generator.renderFromInputAndMonitorInPlace(
-                                    frameCount: frames,
-                                    left: leftData,
-                                    right: rightData,
-                                    mpxLeft: mpxLeft,
-                                    mpxRight: mpxRight
-                                )
-                                let outMeter = Self.computeStereoMeter(
-                                    left: mpxLeft, right: mpxRight, frameCount: frames)
-                                self.updateOutputMeters(
-                                    outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                                self.updateOutputScopeSnapshot(
-                                    left: mpxLeft, right: mpxRight, frameCount: frames)
+                        if self.generator.isProcessingBypassEnabled {
+                            self.generator.renderMonitorFromInputInPlace(
+                                frameCount: frames,
+                                left: leftData,
+                                right: rightData
+                            )
+                            let outMeter = Self.computeStereoMeter(
+                                left: leftData, right: rightData, frameCount: frames)
+                            self.updateOutputMeters(
+                                outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                            self.updateOutputScopeSnapshot(
+                                left: leftData, right: rightData, frameCount: frames)
+                        } else {
+                            self.ensureMonitorScratchCapacity(frames: frames)
+                            self.monitorMPXLeftScratch.withUnsafeMutableBufferPointer { mpxL in
+                                self.monitorMPXRightScratch.withUnsafeMutableBufferPointer { mpxR in
+                                    guard let mpxLeft = mpxL.baseAddress,
+                                        let mpxRight = mpxR.baseAddress
+                                    else { return }
+                                    self.generator.renderFromInputAndMonitorInPlace(
+                                        frameCount: frames,
+                                        left: leftData,
+                                        right: rightData,
+                                        mpxLeft: mpxLeft,
+                                        mpxRight: mpxRight
+                                    )
+                                    let outMeter = Self.computeStereoMeter(
+                                        left: mpxLeft, right: mpxRight, frameCount: frames)
+                                    self.updateOutputMeters(
+                                        outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                    self.updateOutputScopeSnapshot(
+                                        left: mpxLeft, right: mpxRight, frameCount: frames)
+                                }
                             }
                         }
                     } else {
@@ -215,25 +229,39 @@ final class AudioOutputEngine {
                     }
                 } else {
                     if self.outputMode == .monitorAudio {
-                        self.ensureMonitorScratchCapacity(frames: frames)
-                        self.monitorMPXLeftScratch.withUnsafeMutableBufferPointer { mpxL in
-                            self.monitorMPXRightScratch.withUnsafeMutableBufferPointer { mpxR in
-                                guard let mpxLeft = mpxL.baseAddress,
-                                    let mpxRight = mpxR.baseAddress
-                                else { return }
-                                self.generator.renderToneAndMonitorNonInterleaved(
-                                    frameCount: frames,
-                                    left: leftData,
-                                    right: rightData,
-                                    mpxLeft: mpxLeft,
-                                    mpxRight: mpxRight
-                                )
-                                let outMeter = Self.computeStereoMeter(
-                                    left: mpxLeft, right: mpxRight, frameCount: frames)
-                                self.updateOutputMeters(
-                                    outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                                self.updateOutputScopeSnapshot(
-                                    left: mpxLeft, right: mpxRight, frameCount: frames)
+                        if self.generator.isProcessingBypassEnabled {
+                            self.generator.renderMonitorToneNonInterleaved(
+                                frameCount: frames,
+                                left: leftData,
+                                right: rightData
+                            )
+                            let outMeter = Self.computeStereoMeter(
+                                left: leftData, right: rightData, frameCount: frames)
+                            self.updateOutputMeters(
+                                outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                            self.updateOutputScopeSnapshot(
+                                left: leftData, right: rightData, frameCount: frames)
+                        } else {
+                            self.ensureMonitorScratchCapacity(frames: frames)
+                            self.monitorMPXLeftScratch.withUnsafeMutableBufferPointer { mpxL in
+                                self.monitorMPXRightScratch.withUnsafeMutableBufferPointer { mpxR in
+                                    guard let mpxLeft = mpxL.baseAddress,
+                                        let mpxRight = mpxR.baseAddress
+                                    else { return }
+                                    self.generator.renderToneAndMonitorNonInterleaved(
+                                        frameCount: frames,
+                                        left: leftData,
+                                        right: rightData,
+                                        mpxLeft: mpxLeft,
+                                        mpxRight: mpxRight
+                                    )
+                                    let outMeter = Self.computeStereoMeter(
+                                        left: mpxLeft, right: mpxRight, frameCount: frames)
+                                    self.updateOutputMeters(
+                                        outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                    self.updateOutputScopeSnapshot(
+                                        left: mpxLeft, right: mpxRight, frameCount: frames)
+                                }
                             }
                         }
                     } else {
