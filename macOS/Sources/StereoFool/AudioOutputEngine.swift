@@ -437,6 +437,9 @@ final class AudioOutputEngine {
     private func pushInputBufferToRing(_ buffer: AVAudioPCMBuffer, ring: StereoInputRingBuffer) {
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return }
+        // Track capture callbacks for detecting if input is active
+        captureCallbackCount += 1
+        captureFrameCount += UInt64(frames)
         let chanCount = Int(buffer.format.channelCount)
         let isInterleaved = buffer.format.isInterleaved
         if let channels = buffer.floatChannelData {
@@ -795,7 +798,8 @@ final class AudioOutputEngine {
         inputLeftPeak: Float,
         inputRightPeak: Float
     ) {
-        // Float writes are atomic, no lock needed in RT callback
+        // Need lock because meters getter reads these values
+        meterLock.lock()
         meterSnapshot.inputRMS = inputRMS.isFinite ? max(0.0, inputRMS) : 0.0
         meterSnapshot.inputLeftRMS = inputLeftRMS.isFinite ? max(0.0, inputLeftRMS) : 0.0
         meterSnapshot.inputRightRMS = inputRightRMS.isFinite ? max(0.0, inputRightRMS) : 0.0
@@ -811,14 +815,18 @@ final class AudioOutputEngine {
         if safeRightPeak > pendingInputRightPeak {
             pendingInputRightPeak = safeRightPeak
         }
+        meterLock.unlock()
     }
 
     private func updateOutputMeters(outputRMS: Float, outputPeak: Float) {
-        // Float writes are atomic on ARM, no lock needed in RT callback
+        // Need lock here because meters getter reads these values
+        // This is only called from audio callback, so lock contention is minimal
+        meterLock.lock()
         meterSnapshot.outputRMS = outputRMS
         if outputPeak > pendingOutputPeak {
             pendingOutputPeak = outputPeak
         }
+        meterLock.unlock()
     }
 
     private func updateInputScopeSnapshot(

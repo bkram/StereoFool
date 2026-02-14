@@ -3137,7 +3137,6 @@ private struct LevelsOnlyView: View {
         ScrollView {
             VStack(spacing: 16) {
                 LevelsCardView(model: model)
-                DSPStatusCardView(model: model)
             }
             .padding(20)
         }
