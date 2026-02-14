@@ -15,6 +15,36 @@ private func lerpf(_ a: Float, _ b: Float, _ t: Float) -> Float {
     return a + ((b - a) * t)
 }
 
+struct SineCosOsc {
+    var s: Float = 0.0
+    var c: Float = 1.0
+    var phase: Float = 0.0
+    var sinInc: Float = 0.0
+    var cosInc: Float = 1.0
+
+    init() {}
+
+    mutating func configure(freq: Float, sampleRate: Float) {
+        let w = twoPi * freq / sampleRate
+        sinInc = sinf(w)
+        cosInc = cosf(w)
+    }
+
+    @inline(__always) mutating func step() {
+        let ns = s * cosInc + c * sinInc
+        let nc = c * cosInc - s * sinInc
+        s = ns
+        c = nc
+        phase += sinInc
+        if phase >= twoPi { phase -= twoPi }
+        if phase < 0 { phase += twoPi }
+    }
+
+    @inline(__always) mutating func sin2x() -> Float {
+        return 2.0 * s * c
+    }
+}
+
 struct OnePoleLP {
     var alpha: Float = 1.0
     var state: Float = 0.0
@@ -2065,11 +2095,14 @@ final class MPXGenerator {
     private var rdsCoder: BasicRDSCoder?
 
     private var toneStep: Float
-    private var pilotStep: Float
-    private var subStep: Float
     private var tonePhase: Float = 0.0
-    private var pilotPhase: Float = 0.0
+    private var pilotOsc = SineCosOsc()
+    private var pilotPhaseForRDS: Float = 0.0
     private var subPhase: Float = 0.0
+
+    private var pilotSupported: Bool = false
+    private var stereoSubcarrierSupported: Bool = false
+    private var rdsSupported: Bool = false
 
     private var preSum = PreemphasisFilter()
     private var preDiff = PreemphasisFilter()
@@ -2173,8 +2206,6 @@ final class MPXGenerator {
         self.rdsCoder = BasicRDSCoder(config: config, sampleRate: self.sampleRate)
 
         self.toneStep = 0.0
-        self.pilotStep = 0.0
-        self.subStep = 0.0
 
         preSum.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
         preDiff.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
@@ -2233,8 +2264,13 @@ final class MPXGenerator {
 
     private func updateDerivedRates() {
         toneStep = twoPi * toneFreq / sampleRate
-        pilotStep = twoPi * pilotFreq / sampleRate
-        subStep = twoPi * subcarrierFreq / sampleRate
+        pilotOsc.configure(freq: pilotFreq, sampleRate: sampleRate)
+
+        let nyquist = (sampleRate * 0.5) - 100.0
+        pilotSupported = nyquist > (pilotFreq + 100.0)
+        stereoSubcarrierSupported = nyquist > (subcarrierFreq + 100.0)
+        rdsSupported = nyquist > 57_100.0
+
         updateMonitorRecoveryRates()
     }
 
@@ -2787,39 +2823,23 @@ final class MPXGenerator {
         diff = preDiff.process(diff)
         lastProgramActivity = inputActivity
 
-        let nyquist = (sampleRate * 0.5) - 100.0
-        let pilotSupported = nyquist > (pilotFreq + 100.0)
-        let stereoSubcarrierSupported = nyquist > (subcarrierFreq + 100.0)
-        let rdsSupported = nyquist > 57_100.0
+        tonePhase += toneStep
+        if tonePhase >= twoPi { tonePhase -= twoPi }
 
-        // Phase-locked carrier generation: use step accumulators instead of fmodf
-        // This is faster and avoids precision issues with large phase values
-        let pilot = pilotSupported ? (sinf(pilotPhase) * pilotLevel) : 0.0
-        let sub = stereoSubcarrierSupported ? sinf(subPhase) : 0.0
+        pilotOsc.step()
+        pilotPhaseForRDS = pilotOsc.phase
+        let pilot = pilotSupported ? (pilotOsc.s * pilotLevel) : 0.0
+        let sub = stereoSubcarrierSupported ? pilotOsc.sin2x() : 0.0
         lastSubcarrierSample = sub
 
-        rdsCoder?.updateRDSPilotPhase(pilotPhase)
+        rdsCoder?.updateRDSPilotPhase(pilotPhaseForRDS)
         let rds = rdsSupported ? (rdsCoder?.nextSampleWithPilotLock() ?? 0.0) : 0.0
         
         var mpx = (base + (diff * sub) + pilot + rds) * deviationScale
 
-        if limitEnabled {
-            if limitLookaheadEnabled {
-                mpx = lookaheadLimiter.process(mpx)
-            }
-            mpx = Self.softClipSafety(mpx, threshold: threshold)
-        }
-
         mpx *= outputGain
         mpx = clampf(mpx, -1.0, 1.0)
 
-        tonePhase += toneStep
-        pilotPhase += pilotStep
-        // Phase-lock subcarrier to pilot: subcarrier is 2x pilot frequency (38kHz = 2 * 19kHz)
-        // This prevents stereo phase drift that causes center-pulling/oscillation over time
-        subPhase = fmodf(2.0 * pilotPhase, twoPi)
-        if tonePhase >= twoPi { tonePhase -= twoPi }
-        if pilotPhase >= twoPi { pilotPhase -= twoPi }
         return mpx
     }
 
