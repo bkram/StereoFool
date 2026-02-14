@@ -691,10 +691,8 @@ private final class BasicRDSCoder {
     func nextSampleWithPilotLock() -> Float {
         guard enabled else { return 0.0 }
 
-        pilotPhaseForRDS += pilotStepForRDS
-        if pilotPhaseForRDS >= twoPi {
-            pilotPhaseForRDS -= twoPi
-        }
+        // Phase is now set externally via updateRDSPilotPhase()
+        // RDS subcarrier is 3x pilot frequency (57kHz = 3 * 19kHz)
         let rdsPhase = fmodf(3.0 * pilotPhaseForRDS, twoPi)
 
         let previousPhase = bitPhase
@@ -2783,12 +2781,10 @@ final class MPXGenerator {
             (sideCoeff * monitorExpectedSideEnv) + ((1.0 - sideCoeff) * postSideAbs)
 
         var base = ((l + r) * 0.5) * sumLevel
-        let diff = monoMode ? 0.0 : (((r - l) * 0.5) * diffLevel)
+        var diff = monoMode ? 0.0 : (((r - l) * 0.5) * diffLevel)
 
         base = preSum.process(base)
-        // Don't apply preemphasis to diff signal - it causes accumulated lpState drift
-        // that gradually attenuates the stereo side signal, causing mono-ization after ~40-60 seconds
-        // diff = preDiff.process(diff)
+        diff = preDiff.process(diff)
         lastProgramActivity = inputActivity
 
         let nyquist = (sampleRate * 0.5) - 100.0
@@ -2801,6 +2797,8 @@ final class MPXGenerator {
         let pilot = pilotSupported ? (sinf(pilotPhase) * pilotLevel) : 0.0
         let sub = stereoSubcarrierSupported ? sinf(subPhase) : 0.0
         lastSubcarrierSample = sub
+
+        rdsCoder?.updateRDSPilotPhase(pilotPhase)
         let rds = rdsSupported ? (rdsCoder?.nextSampleWithPilotLock() ?? 0.0) : 0.0
         
         var mpx = (base + (diff * sub) + pilot + rds) * deviationScale
