@@ -12,7 +12,7 @@ private struct MonitoringStatusLine: View {
     var body: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(isRunning ? .green : .gray)
+                .fill(isRunning ? .green : .secondary)
                 .frame(width: 8, height: 8)
 
             Text(isRunning ? "Running" : "Stopped")
