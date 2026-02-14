@@ -1292,7 +1292,7 @@ func saveConfig() {
 | 1 | Lock-free SPSC ring buffer | ⭐⭐⭐⭐⭐ Critical | **Medium** | ⚠️ Uses NSLock |
 | 2 | Move scope updates to background | ⭐⭐⭐⭐⭐ Critical | **Medium** | ⚠️ Not implemented |
 | 8 | Replace manual RMS loops with vDSP | ⭐⭐⭐ High | **Medium** | ✅ Done |
-| 14 | Add accessibility labels | ⭐⭐ Low | **Medium** | Pending |
+| 14 | Add accessibility labels | ⭐⭐ Low | **Medium** | ✅ Done |
 | 16 | Add App Sandbox entitlements | ⭐⭐⭐⭐ High | **Medium** | Pending |
 | 22 | Build with -O for arm64 | ⭐⭐⭐⭐ High | **Medium** | ✅ Done (release builds use -O) |
 | 23 | Novice/Expert toggle | ⭐⭐⭐ Medium | **Medium** | Pending |

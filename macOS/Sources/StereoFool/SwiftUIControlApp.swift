@@ -221,6 +221,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             scopesWindow = nil
         } else if sender == spectrumWindow {
             spectrumWindow = nil
+            model?.spectrumWindowVisible = false
         } else if sender == levelsWindow {
             levelsWindow = nil
         }
@@ -470,6 +471,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.center()
         w.makeKeyAndOrderFront(nil)
         spectrumWindow = w
+        model?.spectrumWindowVisible = true
         app.activate(ignoringOtherApps: true)
     }
 
@@ -592,6 +594,7 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var mpxSpectrumDB: [Float] = Array(repeating: -100.0, count: 640)
     @Published var mpxSpectrumMaxHz: Double = 92_000.0
     @Published var mpxSpectrumNyquistHz: Double = 0.0
+    @Published var spectrumWindowVisible: Bool = false
 
     private let configPath: String
     private var config: AppConfig
@@ -1133,7 +1136,7 @@ final class StereoFoolViewModel: ObservableObject {
             }
 
             updateScopes(engine: engine, inputPeak: inputPeak, outputPeak: outputPeak)
-            if selectedSection == .monitoring {
+            if selectedSection == .monitoring || spectrumWindowVisible {
                 updateMPXSpectrum(engine: engine, now: now)
             }
         } else {
@@ -1870,11 +1873,13 @@ private struct RootView: View {
                 }
                 .keyboardShortcut(.space, modifiers: [])
                 .disabled(model.isBusy)
+                .accessibilityLabel(model.isRunning ? "Stop audio engine" : "Start audio engine")
 
                 Button(model.processingBypass ? "Bypass On" : "Bypass") {
                     model.toggleBypass()
                 }
                 .disabled(model.isBusy)
+                .accessibilityLabel(model.processingBypass ? "Disable bypass (processing enabled)" : "Enable bypass (processing disabled)")
             }
         }
         .toolbarTitleDisplayMode(.inline)
@@ -2099,6 +2104,7 @@ private struct MonitoringRuntimeSectionView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
+                    .accessibilityLabel("Input device")
                 }
                 LabeledContent("Output") {
                     Picker(
@@ -2117,6 +2123,7 @@ private struct MonitoringRuntimeSectionView: View {
                     }
                     .labelsHidden()
                     .pickerStyle(.menu)
+                    .accessibilityLabel("Output device")
                 }
                 Toggle(
                     "Enable Monitor Output",
@@ -2129,6 +2136,7 @@ private struct MonitoringRuntimeSectionView: View {
                     )
                 )
                 .toggleStyle(.checkbox)
+                .accessibilityLabel("Enable monitor output")
 
                 if model.monitorEnabled {
                     LabeledContent("Monitor Out") {
@@ -2648,10 +2656,12 @@ private struct ScopesCardView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Stereo Input").font(.subheadline).foregroundStyle(.secondary)
                         ScopeView(samples: model.inputScope)
+                            .accessibilityLabel("Input scope waveform")
                     }
                     VStack(alignment: .leading, spacing: 6) {
                         Text("MPX Output").font(.subheadline).foregroundStyle(.secondary)
                         ScopeView(samples: model.outputScope)
+                            .accessibilityLabel("Output scope waveform")
                     }
                 }
                 .frame(maxWidth: .infinity)
@@ -2932,7 +2942,9 @@ private struct ProcessingSectionView: View {
                                 get: { model.processingBypass },
                                 set: { _ in model.toggleBypass() }
                             ))
+                        .accessibilityLabel("Bypass processing")
                         Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
+                        .accessibilityLabel("Mono mode")
                         Picker("Pre-emphasis", selection: model.configBinding(\.preemphasisUS)) {
                             Text("Off").tag(0)
                             Text("50 us").tag(50)
@@ -2946,23 +2958,29 @@ private struct ProcessingSectionView: View {
                                     model.inputGainDB = $0
                                     model.persistBasicConfig()
                                 }
-                            ), range: -24...24, format: "%.1f dB")
+                            ), range: -24...24, format: "%.1f dB",
+                            accessibilityLabel: "Input gain in dB")
                         DoubleSliderRow(
                             title: "Output Gain", value: model.configBinding(\.outputGainDB),
-                            range: -24...24, format: "%.1f dB")
+                            range: -24...24, format: "%.1f dB",
+                            accessibilityLabel: "Output gain in dB")
                         DoubleSliderRow(
                             title: "HPF", value: model.configBinding(\.hpfHz), range: 10...180,
-                            format: "%.0f Hz")
+                            format: "%.0f Hz",
+                            accessibilityLabel: "High pass filter frequency")
                         DoubleSliderRow(
                             title: "HF Trim", value: model.configBinding(\.hfTrimDB),
-                            range: -12...12, format: "%.1f dB")
+                            range: -12...12, format: "%.1f dB",
+                            accessibilityLabel: "High frequency trim in dB")
                         DoubleSliderRow(
                             title: "HF Trim Freq", value: model.configBinding(\.hfTrimHz),
-                            range: 1_000...12_000, format: "%.0f Hz")
+                            range: 1_000...12_000, format: "%.0f Hz",
+                            accessibilityLabel: "High frequency trim frequency")
                         DoubleSliderRow(
                             title: "Program Lowpass",
                             value: model.configBinding(\.programLowpassHz), range: 8_000...17_000,
-                            format: "%.0f Hz")
+                            format: "%.0f Hz",
+                            accessibilityLabel: "Program lowpass filter frequency")
                     }
                 }
 
@@ -3347,6 +3365,7 @@ private struct RDSSectionView: View {
                 Card(title: "Program Service") {
                     VStack(alignment: .leading, spacing: 10) {
                         Toggle("Enable RDS", isOn: model.configBinding(\.enRDS))
+                            .accessibilityLabel("Enable RDS")
                         TextField("PS Dynamic", text: model.configBinding(\.rdsPSDynamic))
                         Toggle("Center PS", isOn: model.configBinding(\.rdsPSCentered))
                         LabeledContent("PI Code") {
@@ -3541,6 +3560,27 @@ private struct AboutSectionView: View {
                 Text("• Real-time scopes and meters")
             }
 
+            Section("Input Levels") {
+                Text("Target levels for FM broadcast:")
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text("Peak").font(.caption).foregroundStyle(.secondary)
+                        Text("-18 to -6 dBFS").font(.callout.monospaced())
+                    }
+                    Spacer()
+                    VStack(alignment: .leading) {
+                        Text("Average RMS").font(.caption).foregroundStyle(.secondary)
+                        Text("-24 to -20 dBFS").font(.callout.monospaced())
+                    }
+                }
+                Text("US: -20 dBFS nominal | Europe (EBU R68): -18 dBFS | Hot: -6 dBFS peak")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Keep average around -24 dB with peaks between -18 and -6 dBFS. If hitting 0 dBFS, reduce input gain.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 DisclaimerBox()
             }
@@ -3632,11 +3672,13 @@ private struct DoubleSliderRow: View {
     @Binding var value: Double
     let range: ClosedRange<Double>
     let format: String
+    var accessibilityLabel: String?
 
     var body: some View {
         LabeledContent(title) {
             HStack(spacing: 12) {
                 Slider(value: $value, in: range)
+                    .accessibilityLabel(accessibilityLabel ?? title)
                 Text(String(format: format, value))
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)

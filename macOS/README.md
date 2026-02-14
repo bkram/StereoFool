@@ -136,3 +136,19 @@ Monitor always decodes through the MPX path regardless of bypass state. This mea
 - Any MPX filtering or limiting affects the monitored output
 
 Use Monitor Mode to verify your FM broadcast sounds correct before transmitting.
+
+## Input Level Guide
+
+For FM broadcast, target these levels:
+
+| Level Type | Recommended |
+|------------|-------------|
+| Peak | -18 to -6 dBFS |
+| Average (RMS) | -24 to -20 dBFS |
+
+Different broadcast standards:
+- **US**: -20 dBFS nominal (maps from +4 dBu analog)
+- **Europe (EBU R68)**: -18 dBFS nominal
+- **Hot studios**: -6 dBFS peak ceiling
+
+Tip: Watch the input meters while playing typical content. Keep average around -24 dB with peaks between -18 and -6 dBFS. If you're consistently hitting 0 dBFS (clipping), reduce input gain.
