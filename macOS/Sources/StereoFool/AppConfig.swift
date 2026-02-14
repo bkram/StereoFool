@@ -3,7 +3,7 @@ import Foundation
 struct AppConfig {
     var sampleRate: Double = 192_000.0
     var blockSize: Int = 2048
-    var sourceMode: String = "tone"
+    var sourceMode: String = "input"
     var inputDeviceUID: String?
     var outputDeviceUID: String?
     var monitorDeviceUID: String?
@@ -85,14 +85,14 @@ struct AppConfig {
     var rdsAFList: String = "88.1, 98.8, 106.6"
     var rdsAFMethod: String = "A"
     var rdsPSDynamic: String =
-        "3s:Stereo- 3s:Fool 3s:Open 3s:Source 3s:Stereo 3s:and 3s:RDS 2s:Coder"
+        "3s:Stereo- 3s:Fool 3s:MAC 3s:App 3s:FM 3s:MPX 3s:+RDS"
     var rdsPSCentered: Bool = true
     var rdsRTText: String =
-        "10s:StereoFool Stereo and RDS Coder/10s:100% Python, Multi-Platform, Web-based"
+        "10s:StereoFool FM MPX Generator/10s:Native macOS Swift App"
     var rdsRTManualBuffers: Bool = false
     var rdsRTCycleAB: Bool = false
-    var rdsRTA: String = "StereoFool: MPX + RDS + UI"
-    var rdsRTB: String = "StereoFool: Mono MPX + RDS"
+    var rdsRTA: String = "StereoFool: Native FM MPX + RDS"
+    var rdsRTB: String = "StereoFool: FM MPX Generator"
     var rdsRTCR: Bool = true
     var rdsRTCentered: Bool = false
     var rdsRTMode: String = "2A"
@@ -115,7 +115,7 @@ struct AppConfig {
     var rdsTZOffset: Double = 1.0
     var rdsEnableCT: Bool = true
     var rdsEnableID: Bool = true
-    var rdsAutoStart: Bool = true
+    var rdsAutoStart: Bool = false
     var rdsGroupSequence: String = "0A 0A 2A 0A"
     var rdsSchedulerAuto: Bool = true
     var rdsSchedulerStandard: Bool = true

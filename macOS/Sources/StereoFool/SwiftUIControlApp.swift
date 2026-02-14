@@ -903,6 +903,27 @@ final class StereoFoolViewModel: ObservableObject {
         }
     }
 
+    func resetToDefaults() {
+        let savedSourceMode = sourceMode
+        do {
+            var defaults = AppConfig()
+            defaults.sourceMode = savedSourceMode
+            defaults.inputDeviceUID = selectedInputUID.isEmpty ? nil : selectedInputUID
+            defaults.outputDeviceUID = selectedOutputUID.isEmpty ? nil : selectedOutputUID
+            defaults.monitorEnabled = monitorEnabled
+            defaults.monitorDeviceUID = selectedMonitorUID.isEmpty ? nil : selectedMonitorUID
+            try defaults.save(toINI: configPath)
+            config = defaults
+            sourceMode = config.sourceMode
+            processingBypass = config.processingBypass
+            inputGainDB = config.inputGainDB
+            applyPendingRuntimeChanges()
+            statusText = "Reset to defaults"
+        } catch {
+            statusText = "Reset failed: \(error)"
+        }
+    }
+
     func loadConfigFromFile(_ path: String) {
         do {
             config = try AppConfig.load(fromINI: path)
@@ -2933,6 +2954,13 @@ private struct ProcessingSectionView: View {
         ScrollView {
             VStack(spacing: 16) {
                 PendingApplyCard(model: model)
+
+                HStack {
+                    Button("Reset to Defaults") {
+                        model.resetToDefaults()
+                    }
+                    Spacer()
+                }
 
                 Card(title: "Core Processing") {
                     VStack(alignment: .leading, spacing: 10) {
