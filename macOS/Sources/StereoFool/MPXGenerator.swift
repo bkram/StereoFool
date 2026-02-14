@@ -341,33 +341,45 @@ struct ProgramLowpass {
 
 struct PreemphasisFilter {
     var enabled: Bool = false
-    var lpAlpha: Float = 1.0
-    var shelfGain: Float = 0.0
-    var lpState: Float = 0.0
+    var b0: Float = 1.0
+    var b1: Float = 0.0
+    var a1: Float = 0.0
+    var z1: Float = 0.0
 
     mutating func configure(tauUS: Int, sampleRate: Float) {
         guard tauUS > 0 else {
             enabled = false
-            lpAlpha = 1.0
-            shelfGain = 0.0
-            lpState = 0.0
+            b0 = 1.0
+            b1 = 0.0
+            a1 = 0.0
+            z1 = 0.0
             return
         }
         enabled = true
-        let tau = max(1e-6, Float(tauUS) * 1e-6)
-        let fc = 1.0 / (twoPi * tau)
-        let pole = expf(-twoPi * fc / max(8_000.0, sampleRate))
-        lpAlpha = clampf(1.0 - pole, 0.0, 1.0)
-        let wRef = twoPi * 15_000.0 * tau
-        let refGain = sqrtf(1.0 + (wRef * wRef))
-        shelfGain = max(0.0, refGain - 1.0)
+
+        let tau = Float(tauUS) * 1e-6
+        let sr = max(8_000.0, sampleRate)
+        let T = 1.0 / sr
+        let wc = 1.0 / tau
+        let wp = (2.0 / T) * tanf(wc * T * 0.5)
+
+        let d = 1.0 + wp * T * 0.5
+        b0 = (1.0 + wp * T * 0.5 + wp * T * 0.5) / d
+        b1 = (1.0 + wp * T * 0.5 - wp * T * 0.5 - (1.0 - wp * T * 0.5)) / d
+        a1 = -(1.0 - wp * T * 0.5) / d
+
+        z1 = 0.0
     }
 
     mutating func process(_ x: Float) -> Float {
         guard enabled else { return x }
-        lpState += lpAlpha * (x - lpState)
-        let hp = x - lpState
-        return x + (hp * shelfGain)
+        let y = b0 * x + z1
+        z1 = b1 * x - a1 * y
+        return y
+    }
+
+    mutating func reset() {
+        z1 = 0.0
     }
 }
 
