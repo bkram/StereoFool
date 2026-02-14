@@ -137,6 +137,20 @@ Monitor always decodes through the MPX path regardless of bypass state. This mea
 
 Use Monitor Mode to verify your FM broadcast sounds correct before transmitting.
 
+## Stereo Coder
+
+The MPX stereo encoder generates FM composite signal at 192kHz sample rate:
+
+| Component | Frequency | Status |
+|-----------|-----------|--------|
+| Pilot tone | 19 kHz | ✅ Phase-stable |
+| Stereo subcarrier | 38 kHz | ✅ Phase-locked to pilot |
+| RDS subcarrier | 57 kHz | ✅ Phase-locked to pilot (EN 50067) |
+
+**Spectrum layout**: Pilot → Stereo (L-R up to 53kHz) → RDS (57kHz) → Headroom (59-96kHz)
+
+The phase-locked carriers ensure no drift over long transmission periods.
+
 ## Input Level Guide
 
 For FM broadcast, target these levels:
