@@ -103,3 +103,36 @@ Additional RDS keys in `RDS` (all optional):
 - improve parity of multiband/orbass/widener behavior against Python implementation
 - expand GUI controls toward Python parity
 - add parity harness against Python test vectors
+
+## Processing Bypass
+
+The **Bypass** button does not provide a true audio bypass. Instead, it disables the creative processing blocks while keeping the essential FM encoding:
+
+**Always active (not bypassed):**
+- Input gain
+- Low-pass filter (programLP)
+- Pre-emphasis (50/75 µs)
+- MPX encoding (pilot, stereo subcarrier, RDS)
+- Deviation scaling and limiting
+- Output gain
+
+**Disabled when bypassed:**
+- Wideband AGC
+- HF trim
+- Orbass bass enhancement
+- Multiband compressor
+- Stereo widener
+- Stereo image protection
+
+This allows quick A/B comparison between processed and unprocessed audio while maintaining FM broadcast compliance.
+
+## Monitor Mode
+
+When **Monitor Mode** is enabled, the output is the decoded audio after MPX encoding/decoding (pilot extraction + stereo demultiplexing). This is useful for hearing how the final FM signal will sound on a receiver.
+
+Monitor always decodes through the MPX path regardless of bypass state. This means:
+- Pre-emphasis is applied on encode, de-emphasis on decode
+- Stereo is encoded as L-R subcarrier and decoded back
+- Any MPX filtering or limiting affects the monitored output
+
+Use Monitor Mode to verify your FM broadcast sounds correct before transmitting.

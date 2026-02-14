@@ -422,8 +422,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc private func showScopesWindow() {
         let app = NSApplication.shared
         if let existing = scopesWindow {
-            existing.makeKeyAndOrderFront(nil)
-            app.activate(ignoringOtherApps: true)
+            if existing.isKeyWindow {
+                existing.close()
+            } else {
+                existing.makeKeyAndOrderFront(nil)
+                app.activate(ignoringOtherApps: true)
+            }
             return
         }
         guard let vm = model else { return }
@@ -445,8 +449,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc private func showSpectrumWindow() {
         let app = NSApplication.shared
         if let existing = spectrumWindow {
-            existing.makeKeyAndOrderFront(nil)
-            app.activate(ignoringOtherApps: true)
+            if existing.isKeyWindow {
+                existing.close()
+            } else {
+                existing.makeKeyAndOrderFront(nil)
+                app.activate(ignoringOtherApps: true)
+            }
             return
         }
         guard let vm = model else { return }
@@ -468,8 +476,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc private func showLevelsWindow() {
         let app = NSApplication.shared
         if let existing = levelsWindow {
-            existing.makeKeyAndOrderFront(nil)
-            app.activate(ignoringOtherApps: true)
+            if existing.isKeyWindow {
+                existing.close()
+            } else {
+                existing.makeKeyAndOrderFront(nil)
+                app.activate(ignoringOtherApps: true)
+            }
             return
         }
         guard let vm = model else { return }

@@ -1389,7 +1389,7 @@ func saveConfig() {
 - ✅ vDSP metering implemented - item 8
 - ⚠️ Dark mode uses semantic colors in some places, hardcoded in others - item 15 partial
 - ✅ DSP Overview removed from Levels window
-| 29 | Separate scope windows | ⭐⭐ Medium | Easy |
+| 29 | Separate scope windows | ⭐⭐ Medium | Easy | ✅ Done |
 | 13 | SIMD for scope history | ⭐⭐ Medium | Hard |
 
 ---
