@@ -83,7 +83,7 @@ MPX note:
 - `Monitor Mode = off` is required for MPX output. `Monitor Mode = on` outputs listen audio, not MPX baseband.
 
 Additional DSP keys in `MPX` (all optional):
-- `processing_rate_hz`, `hpf_hz`, `hf_trim_db`, `hf_trim_hz`
+- `hpf_hz`, `hf_trim_db`, `hf_trim_hz`
 - `wideband_agc_enabled`, `wideband_agc_target_db`, `wideband_agc_attack_ms`, `wideband_agc_release_ms`, `wideband_agc_max_gain_db`, `wideband_agc_min_gain_db`
 - `orbass_enabled`, `orbass_amount`, `orbass_freq_hz`, `orbass_harmonics`, `orbass_drive`, `orbass_density`, `orbass_subharmonics_enabled`, `orbass_subharmonics_amount`
 - `multiband_enabled`, `multiband_mode`, `multiband_low_hz`, `multiband_high_hz`, `multiband_x1_hz`, `multiband_x2_hz`, `multiband_x3_hz`, `multiband_x4_hz`, `multiband_low_threshold_db`, `multiband_mid_threshold_db`, `multiband_high_threshold_db`, `multiband_low_ratio`, `multiband_mid_ratio`, `multiband_high_ratio`, `multiband_low_attack_ms`, `multiband_mid_attack_ms`, `multiband_high_attack_ms`, `multiband_low_release_ms`, `multiband_mid_release_ms`, `multiband_high_release_ms`, `multiband_knee_db`, `multiband_link_strength`, `multiband_release_program_dependent`, `multiband_makeup_db`

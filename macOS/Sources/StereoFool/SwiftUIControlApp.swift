@@ -28,6 +28,7 @@ enum AppSection: String, CaseIterable, Identifiable {
     case processing = "Processing"
     case rds = "RDS"
     case settings = "Settings"
+    case help = "Help"
     case about = "About"
 
     var id: String { rawValue }
@@ -40,6 +41,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .processing: return "slider.horizontal.3"
         case .rds: return "dot.radiowaves.left.and.right"
         case .settings: return "gearshape"
+        case .help: return "questionmark.circle"
         case .about: return "info.circle"
         }
     }
@@ -1935,6 +1937,8 @@ private struct RootView: View {
                     RDSSectionView(model: model)
                 case .settings:
                     SettingsSectionView(model: model)
+                case .help:
+                    HelpSectionView()
                 case .about:
                     AboutSectionView()
                 }
@@ -3300,9 +3304,9 @@ private struct SystemSectionView: View {
                             }
                         }
                         IntStepperRow(
-                            title: "Processing Rate",
-                            value: model.configBinding(\.processingRateHz), range: 0...384_000,
-                            step: 1_000, format: "%d Hz (0 = hardware)")
+                            title: "Block Size",
+                            value: model.configBinding(\.blockSize), range: 256...8192,
+                            step: 256, format: "%d")
                         Toggle(
                             "Auto Start at Launch",
                             isOn: model.configBinding(\.rdsAutoStart, restartRequired: false))
@@ -3628,31 +3632,9 @@ private struct SettingsSectionView: View {
     }
 }
 
-private struct AboutSectionView: View {
+private struct HelpSectionView: View {
     var body: some View {
         Form {
-            Section {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("StereoFool")
-                        .font(.title2.weight(.semibold))
-                    Text("Experimental FM Composite MPX + RDS Generator")
-                        .foregroundStyle(.secondary)
-                    Divider()
-                    Text("A macOS app for generating FM composite MPX signal with RDS/RBDS. Features include multiband compression, stereo widening, look-ahead limiting, and real-time metering.")
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.vertical, 4)
-            }
-
-            Section("Features") {
-                Text("• FM Composite (MPX) generation")
-                Text("• RDS/RBDS encoder with PTYN, RT+, AF")
-                Text("• Multiband dynamics processing")
-                Text("• Stereo widener")
-                Text("• Look-ahead limiting")
-                Text("• Real-time scopes and meters")
-            }
-
             Section("Input Levels") {
                 Text("Target levels for FM broadcast:")
                 HStack {
@@ -3686,6 +3668,29 @@ private struct AboutSectionView: View {
                 Text("5s:StereoFool - 5s:FM Coder").font(.caption.monospaced())
                 Text("20s:Station Name/10s:Now Playing").font(.caption.monospaced())
                 Text("8s:Tune to 88.5/8s:My Frequency").font(.caption.monospaced())
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+private struct AboutSectionView: View {
+    var body: some View {
+        Form {
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("StereoFool")
+                        .font(.title2.weight(.semibold))
+                    Text("Version \(AppConfig.appVersion)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Copyright © 2026 Bkram Developments")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Link("https://github.com/bkram/StereoFool", destination: URL(string: "https://github.com/bkram/StereoFool")!)
+                        .font(.caption)
+                }
+                .padding(.vertical, 4)
             }
 
             Section {

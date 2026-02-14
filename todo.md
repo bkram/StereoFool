@@ -1296,7 +1296,7 @@ func saveConfig() {
 | 16 | Add App Sandbox entitlements | ⭐⭐⭐⭐ High | **Medium** | ✅ Done |
 | 22 | Build with -O for arm64 | ⭐⭐⭐⭐ High | **Medium** | ✅ Done (release builds use -O) |
 | 23 | Novice/Expert toggle | ⭐⭐⭐ Medium | **Medium** | Pending |
-| 28 | Fix window close behavior | ⭐⭐ Low | **Medium** | Pending |
+| 28 | Fix window close behavior | ⭐⭐ Low | **Medium** | ✅ Done |
 
 ### Major Refactor (1-2 weeks each)
 

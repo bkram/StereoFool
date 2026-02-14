@@ -1,6 +1,8 @@
 import Foundation
 
 struct AppConfig {
+    static let appVersion: String = "0.7"
+
     var sampleRate: Double = 192_000.0
     var blockSize: Int = 2048
     var sourceMode: String = "input"
@@ -18,7 +20,6 @@ struct AppConfig {
     var inputGainDB: Double = 0.0
     var outputGainDB: Double = 0.0
     var preemphasisUS: Int = 50
-    var processingRateHz: Int = 0
     var hpfHz: Double = 30.0
     var hfTrimDB: Double = 0.0
     var hfTrimHz: Double = 4000.0
@@ -152,7 +153,6 @@ struct AppConfig {
         cfg.inputGainDB = mpx.double("input_gain_db", defaultValue: cfg.inputGainDB)
         cfg.outputGainDB = mpx.double("output_gain_db", defaultValue: cfg.outputGainDB)
         cfg.preemphasisUS = mpx.int("preemphasis_us", defaultValue: cfg.preemphasisUS)
-        cfg.processingRateHz = mpx.int("processing_rate_hz", defaultValue: cfg.processingRateHz)
         cfg.hpfHz = mpx.double("hpf_hz", defaultValue: cfg.hpfHz)
         cfg.hfTrimDB = mpx.double("hf_trim_db", defaultValue: cfg.hfTrimDB)
         cfg.hfTrimHz = mpx.double("hf_trim_hz", defaultValue: cfg.hfTrimHz)
@@ -327,7 +327,6 @@ struct AppConfig {
             "program_lowpass_hz = \(Self.formatFloat(programLowpassHz))",
             "input_gain_db = \(Self.formatFloat(inputGainDB))",
             "output_gain_db = \(Self.formatFloat(outputGainDB))",
-            "processing_rate_hz = \(processingRateHz)",
             "hpf_hz = \(Self.formatFloat(hpfHz))",
             "hf_trim_db = \(Self.formatFloat(hfTrimDB))",
             "hf_trim_hz = \(Self.formatFloat(hfTrimHz))",
