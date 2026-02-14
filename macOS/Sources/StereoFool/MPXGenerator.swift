@@ -349,24 +349,18 @@ struct PreemphasisFilter {
     mutating func configure(tauUS: Int, sampleRate: Float) {
         guard tauUS > 0 else {
             enabled = false
-            b0 = 1.0
-            b1 = 0.0
-            a1 = 0.0
-            z1 = 0.0
+            b0 = 1.0; b1 = 0.0; a1 = 0.0; z1 = 0.0
             return
         }
         enabled = true
 
-        let tau = Float(tauUS) * 1e-6
         let sr = max(8_000.0, sampleRate)
-        let T = 1.0 / sr
-        let wc = 1.0 / tau
-        let wp = (2.0 / T) * tanf(wc * T * 0.5)
+        let tau = Float(tauUS) * 1e-6
+        let k = 2.0 * tau * sr
 
-        let d = 1.0 + wp * T * 0.5
-        b0 = (1.0 + wp * T * 0.5 + wp * T * 0.5) / d
-        b1 = (1.0 + wp * T * 0.5 - wp * T * 0.5 - (1.0 - wp * T * 0.5)) / d
-        a1 = -(1.0 - wp * T * 0.5) / d
+        b0 = 1.0 + k
+        b1 = 1.0 - k
+        a1 = -1.0
 
         z1 = 0.0
     }
@@ -378,35 +372,44 @@ struct PreemphasisFilter {
         return y
     }
 
-    mutating func reset() {
-        z1 = 0.0
-    }
+    mutating func reset() { z1 = 0.0 }
 }
 
 struct DeemphasisFilter {
     var enabled: Bool = false
-    var alpha: Float = 1.0
-    var state: Float = 0.0
+    var b0: Float = 1.0
+    var b1: Float = 0.0
+    var a1: Float = 0.0
+    var z1: Float = 0.0
 
     mutating func configure(tauUS: Int, sampleRate: Float) {
         guard tauUS > 0 else {
             enabled = false
-            alpha = 1.0
-            state = 0.0
+            b0 = 1.0; b1 = 0.0; a1 = 0.0; z1 = 0.0
             return
         }
         enabled = true
-        let tau = max(1e-6, Float(tauUS) * 1e-6)
+
         let sr = max(8_000.0, sampleRate)
-        alpha = clampf(1.0 - expf(-1.0 / (tau * sr)), 0.0, 1.0)
-        state = 0.0
+        let tau = Float(tauUS) * 1e-6
+        let k = 2.0 * tau * sr
+
+        let inv = 1.0 / (1.0 + k)
+        b0 = inv
+        b1 = inv
+        a1 = (k - 1.0) * inv
+
+        z1 = 0.0
     }
 
     mutating func process(_ x: Float) -> Float {
         guard enabled else { return x }
-        state += alpha * (x - state)
-        return state
+        let y = b0 * x + z1
+        z1 = b1 * x - a1 * y
+        return y
     }
+
+    mutating func reset() { z1 = 0.0 }
 }
 
 struct EnvelopeFollower {
@@ -2925,13 +2928,12 @@ final class MPXGenerator {
         rdsCoder?.updateRDSPilotPhase(pilotPhaseForRDS)
         let rds = rdsSupported ? (rdsCoder?.nextSampleWithPilotLock() ?? 0.0) : 0.0
         
-        var mpx = (base + (diff * sub) + pilot + rds) * deviationScale
+        var mpx = (base + (diff * sub) + pilot + rds) * deviationScale * outputGain
 
         if compositeLimiterEnabled {
             mpx = compositeLimiter.process(mpx)
         }
 
-        mpx *= outputGain
         mpx = clampf(mpx, -1.0, 1.0)
 
         return mpx
