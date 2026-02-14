@@ -1342,12 +1342,13 @@ func saveConfig() {
 ### RDS.3 EN 50067 Compliance
 
 **FIXED**: RDS subcarrier (57kHz) is now phase-locked to pilot.
-- Uses: `rdsPhase = fmodf(3.0 * pilotPhase, twoPi)` (derived from pilot)
-- RDS coder now has `nextSampleWithPilotPhase(_:)` method that derives carrier from pilot
+- RDS uses separate phase accumulator `pilotPhaseForRDS` that increments by `pilotStepForRDS = 2π × 19kHz / sampleRate`
+- Carrier = `sinf(3.0 * pilotPhaseForRDS mod 2π)` = exactly 57kHz
+- Separate from the regular carrier phase to maintain compatibility
 
 **Verification needed**:
 - [ ] Verify pilot tone at 19kHz ± 2Hz
-- [x] Verify RDS subcarrier at 57kHz (3 × 19kHz) - **FIXED**
+- [ ] Verify RDS subcarrier at 57kHz (3 × 19kHz)
 - [ ] Verify biphase mark coding (BMC) encoding
 - [ ] Verify group repetition rate: 11.417 groups/second (1187.5 bits/sec)
 - [ ] Test with RDS analyzer (e.g., FMITE)
