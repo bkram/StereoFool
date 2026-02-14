@@ -1,6 +1,7 @@
 import AVFoundation
 import AudioToolbox
 import Foundation
+import Accelerate
 
 enum AudioEngineError: Error {
     case sourceNodeFormatUnavailable
@@ -987,20 +988,17 @@ final class AudioOutputEngine {
         rms: Float, peak: Float, leftRMS: Float, rightRMS: Float, leftPeak: Float, rightPeak: Float
     ) {
         guard frameCount > 0 else { return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0) }
+        
         var sumL: Float = 0.0
         var sumR: Float = 0.0
         var peakL: Float = 0.0
         var peakR: Float = 0.0
-        for i in 0..<frameCount {
-            let l = left[i]
-            let r = right[i]
-            let aL = fabsf(l)
-            let aR = fabsf(r)
-            sumL += l * l
-            sumR += r * r
-            if aL > peakL { peakL = aL }
-            if aR > peakR { peakR = aR }
-        }
+        
+        vDSP_svesq(left, 1, &sumL, vDSP_Length(frameCount))
+        vDSP_svesq(right, 1, &sumR, vDSP_Length(frameCount))
+        vDSP_maxmgv(left, 1, &peakL, vDSP_Length(frameCount))
+        vDSP_maxmgv(right, 1, &peakR, vDSP_Length(frameCount))
+        
         let rmsL = sqrtf(sumL / Float(frameCount))
         let rmsR = sqrtf(sumR / Float(frameCount))
         return (
@@ -1013,14 +1011,13 @@ final class AudioOutputEngine {
         frameCount: Int
     ) -> (rms: Float, peak: Float) {
         guard frameCount > 0 else { return (0.0, 0.0) }
+        
         var sum: Float = 0.0
         var peak: Float = 0.0
-        for i in 0..<frameCount {
-            let s = samples[i]
-            let a = fabsf(s)
-            sum += s * s
-            if a > peak { peak = a }
-        }
+        
+        vDSP_svesq(samples, 1, &sum, vDSP_Length(frameCount))
+        vDSP_maxmgv(samples, 1, &peak, vDSP_Length(frameCount))
+        
         return (sqrtf(sum / Float(frameCount)), peak)
     }
 
