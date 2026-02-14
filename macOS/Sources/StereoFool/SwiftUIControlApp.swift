@@ -924,6 +924,64 @@ final class StereoFoolViewModel: ObservableObject {
         }
     }
 
+    func resetProcessingToDefaults() {
+        do {
+            var defaults = AppConfig()
+            defaults.sourceMode = sourceMode
+            defaults.inputDeviceUID = selectedInputUID.isEmpty ? nil : selectedInputUID
+            defaults.outputDeviceUID = selectedOutputUID.isEmpty ? nil : selectedOutputUID
+            defaults.monitorEnabled = monitorEnabled
+            defaults.monitorDeviceUID = selectedMonitorUID.isEmpty ? nil : selectedMonitorUID
+            defaults.rdsAutoStart = config.rdsAutoStart
+            defaults.enRDS = config.enRDS
+            defaults.rdsPI = config.rdsPI
+            defaults.rdsPSDynamic = config.rdsPSDynamic
+            defaults.rdsPSCentered = config.rdsPSCentered
+            defaults.rdsRTText = config.rdsRTText
+            defaults.rdsRTA = config.rdsRTA
+            defaults.rdsRTB = config.rdsRTB
+            defaults.rdsPTYN = config.rdsPTYN
+            defaults.rdsPTYNCentered = config.rdsPTYNCentered
+            try defaults.save(toINI: configPath)
+            config = defaults
+            processingBypass = config.processingBypass
+            inputGainDB = config.inputGainDB
+            applyPendingRuntimeChanges()
+            statusText = "Reset processing to defaults"
+        } catch {
+            statusText = "Reset failed: \(error)"
+        }
+    }
+
+    func resetRDSToDefaults() {
+        do {
+            var defaults = AppConfig()
+            defaults.sourceMode = sourceMode
+            defaults.inputDeviceUID = selectedInputUID.isEmpty ? nil : selectedInputUID
+            defaults.outputDeviceUID = selectedOutputUID.isEmpty ? nil : selectedOutputUID
+            defaults.monitorEnabled = monitorEnabled
+            defaults.monitorDeviceUID = selectedMonitorUID.isEmpty ? nil : selectedMonitorUID
+            defaults.processingBypass = config.processingBypass
+            defaults.inputGainDB = config.inputGainDB
+            defaults.outputGainDB = config.outputGainDB
+            defaults.preemphasisUS = config.preemphasisUS
+            defaults.monoMode = config.monoMode
+            defaults.widebandAGCEnabled = config.widebandAGCEnabled
+            defaults.orbassEnabled = config.orbassEnabled
+            defaults.multibandEnabled = config.multibandEnabled
+            defaults.stereoWidenEnabled = config.stereoWidenEnabled
+            defaults.limitMPX = config.limitMPX
+            defaults.programLowpassHz = config.programLowpassHz
+            defaults.diffLevel = config.diffLevel
+            try defaults.save(toINI: configPath)
+            config = defaults
+            applyPendingRuntimeChanges()
+            statusText = "Reset RDS to defaults"
+        } catch {
+            statusText = "Reset failed: \(error)"
+        }
+    }
+
     func loadConfigFromFile(_ path: String) {
         do {
             config = try AppConfig.load(fromINI: path)
@@ -2956,8 +3014,8 @@ private struct ProcessingSectionView: View {
                 PendingApplyCard(model: model)
 
                 HStack {
-                    Button("Reset to Defaults") {
-                        model.resetToDefaults()
+                    Button("Reset Processing to Defaults") {
+                        model.resetProcessingToDefaults()
                     }
                     Spacer()
                 }
@@ -3390,6 +3448,13 @@ private struct RDSSectionView: View {
                 PendingApplyCard(model: model)
                 RDSSnapshotCardView(model: model)
 
+                HStack {
+                    Button("Reset RDS to Defaults") {
+                        model.resetRDSToDefaults()
+                    }
+                    Spacer()
+                }
+
                 Card(title: "Program Service") {
                     VStack(alignment: .leading, spacing: 10) {
                         Toggle("Enable RDS", isOn: model.configBinding(\.enRDS))
@@ -3400,6 +3465,11 @@ private struct RDSSectionView: View {
                             TextField("", text: model.piBinding())
                                 .font(.system(.body, design: .monospaced))
                                 .frame(width: 90)
+                        }
+                        LabeledContent("ECC") {
+                            TextField("", text: model.hexByteBinding(\.rdsECC))
+                                .font(.system(.body, design: .monospaced))
+                                .frame(width: 80)
                         }
                         Picker("Program Type (PTY)", selection: model.ptyBinding()) {
                             ForEach(model.ptyChoices, id: \.0) { pty in
@@ -3491,11 +3561,6 @@ private struct RDSSectionView: View {
 
                         Divider()
 
-                        LabeledContent("ECC") {
-                            TextField("", text: model.hexByteBinding(\.rdsECC))
-                                .font(.system(.body, design: .monospaced))
-                                .frame(width: 80)
-                        }
                         LabeledContent("LIC") {
                             TextField("", text: model.hexByteBinding(\.rdsLIC))
                                 .font(.system(.body, design: .monospaced))
@@ -3607,6 +3672,20 @@ private struct AboutSectionView: View {
                 Text("Keep average around -24 dB with peaks between -18 and -6 dBFS. If hitting 0 dBFS, reduce input gain.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("RDS Text Format") {
+                Text("PS Dynamic and RT support timed text segments:")
+                Text("10s:First/10s:Second").font(.callout.monospaced()).foregroundStyle(.blue)
+                Text("Shows 'First' for 10 seconds, then 'Second' for 10 seconds, then repeats.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("Examples:").font(.caption.bold())
+                    Spacer()
+                }
+                Text("5s:StereoFool - 5s:FM Coder").font(.caption.monospaced())
+                Text("20s:Station Name/10s:Now Playing").font(.caption.monospaced())
+                Text("8s:Tune to 88.5/8s:My Frequency").font(.caption.monospaced())
             }
 
             Section {
