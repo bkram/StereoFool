@@ -1290,7 +1290,7 @@ final class StereoFoolViewModel: ObservableObject {
         modulationText = String(format: "%.1f kHz", deviationKHz)
 
         let limiterState =
-            config.limitMPX
+            config.compositeLimiterEnabled
             ? (outputPeak >= Float(config.limitThreshold) ? "Active" : "Idle") : "Off"
         limiterStateText = limiterState
         multibandStateText = config.multibandEnabled ? "On" : "Off"
@@ -2350,8 +2350,8 @@ private struct MonitoringDSPStatusSectionView: View {
             Text("DSP Status").font(.headline)
             HStack(spacing: 14) {
                 DSPStateIndicator(
-                    title: "MPX Limiter",
-                    dotColor: Self.limiterDotColor(for: model.limiterStateText)
+                    title: "Composite Limiter",
+                    dotColor: Self.compositeLimiterDotColor(for: model.limiterStateText)
                 )
                 DSPStateIndicator(
                     title: "Multiband",
@@ -2374,7 +2374,7 @@ private struct MonitoringDSPStatusSectionView: View {
         }
     }
 
-    static func limiterDotColor(for state: String) -> Color {
+    static func compositeLimiterDotColor(for state: String) -> Color {
         if state.caseInsensitiveCompare("Idle") == .orderedSame {
             return .green
         }
@@ -2674,8 +2674,8 @@ private struct DSPStatusCardView: View {
         Card(title: "DSP Overview") {
             VStack(alignment: .leading, spacing: 10) {
                 DSPStateIndicator(
-                    title: "MPX Limiter",
-                    dotColor: MonitoringDSPStatusSectionView.limiterDotColor(
+                    title: "Composite Limiter",
+                    dotColor: MonitoringDSPStatusSectionView.compositeLimiterDotColor(
                         for: model.limiterStateText)
                 )
                 HStack(spacing: 10) {
@@ -3051,10 +3051,6 @@ private struct ProcessingSectionView: View {
                             ), range: -24...24, format: "%.1f dB",
                             accessibilityLabel: "Input gain in dB")
                         DoubleSliderRow(
-                            title: "Output Gain", value: model.configBinding(\.outputGainDB),
-                            range: -24...24, format: "%.1f dB",
-                            accessibilityLabel: "Output gain in dB")
-                        DoubleSliderRow(
                             title: "HPF", value: model.configBinding(\.hpfHz), range: 10...180,
                             format: "%.0f Hz",
                             accessibilityLabel: "High pass filter frequency")
@@ -3098,16 +3094,6 @@ private struct ProcessingSectionView: View {
 
                 Card(title: "Orbass") {
                     VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 10) {
-                            Picker("Preset", selection: $orbassPresetID) {
-                                ForEach(model.orbassPresetChoices) { preset in
-                                    Text(preset.title).tag(preset.id)
-                                }
-                            }
-                            Button("Load Preset") {
-                                model.applyOrbassPreset(id: orbassPresetID)
-                            }
-                        }
                         Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled))
                         DoubleSliderRow(
                             title: "Amount", value: model.configBinding(\.orbassAmount),
@@ -3121,15 +3107,6 @@ private struct ProcessingSectionView: View {
                         DoubleSliderRow(
                             title: "Drive", value: model.configBinding(\.orbassDrive),
                             range: 0.2...2.0, format: "%.2f")
-                        DoubleSliderRow(
-                            title: "Density", value: model.configBinding(\.orbassDensity),
-                            range: 0...1.2, format: "%.2f")
-                        Toggle(
-                            "Subharmonics", isOn: model.configBinding(\.orbassSubharmonicsEnabled))
-                        DoubleSliderRow(
-                            title: "Subharmonic Amount",
-                            value: model.configBinding(\.orbassSubharmonicsAmount), range: 0...1.2,
-                            format: "%.2f")
                     }
                 }
 

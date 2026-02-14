@@ -25,6 +25,7 @@ Default runs with GUI. Use `--nogui` for headless mode.
 
 - Manual smoke test: start the app with `--gui` and verify audio output.
 - Build with `swift build --package-path macOS` (debug) or `swift build --package-path macOS -c release` (production).
+- CPU profiling: use Instruments (Time Profiler) to verify DSP optimizations.
 
 ## Release prep
 
@@ -42,3 +43,13 @@ Default runs with GUI. Use `--nogui` for headless mode.
 - The monitoring view includes scopes, MPX meters, and limiter status; keep it lightweight.
 - RDS baseband uses EN 50067 biphase shaping and a pilot-locked subcarrier.
 - Standards reference PDFs live in `documents/`.
+
+## CPU Optimization
+
+When profiling shows high CPU usage:
+
+1. Use `vDSP_*` functions from Accelerate framework for vectorized operations (faster than Swift loops)
+2. Throttle UI-related computations (meters, scopes) - they don't need to run every audio callback
+3. Use `@inline(__always)` on small hot-path functions
+4. Pre-allocate buffers to avoid runtime allocations in audio callbacks
+5. Use `meteringEnabled` flag to skip meter/scope calculations when UI isn't visible

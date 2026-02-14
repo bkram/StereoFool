@@ -33,6 +33,8 @@
 
 - ✅ Pre-allocate all scratch/conversion buffers
 - ✅ vDSP metering
+- ✅ Meter/scope throttling (512-frame interval)
+- ✅ vDSP buffer clearing
 - ✅ App Sandbox entitlements
 - ✅ Dark mode semantic colors
 - ✅ Accessibility labels

@@ -18,6 +18,7 @@ enum AudioOutputMode {
 final class AudioOutputEngine {
     private static let scopeSampleCount = 128
     private static let scopeHistorySeconds: Double = 0.25
+    private static let meterUpdateIntervalFrames: Int = 512
 
     struct MeterSnapshot {
         var inputRMS: Float
@@ -54,6 +55,7 @@ final class AudioOutputEngine {
     private var routingNote: String?
     private var captureCallbackCount: UInt64 = 0
     private var captureFrameCount: UInt64 = 0
+    private var captureFrameCounter: Int = 0
     private let meterLock = NSLock()
     private var meterSnapshot = MeterSnapshot(
         inputRMS: 0.0,
@@ -82,6 +84,8 @@ final class AudioOutputEngine {
     private var monitorMPXLeftScratch: [Float] = []
     private var monitorMPXRightScratch: [Float] = []
     private var isShuttingDown = false
+    private var frameCounter: Int = 0
+    private var meteringEnabled: Bool = true
     private var inputConversionBuffer: [Float] = []
     private var inputConversionBufferStereoL: [Float] = []
     private var inputConversionBufferStereoR: [Float] = []
@@ -105,6 +109,7 @@ final class AudioOutputEngine {
 
     func start() throws {
         isShuttingDown = false
+        meteringEnabled = true
         try applyOutputDeviceSelection()
         let outputRate = engine.outputNode.outputFormat(forBus: 0).sampleRate
         let requestedRate = max(8_000.0, requestedSampleRate)
@@ -148,6 +153,8 @@ final class AudioOutputEngine {
             }
             let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
             let frames = Int(frameCount)
+            self.frameCounter += frames
+            let throttled = self.meteringEnabled && ((self.frameCounter % Self.meterUpdateIntervalFrames) < frames)
             if buffers.count >= 2,
                 let leftData = buffers[0].mData?.assumingMemoryBound(to: Float.self),
                 let rightData = buffers[1].mData?.assumingMemoryBound(to: Float.self)
@@ -184,10 +191,12 @@ final class AudioOutputEngine {
                             )
                             let outMeter = Self.computeStereoMeter(
                                 left: leftData, right: rightData, frameCount: frames)
-                            self.updateOutputMeters(
-                                outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                            self.updateOutputScopeSnapshot(
-                                left: leftData, right: rightData, frameCount: frames)
+                            if throttled {
+                                self.updateOutputMeters(
+                                    outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                self.updateOutputScopeSnapshot(
+                                    left: leftData, right: rightData, frameCount: frames)
+                            }
                         } else {
                             self.ensureMonitorScratchCapacity(frames: frames)
                             self.monitorMPXLeftScratch.withUnsafeMutableBufferPointer { mpxL in
@@ -204,10 +213,12 @@ final class AudioOutputEngine {
                                     )
                                     let outMeter = Self.computeStereoMeter(
                                         left: mpxLeft, right: mpxRight, frameCount: frames)
-                                    self.updateOutputMeters(
-                                        outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                                    self.updateOutputScopeSnapshot(
-                                        left: mpxLeft, right: mpxRight, frameCount: frames)
+                                    if throttled {
+                                        self.updateOutputMeters(
+                                            outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                        self.updateOutputScopeSnapshot(
+                                            left: mpxLeft, right: mpxRight, frameCount: frames)
+                                    }
                                 }
                             }
                         }
@@ -219,11 +230,13 @@ final class AudioOutputEngine {
                         )
                         let outMeter = Self.computeStereoMeter(
                             left: leftData, right: rightData, frameCount: frames)
-                        self.updateOutputMeters(outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                        self.updateOutputScopeSnapshot(
-                            left: leftData, right: rightData, frameCount: frames)
+                        if throttled {
+                            self.updateOutputMeters(outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                            self.updateOutputScopeSnapshot(
+                                left: leftData, right: rightData, frameCount: frames)
+                        }
                     }
-                    if !self.useInputSource {
+                    if throttled, !self.useInputSource {
                         self.updateInputScopeSnapshot(
                             left: leftData, right: rightData, frameCount: frames)
                     }
@@ -237,10 +250,12 @@ final class AudioOutputEngine {
                             )
                             let outMeter = Self.computeStereoMeter(
                                 left: leftData, right: rightData, frameCount: frames)
-                            self.updateOutputMeters(
-                                outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                            self.updateOutputScopeSnapshot(
-                                left: leftData, right: rightData, frameCount: frames)
+                            if throttled {
+                                self.updateOutputMeters(
+                                    outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                self.updateOutputScopeSnapshot(
+                                    left: leftData, right: rightData, frameCount: frames)
+                            }
                         } else {
                             self.ensureMonitorScratchCapacity(frames: frames)
                             self.monitorMPXLeftScratch.withUnsafeMutableBufferPointer { mpxL in
@@ -257,10 +272,12 @@ final class AudioOutputEngine {
                                     )
                                     let outMeter = Self.computeStereoMeter(
                                         left: mpxLeft, right: mpxRight, frameCount: frames)
-                                    self.updateOutputMeters(
-                                        outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                                    self.updateOutputScopeSnapshot(
-                                        left: mpxLeft, right: mpxRight, frameCount: frames)
+                                    if throttled {
+                                        self.updateOutputMeters(
+                                            outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                        self.updateOutputScopeSnapshot(
+                                            left: mpxLeft, right: mpxRight, frameCount: frames)
+                                    }
                                 }
                             }
                         }
@@ -272,11 +289,13 @@ final class AudioOutputEngine {
                         )
                         let outMeter = Self.computeStereoMeter(
                             left: leftData, right: rightData, frameCount: frames)
-                        self.updateOutputMeters(outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                        self.updateOutputScopeSnapshot(
-                            left: leftData, right: rightData, frameCount: frames)
+                        if throttled {
+                            self.updateOutputMeters(outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                            self.updateOutputScopeSnapshot(
+                                left: leftData, right: rightData, frameCount: frames)
+                        }
                     }
-                    if !self.useInputSource {
+                    if throttled, !self.useInputSource {
                         self.updateInputScopeSnapshot(
                             left: leftData, right: rightData, frameCount: frames)
                     }
@@ -308,7 +327,8 @@ final class AudioOutputEngine {
     }
 
     func stop() {
-        isShuttingDown = true
+        isShuttingDown = false
+        meteringEnabled = false
         inputRing = nil
         engine.stop()
         engine.reset()
@@ -325,6 +345,8 @@ final class AudioOutputEngine {
         configuredInputSampleRate = nil
         inputToRenderRatio = 1.0
         sourceNode = nil
+        frameCounter = 0
+        captureFrameCounter = 0
         meterLock.lock()
         pendingInputPeak = 0.0
         pendingInputLeftPeak = 0.0
@@ -438,37 +460,42 @@ final class AudioOutputEngine {
     private func pushInputBufferToRing(_ buffer: AVAudioPCMBuffer, ring: StereoInputRingBuffer) {
         let frames = Int(buffer.frameLength)
         guard frames > 0 else { return }
-        // Track capture callbacks for detecting if input is active
         captureCallbackCount += 1
         captureFrameCount += UInt64(frames)
+        captureFrameCounter += frames
+        let throttled = meteringEnabled && ((captureFrameCounter % Self.meterUpdateIntervalFrames) < frames)
         let chanCount = Int(buffer.format.channelCount)
         let isInterleaved = buffer.format.isInterleaved
         if let channels = buffer.floatChannelData {
             if chanCount >= 2 {
                 ring.write(left: channels[0], right: channels[1], frameCount: frames)
-                let meter = Self.computeStereoMeter(
-                    left: channels[0], right: channels[1], frameCount: frames)
-                updateInputMeters(
-                    inputRMS: meter.rms,
-                    inputPeak: meter.peak,
-                    inputLeftRMS: meter.leftRMS,
-                    inputRightRMS: meter.rightRMS,
-                    inputLeftPeak: meter.leftPeak,
-                    inputRightPeak: meter.rightPeak
-                )
-                updateInputScopeSnapshot(left: channels[0], right: channels[1], frameCount: frames)
+                if throttled {
+                    let meter = Self.computeStereoMeter(
+                        left: channels[0], right: channels[1], frameCount: frames)
+                    updateInputMeters(
+                        inputRMS: meter.rms,
+                        inputPeak: meter.peak,
+                        inputLeftRMS: meter.leftRMS,
+                        inputRightRMS: meter.rightRMS,
+                        inputLeftPeak: meter.leftPeak,
+                        inputRightPeak: meter.rightPeak
+                    )
+                    updateInputScopeSnapshot(left: channels[0], right: channels[1], frameCount: frames)
+                }
             } else {
                 ring.writeMono(mono: channels[0], frameCount: frames)
-                let meter = Self.computeMonoMeter(samples: channels[0], frameCount: frames)
-                updateInputMeters(
-                    inputRMS: meter.rms,
-                    inputPeak: meter.peak,
-                    inputLeftRMS: meter.rms,
-                    inputRightRMS: meter.rms,
-                    inputLeftPeak: meter.peak,
-                    inputRightPeak: meter.peak
-                )
-                updateInputScopeSnapshot(mono: channels[0], frameCount: frames)
+                if throttled {
+                    let meter = Self.computeMonoMeter(samples: channels[0], frameCount: frames)
+                    updateInputMeters(
+                        inputRMS: meter.rms,
+                        inputPeak: meter.peak,
+                        inputLeftRMS: meter.rms,
+                        inputRightRMS: meter.rms,
+                        inputLeftPeak: meter.peak,
+                        inputRightPeak: meter.peak
+                    )
+                    updateInputScopeSnapshot(mono: channels[0], frameCount: frames)
+                }
             }
             return
         }
@@ -491,18 +518,20 @@ final class AudioOutputEngine {
             left.withUnsafeBufferPointer { l in
                 right.withUnsafeBufferPointer { r in
                     ring.write(left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
-                    let meter = Self.computeStereoMeter(
-                        left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
-                    updateInputMeters(
-                        inputRMS: meter.rms,
-                        inputPeak: meter.peak,
-                        inputLeftRMS: meter.leftRMS,
-                        inputRightRMS: meter.rightRMS,
-                        inputLeftPeak: meter.leftPeak,
-                        inputRightPeak: meter.rightPeak
-                    )
-                    updateInputScopeSnapshot(
-                        left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
+                    if throttled {
+                        let meter = Self.computeStereoMeter(
+                            left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
+                        updateInputMeters(
+                            inputRMS: meter.rms,
+                            inputPeak: meter.peak,
+                            inputLeftRMS: meter.leftRMS,
+                            inputRightRMS: meter.rightRMS,
+                            inputLeftPeak: meter.leftPeak,
+                            inputRightPeak: meter.rightPeak
+                        )
+                        updateInputScopeSnapshot(
+                            left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
+                    }
                 }
             }
             return
@@ -526,18 +555,20 @@ final class AudioOutputEngine {
             left.withUnsafeBufferPointer { l in
                 right.withUnsafeBufferPointer { r in
                     ring.write(left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
-                    let meter = Self.computeStereoMeter(
-                        left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
-                    updateInputMeters(
-                        inputRMS: meter.rms,
-                        inputPeak: meter.peak,
-                        inputLeftRMS: meter.leftRMS,
-                        inputRightRMS: meter.rightRMS,
-                        inputLeftPeak: meter.leftPeak,
-                        inputRightPeak: meter.rightPeak
-                    )
-                    updateInputScopeSnapshot(
-                        left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
+                    if throttled {
+                        let meter = Self.computeStereoMeter(
+                            left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
+                        updateInputMeters(
+                            inputRMS: meter.rms,
+                            inputPeak: meter.peak,
+                            inputLeftRMS: meter.leftRMS,
+                            inputRightRMS: meter.rightRMS,
+                            inputLeftPeak: meter.leftPeak,
+                            inputRightPeak: meter.rightPeak
+                        )
+                        updateInputScopeSnapshot(
+                            left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
+                    }
                 }
             }
             return
@@ -597,18 +628,20 @@ final class AudioOutputEngine {
             left.withUnsafeBufferPointer { l in
                 right.withUnsafeBufferPointer { r in
                     ring.write(left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
-                    let meter = Self.computeStereoMeter(
-                        left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
-                    updateInputMeters(
-                        inputRMS: meter.rms,
-                        inputPeak: meter.peak,
-                        inputLeftRMS: meter.leftRMS,
-                        inputRightRMS: meter.rightRMS,
-                        inputLeftPeak: meter.leftPeak,
-                        inputRightPeak: meter.rightPeak
-                    )
-                    updateInputScopeSnapshot(
-                        left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
+                    if throttled {
+                        let meter = Self.computeStereoMeter(
+                            left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
+                        updateInputMeters(
+                            inputRMS: meter.rms,
+                            inputPeak: meter.peak,
+                            inputLeftRMS: meter.leftRMS,
+                            inputRightRMS: meter.rightRMS,
+                            inputLeftPeak: meter.leftPeak,
+                            inputRightPeak: meter.rightPeak
+                        )
+                        updateInputScopeSnapshot(
+                            left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
+                    }
                 }
             }
         }
@@ -668,6 +701,10 @@ final class AudioOutputEngine {
 
     var inputTargetFrames: Int {
         inputTargetBufferedFrames
+    }
+
+    func setMeteringEnabled(_ enabled: Bool) {
+        meteringEnabled = enabled
     }
 
     var meters: MeterSnapshot {
@@ -1030,19 +1067,14 @@ final class AudioOutputEngine {
             let left = buffers[0].mData?.assumingMemoryBound(to: Float.self),
             let right = buffers[1].mData?.assumingMemoryBound(to: Float.self)
         {
-            for i in 0..<frameCount {
-                left[i] = 0.0
-                right[i] = 0.0
-            }
+            vDSP_vclr(left, 1, vDSP_Length(frameCount))
+            vDSP_vclr(right, 1, vDSP_Length(frameCount))
             return
         }
         if buffers.count == 1,
             let mono = buffers[0].mData?.assumingMemoryBound(to: Float.self)
         {
-            let samples = frameCount * 2
-            for i in 0..<samples {
-                mono[i] = 0.0
-            }
+            vDSP_vclr(mono, 1, vDSP_Length(frameCount * 2))
         }
     }
 
