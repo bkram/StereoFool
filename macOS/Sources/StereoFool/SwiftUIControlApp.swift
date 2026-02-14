@@ -27,7 +27,6 @@ enum AppSection: String, CaseIterable, Identifiable {
     case interfaces = "Interfaces"
     case processing = "Processing"
     case rds = "RDS"
-    case tone = "Tone"
     case settings = "Settings"
     case help = "Help"
     case about = "About"
@@ -41,7 +40,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .interfaces: return "cable.connector"
         case .processing: return "slider.horizontal.3"
         case .rds: return "dot.radiowaves.left.and.right"
-        case .tone: return "waveform.path"
         case .settings: return "gearshape"
         case .help: return "questionmark.circle"
         case .about: return "info.circle"
@@ -1937,8 +1935,6 @@ private struct RootView: View {
                     ProcessingSectionView(model: model)
                 case .rds:
                     RDSSectionView(model: model)
-                case .tone:
-                    ToneSectionView(model: model)
                 case .settings:
                     SettingsSectionView(model: model)
                 case .help:
@@ -3623,43 +3619,6 @@ private struct SettingsSectionView: View {
             }
             .padding(20)
         } 
-    }
-}
-
-private struct ToneSectionView: View {
-    @ObservedObject var model: StereoFoolViewModel
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                PendingApplyCard(model: model)
-
-                Card(title: "Tone Generator") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Enable Tone Generator", isOn: Binding(
-                            get: { model.sourceMode == "tone" },
-                            set: { 
-                                model.sourceMode = $0 ? "tone" : "input"
-                                model.persistBasicConfig()
-                                model.applyPendingRuntimeChanges()
-                            }
-                        ))
-                        .accessibilityLabel("Enable tone generator")
-
-                        Picker("Mode", selection: model.configBinding(\.testToneMode)) {
-                            Text("mono").tag("mono")
-                            Text("left").tag("left")
-                            Text("right").tag("right")
-                            Text("stereo").tag("stereo")
-                        }
-                        DoubleSliderRow(
-                            title: "Frequency", value: model.configBinding(\.testToneFreq),
-                            range: 50...18_000, format: "%.0f Hz")
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
     }
 }
 
