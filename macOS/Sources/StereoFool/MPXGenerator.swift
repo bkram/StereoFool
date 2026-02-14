@@ -19,15 +19,22 @@ struct SineCosOsc {
     var s: Float = 0.0
     var c: Float = 1.0
     var phase: Float = 0.0
-    var sinInc: Float = 0.0
-    var cosInc: Float = 1.0
+    private var sinInc: Float = 0.0
+    private var cosInc: Float = 1.0
+    private var stepPhase: Float = 0.0
+    private var renormCounter: Int = 0
 
     init() {}
 
     mutating func configure(freq: Float, sampleRate: Float) {
         let w = twoPi * freq / sampleRate
+        stepPhase = w
         sinInc = sinf(w)
         cosInc = cosf(w)
+        s = 0.0
+        c = 1.0
+        phase = 0.0
+        renormCounter = 0
     }
 
     @inline(__always) mutating func step() {
@@ -35,9 +42,19 @@ struct SineCosOsc {
         let nc = c * cosInc - s * sinInc
         s = ns
         c = nc
-        phase += sinInc
+
+        phase += stepPhase
         if phase >= twoPi { phase -= twoPi }
-        if phase < 0 { phase += twoPi }
+
+        renormCounter &+= 1
+        if (renormCounter & 1023) == 0 {
+            let mag2 = s * s + c * c
+            if mag2 > 0 {
+                let invMag = 1.0 / sqrtf(mag2)
+                s *= invMag
+                c *= invMag
+            }
+        }
     }
 
     @inline(__always) mutating func sin2x() -> Float {
