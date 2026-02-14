@@ -10,7 +10,7 @@
 - The `meterLock` is a coarse-grained lock that protects all meter/scope state
 - Lock acquisition in real-time audio context can cause priority inversion
 - macOS real-time audio thread has higher priority than regular threads
-- NSLock doesn't support priority inheritance, so the audio thread can be blocked
+- NSLock can block the audio thread if held by lower-priority background thread
 
 **Recommended Architecture**:
 
@@ -116,6 +116,10 @@
 - If lock is held by lower-priority thread, audio thread blocks → dropout
 
 **Impact**: This is a significant source of audio hiccups, especially on slower Macs.
+
+**Current Status**:
+- `StereoInputRingBuffer` uses `NSLock` - NOT lock-free
+- Audio callback still acquires `meterLock` for scope/meter updates
 
 **Plan**:
 - [ ] **Skip os_unfair_lock entirely** - go straight to lock-free SPSC
@@ -1285,8 +1289,8 @@ func saveConfig() {
 
 | # | Task | Impact | Difficulty | Status |
 |---|------|--------|------------|--------|
-| 1 | Lock-free SPSC ring buffer | ⭐⭐⭐⭐⭐ Critical | **Medium** | ✅ Done |
-| 2 | Move scope updates to background | ⭐⭐⭐⭐⭐ Critical | **Medium** | ✅ Done |
+| 1 | Lock-free SPSC ring buffer | ⭐⭐⭐⭐⭐ Critical | **Medium** | ⚠️ Uses NSLock |
+| 2 | Move scope updates to background | ⭐⭐⭐⭐⭐ Critical | **Medium** | ⚠️ Not implemented |
 | 8 | Replace manual RMS loops with vDSP | ⭐⭐⭐ High | **Medium** | ✅ Done |
 | 14 | Add accessibility labels | ⭐⭐ Low | **Medium** | Pending |
 | 16 | Add App Sandbox entitlements | ⭐⭐⭐⭐ High | **Medium** | Pending |
@@ -1298,7 +1302,8 @@ func saveConfig() {
 
 | # | Task | Impact | Difficulty | Risk | Status |
 |---|------|--------|------------|------|--------|
-| New Threading | Lock-free audio pipeline | ⭐⭐⭐⭐⭐ Critical | **Hard** | High | ✅ Done |
+| New Threading | Lock-free audio pipeline | ⭐⭐⭐⭐⭐ Critical | **Hard** | High | ⚠️ Not done |
+| RDS.3 | Phase-lock RDS subcarrier to pilot | ⭐⭐⭐⭐ High | **Hard** | Low | Pending |
 | 5 | Render callback branch optimization | ⭐⭐⭐⭐ High | **Hard** | Medium | Pending |
 | 6 | Input underrun crossfade | ⭐⭐⭐⭐ High | **Hard** | Low | Pending |
 | 7 | Sample-counter RDS timing | ⭐⭐⭐ Medium | **Hard** | Medium | Pending |
@@ -1338,9 +1343,14 @@ func saveConfig() {
 
 **Current**: RDS implementation follows EN 50067 specification.
 
+**ISSUE FOUND**: RDS subcarrier (57kHz) is NOT phase-locked to pilot.
+- Current: `carrierPhase += carrierStep` (independent accumulator)
+- Should be: `rdsPhase = fmodf(3.0 * pilotPhase, twoPi)` (derived from pilot)
+- EN 50067 requires RDS at exactly 3× pilot frequency (57kHz = 3 × 19kHz)
+
 **Verification needed**:
 - [ ] Verify pilot tone at 19kHz ± 2Hz
-- [ ] Verify RDS subcarrier at 57kHz (3 × 19kHz)
+- [ ] Verify RDS subcarrier at 57kHz (3 × 19kHz) - **FIX NEEDED**
 - [ ] Verify biphase mark coding (BMC) encoding
 - [ ] Verify group repetition rate: 11.417 groups/second (1187.5 bits/sec)
 - [ ] Test with RDS analyzer (e.g., FMITE)
@@ -1373,11 +1383,12 @@ func saveConfig() {
 
 ### Completed in This Session
 
-- ✅ Pre-allocated all buffers (scratch + conversion)
-- ✅ Removed all locks from real-time audio callback
-- ✅ Replaced manual metering loops with vDSP
-- ✅ Verified semantic dark mode colors (already in place)
-- ✅ Removed DSP Overview from Levels window
+- ✅ Pre-allocated all buffers (scratch + conversion) - items 3, 11, 12
+- ⚠️ Lock-free ring buffer NOT implemented - StereoInputRingBuffer still uses NSLock
+- ⚠️ Scope updates still in real-time callback with meterLock - items 1, 2 NOT complete
+- ✅ vDSP metering implemented - item 8
+- ⚠️ Dark mode uses semantic colors in some places, hardcoded in others - item 15 partial
+- ✅ DSP Overview removed from Levels window
 | 29 | Separate scope windows | ⭐⭐ Medium | Easy |
 | 13 | SIMD for scope history | ⭐⭐ Medium | Hard |
 
@@ -1386,9 +1397,9 @@ func saveConfig() {
 ### Recommended Order (from review - Optimized)
 
 **Phase 1: Make It Stable (Week 1)**
-1. Pre-allocate everything (3, 11, 12) → immediate stability win
-2. Lock-free scope/meter passing (New Threading Model + 1 + 2) → biggest single improvement
-3. vDSP metering (4, 8)
+1. Pre-allocate everything (3, 11, 12) → ✅ Done
+2. Lock-free scope/meter passing (New Threading Model + 1 + 2) → ⚠️ NOT done - uses NSLock
+3. vDSP metering (4, 8) → ✅ Done
 4. Sample-accurate RDS timing (7)
 
 **Phase 2: Polish & Release-Ready (Week 2)**

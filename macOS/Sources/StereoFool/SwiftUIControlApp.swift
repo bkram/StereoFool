@@ -2516,7 +2516,7 @@ private struct MeterBar: View {
                         .fill(Color.secondary.opacity(0.18))
                     ForEach(scaleTicks, id: \.self) { tick in
                         Rectangle()
-                            .fill(Color.white.opacity(0.11))
+                            .fill(Color.primary.opacity(0.15))
                             .frame(width: 1)
                             .offset(x: (tick * geo.size.width) - 0.5)
                     }
@@ -2537,7 +2537,7 @@ private struct MeterBar: View {
                         .frame(width: max(0.0, width))
                     if peakLevel != nil {
                         Rectangle()
-                            .fill(Color.white.opacity(0.98))
+                            .fill(Color.primary.opacity(0.98))
                             .frame(width: 2, height: 14)
                             .offset(x: min(max(0.0, peakX - 1.0), max(0.0, geo.size.width - 2.0)))
                     }
