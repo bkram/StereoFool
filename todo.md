@@ -1295,7 +1295,7 @@ func saveConfig() {
 | 14 | Add accessibility labels | ⭐⭐ Low | **Medium** | ✅ Done |
 | 16 | Add App Sandbox entitlements | ⭐⭐⭐⭐ High | **Medium** | ✅ Done |
 | 22 | Build with -O for arm64 | ⭐⭐⭐⭐ High | **Medium** | ✅ Done (release builds use -O) |
-| 23 | Novice/Expert toggle | ⭐⭐⭐ Medium | **Medium** | Pending |
+| 23 | Novice/Expert toggle | ⭐⭐⭐ Medium | **Medium** | Cancelled (simpler UI) |
 | 28 | Fix window close behavior | ⭐⭐ Low | **Medium** | ✅ Done |
 
 ### Major Refactor (1-2 weeks each)
@@ -1309,7 +1309,41 @@ func saveConfig() {
 | 7 | Sample-counter RDS timing | ⭐⭐⭐ Medium | **Hard** | Medium | Pending |
 | 9 | Batch biquad processing | ⭐⭐⭐ Medium | **Hard** | Medium | Pending |
 | 10 | Pre-compute RDS shaping | ⭐⭐⭐ Medium | **Hard** | Low | Pending |
-| 24 | Debug Orbass HF noise | ⭐⭐⭐⭐ High | **Hard** | Unknown | Pending |
+| 24 | Debug/Optimize Orbass | ⭐⭐⭐⭐ High | **Hard** | Implementing simplified |
+
+### Orbass Simplified Plan (from research)
+
+Based on research, replace complex waveshaping with:
+
+1. **Simple shelf boost** - Clean bass EQ, no HF issues
+2. **Subharmonic sine** - Only generate when confident pitch detected
+
+Key insights from research:
+- Waveshaping (tanh) creates HF artifacts that bleed into RDS
+- Simple is better for broadcast
+- Subharmonic synthesis via pitch tracking + sine oscillator
+
+---
+
+### Orbass Research & Optimization Notes
+
+**Current Issues (HF Noise)**:
+- `tanhf()` waveshaping can create high-frequency artifacts
+- Subharmonic phase may have discontinuities
+- Filter clipping at high drive values
+
+**CPU Optimizations**:
+1. **Replace tanhf** with polynomial approximation or LUT
+2. **Batch process** multiple samples with SIMD
+3. **Pre-compute** filter coefficients
+4. **Simplify filter chain** if possible
+
+**Potential fixes**:
+- Add HF lowpass after harmonic generation
+- Soft-knee limiter on adaptive gain
+- Reduce subharmonic phase accumulator bit depth
+
+---
 
 ---
 

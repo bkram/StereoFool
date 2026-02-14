@@ -28,6 +28,7 @@ struct AppConfig {
     var limitThreshold: Double = 0.98
     var limitLookaheadMS: Double = 5.0
     var limitLookaheadEnabled: Bool = true
+    var compositeLimiterEnabled: Bool = false
     var mpxDeviationKHz: Double = 75.0
     var enRDS: Bool = true
     var widebandAGCEnabled: Bool = false
@@ -162,6 +163,8 @@ struct AppConfig {
         cfg.limitLookaheadMS = mpx.double("limit_lookahead_ms", defaultValue: cfg.limitLookaheadMS)
         cfg.limitLookaheadEnabled = mpx.bool(
             "limit_lookahead_enabled", defaultValue: cfg.limitLookaheadEnabled)
+        cfg.compositeLimiterEnabled = mpx.bool(
+            "composite_clipper_enabled", defaultValue: cfg.compositeLimiterEnabled)
         cfg.mpxDeviationKHz = mpx.double("mpx_deviation_khz", defaultValue: cfg.mpxDeviationKHz)
         cfg.enRDS = mpx.bool("en_rds", defaultValue: rds.bool("en_rds", defaultValue: cfg.enRDS))
         cfg.widebandAGCEnabled = mpx.bool(
@@ -334,6 +337,7 @@ struct AppConfig {
             "limit_threshold = \(Self.formatFloat(limitThreshold))",
             "limit_lookahead_enabled = \(Self.boolString(limitLookaheadEnabled))",
             "limit_lookahead_ms = \(Self.formatFloat(limitLookaheadMS))",
+            "composite_clipper_enabled = \(Self.boolString(compositeLimiterEnabled))",
             "mpx_deviation_khz = \(Self.formatFloat(mpxDeviationKHz))",
             "en_rds = \(Self.boolString(enRDS))",
             "wideband_agc_enabled = \(Self.boolString(widebandAGCEnabled))",

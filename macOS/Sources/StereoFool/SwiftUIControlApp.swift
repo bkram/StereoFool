@@ -3245,16 +3245,8 @@ private struct ProcessingSectionView: View {
 
                         Divider()
 
-                        Toggle("Enable MPX Limiter", isOn: model.configBinding(\.limitMPX))
                         Toggle(
-                            "Enable Lookahead", isOn: model.configBinding(\.limitLookaheadEnabled))
-                        DoubleSliderRow(
-                            title: "Lookahead", value: model.configBinding(\.limitLookaheadMS),
-                            range: 0...30, format: "%.1f ms")
-                        DoubleSliderRow(
-                            title: "Limiter Threshold",
-                            value: model.configBinding(\.limitThreshold), range: 0.70...0.999,
-                            format: "%.3f")
+                            "Enable Composite Limiter", isOn: model.configBinding(\.compositeLimiterEnabled))
                         DoubleSliderRow(
                             title: "Composite Deviation",
                             value: model.configBinding(\.mpxDeviationKHz), range: 40...90,

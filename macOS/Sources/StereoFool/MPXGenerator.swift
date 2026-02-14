@@ -45,6 +45,61 @@ struct SineCosOsc {
     }
 }
 
+struct CompositeTruePeakLimiter {
+    var threshold: Float = 0.98
+    var releaseMS: Float = 80.0
+
+    private var gain: Float = 1.0
+    private var releaseCoeff: Float = 0.0
+    private var prevIn: Float = 0.0
+    private var initialized: Bool = false
+
+    mutating func configure(sampleRate: Float) {
+        let sr = max(8_000.0, sampleRate)
+        let relS = max(0.005, Double(releaseMS) * 0.001)
+        releaseCoeff = expf(-1.0 / Float(relS * Double(sr)))
+        gain = 1.0
+        prevIn = 0.0
+        initialized = false
+        threshold = clampf(threshold, 0.5, 0.999)
+    }
+
+    mutating func process(_ x: Float) -> Float {
+        if !initialized {
+            initialized = true
+            prevIn = x
+            return clampToThreshold(x)
+        }
+
+        let mid = 0.5 * (prevIn + x)
+
+        let p0 = fabsf(mid)
+        let p1 = fabsf(x)
+        let peak = max(p0, p1)
+
+        var targetGain: Float = 1.0
+        if peak > threshold {
+            targetGain = threshold / max(1e-9, peak)
+        }
+
+        if targetGain < gain {
+            gain = targetGain
+        } else {
+            gain = (releaseCoeff * gain) + ((1.0 - releaseCoeff) * 1.0)
+        }
+
+        prevIn = x
+        let y = x * gain
+        return clampToThreshold(y)
+    }
+
+    @inline(__always)
+    private func clampToThreshold(_ x: Float) -> Float {
+        if fabsf(x) <= threshold { return x }
+        return copysignf(threshold, x)
+    }
+}
+
 struct OnePoleLP {
     var alpha: Float = 1.0
     var state: Float = 0.0
@@ -2094,6 +2149,9 @@ final class MPXGenerator {
     private let widenMix: Float
     private var rdsCoder: BasicRDSCoder?
 
+    private let compositeLimiterEnabled: Bool
+    private var compositeLimiter = CompositeTruePeakLimiter()
+
     private var toneStep: Float
     private var tonePhase: Float = 0.0
     private var pilotOsc = SineCosOsc()
@@ -2159,6 +2217,7 @@ final class MPXGenerator {
 
         self.limitLookaheadEnabled = config.limitLookaheadEnabled
         self.limitLookaheadMS = clampf(Float(config.limitLookaheadMS), 0.0, 20.0)
+        self.compositeLimiterEnabled = config.compositeLimiterEnabled
 
         self.orbassEnabled = config.orbassEnabled
         self.orbassAmount = clampf(Float(config.orbassAmount), 0.0, 1.0)
@@ -2227,6 +2286,7 @@ final class MPXGenerator {
             threshold: threshold,
             enabled: limitEnabled && limitLookaheadEnabled
         )
+        compositeLimiter.configure(sampleRate: self.sampleRate)
         updateDerivedRates()
         configureMonitorDemod()
     }
@@ -2253,6 +2313,7 @@ final class MPXGenerator {
             threshold: threshold,
             enabled: limitEnabled && limitLookaheadEnabled
         )
+        compositeLimiter.configure(sampleRate: sampleRate)
         rdsCoder?.setSampleRate(sampleRate)
         updateDerivedRates()
         configureMonitorDemod()
@@ -2836,6 +2897,10 @@ final class MPXGenerator {
         let rds = rdsSupported ? (rdsCoder?.nextSampleWithPilotLock() ?? 0.0) : 0.0
         
         var mpx = (base + (diff * sub) + pilot + rds) * deviationScale
+
+        if compositeLimiterEnabled {
+            mpx = compositeLimiter.process(mpx)
+        }
 
         mpx *= outputGain
         mpx = clampf(mpx, -1.0, 1.0)
