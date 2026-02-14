@@ -81,6 +81,9 @@ final class AudioOutputEngine {
     private var monitorMPXLeftScratch: [Float] = []
     private var monitorMPXRightScratch: [Float] = []
     private var isShuttingDown = false
+    private var inputConversionBuffer: [Float] = []
+    private var inputConversionBufferStereoL: [Float] = []
+    private var inputConversionBufferStereoR: [Float] = []
 
     init(
         generator: MPXGenerator,
@@ -121,6 +124,7 @@ final class AudioOutputEngine {
         configuredRenderSampleRate = renderRate
         generator.setSampleRate(renderRate)
         configureScopeHistory(renderRate: renderRate, inputRate: configuredInputSampleRate)
+        preAllocateBuffers(maxFrames: Int(max(renderRate, 192000.0) * 0.1))
 
         let format = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -411,6 +415,15 @@ final class AudioOutputEngine {
         if monitorMPXRightScratch.count < frames {
             monitorMPXRightScratch = Array(repeating: 0.0, count: frames)
         }
+    }
+
+    private func preAllocateBuffers(maxFrames: Int) {
+        let safeFrames = max(512, maxFrames)
+        monitorMPXLeftScratch = [Float](repeating: 0.0, count: safeFrames)
+        monitorMPXRightScratch = [Float](repeating: 0.0, count: safeFrames)
+        inputConversionBuffer = [Float](repeating: 0.0, count: safeFrames)
+        inputConversionBufferStereoL = [Float](repeating: 0.0, count: safeFrames)
+        inputConversionBufferStereoR = [Float](repeating: 0.0, count: safeFrames)
     }
 
     private func appendRoutingNote(_ note: String) {
