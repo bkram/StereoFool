@@ -1918,6 +1918,7 @@ private struct RootView: View {
             List(selection: $model.selectedSection) {
                 ForEach(AppSection.allCases) { section in
                     Label(section.rawValue, systemImage: section.icon)
+                        .symbolRenderingMode(.hierarchical)
                         .tag(section)
                 }
             }
@@ -2003,7 +2004,7 @@ private struct MonitoringDashboardView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 16) {
                 Card(title: "Status") {
                     MonitoringHealthSummaryRow(health: model.streamHealth)
                 }
@@ -2025,8 +2026,8 @@ private struct MonitoringDashboardView: View {
                     MonitoringDSPStatusSectionView(model: model)
                 }
             }
-            .padding(20)
-            .frame(maxWidth: 760, alignment: .topLeading)
+            .padding(24)
+            .frame(maxWidth: 720, alignment: .topLeading)
         }
         .scrollContentBackground(.hidden)
     }
@@ -2269,8 +2270,8 @@ private struct MonitoringRDSSnapshotSectionView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Live view").font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Live view").font(.subheadline).foregroundStyle(.secondary)
             KeyValueGrid(rows: model.rdsRows)
         }
     }
@@ -2366,7 +2367,7 @@ private struct MonitoringDSPStatusSectionView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("DSP Status").font(.headline)
+            Text("DSP Status").font(.subheadline).foregroundStyle(.secondary)
             HStack(spacing: 14) {
                 DSPStateIndicator(
                     title: "Composite Limiter",
