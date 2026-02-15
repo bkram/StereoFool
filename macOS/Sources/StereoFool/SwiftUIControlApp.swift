@@ -1957,8 +1957,7 @@ private struct RootView: View {
                     Button {
                         model.startOrStopTransport()
                     } label: {
-                        Label(model.isRunning ? "Stop" : "Start",
-                              systemImage: model.isRunning ? "stop.fill" : "play.fill")
+                        Image(systemName: model.isRunning ? "stop.fill" : "play.fill")
                     }
                     .keyboardShortcut(.space, modifiers: [])
                     .disabled(model.isBusy)
@@ -1967,11 +1966,10 @@ private struct RootView: View {
                     Button {
                         model.toggleBypass()
                     } label: {
-                        Label("Bypass",
-                              systemImage: model.processingBypass ? "bolt.slash.fill" : "bolt.fill")
+                        Image(systemName: model.processingBypass ? "bolt.slash.fill" : "bolt.fill")
                     }
                     .disabled(model.isBusy)
-                    .accessibilityLabel(model.processingBypass ? "Disable bypass (processing enabled)" : "Enable bypass (processing disabled)")
+                    .accessibilityLabel(model.processingBypass ? "Disable bypass" : "Enable bypass")
                 }
                 .controlSize(.small)
             }
@@ -3732,7 +3730,14 @@ private struct DisclaimerBox: View {
                 .font(.caption.weight(.semibold))
         }
         .padding(12)
-        .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.orange.opacity(0.06))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.orange.opacity(0.25), lineWidth: 1)
+        )
     }
 }
 
