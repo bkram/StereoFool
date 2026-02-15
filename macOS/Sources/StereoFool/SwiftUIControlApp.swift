@@ -3246,6 +3246,7 @@ private struct ProcessingSectionView: View {
                 }
             }
             .padding(20)
+            .frame(maxWidth: 720, alignment: .topLeading)
         }
     }
 }
@@ -3281,15 +3282,12 @@ private struct SystemSectionView: View {
                                 Text("\(Int(rate)) Hz").tag(rate)
                             }
                         }
+                        .disabled(model.isRunning)
                         Picker("Block Size", selection: model.configBinding(\.blockSize)) {
                             ForEach(blockSizes, id: \.self) { size in
                                 Text("\(size)").tag(size)
                             }
                         }
-                        IntStepperRow(
-                            title: "Block Size",
-                            value: model.configBinding(\.blockSize), range: 256...8192,
-                            step: 256, format: "%d")
                         Toggle(
                             "Auto Start at Launch",
                             isOn: model.configBinding(\.rdsAutoStart, restartRequired: false))
@@ -3329,6 +3327,7 @@ private struct SystemSectionView: View {
                 }
             }
             .padding(20)
+            .frame(maxWidth: 720, alignment: .topLeading)
         }
     }
 }
