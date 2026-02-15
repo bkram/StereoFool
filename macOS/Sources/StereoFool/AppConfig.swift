@@ -4,6 +4,7 @@ struct AppConfig {
     static let appVersion: String = "0.7"
 
     var sampleRate: Double = 192_000.0
+    var fftWindow96kHz: Bool = true
     var blockSize: Int = 2048
     var sourceMode: String = "input"
     var inputDeviceUID: String?
@@ -51,6 +52,8 @@ struct AppConfig {
     var stereoWidenMix: Double = 1.0
     var multibandEnabled: Bool = false
     var multibandMode: Int = 3
+    var multibandPresetID: String = "3_chr"
+    var multibandIntensity: String = "normal"
     var multibandX1Hz: Double = 80.0
     var multibandX2Hz: Double = 320.0
     var multibandX3Hz: Double = 1200.0
@@ -75,7 +78,7 @@ struct AppConfig {
     var multibandMakeupDB: Double = 0.0
     var rdsLevel: Double = 2.0
     var rdsPI: String = "82FF"
-    var rdsPTY: Int = 20
+    var rdsPTY: Int = 8
     var rdsTP: Bool = false
     var rdsTA: Bool = false
     var rdsMS: Bool = true
@@ -93,7 +96,7 @@ struct AppConfig {
         "10s:StereoFool FM MPX Generator/10s:Native macOS Swift App"
     var rdsRTManualBuffers: Bool = false
     var rdsRTCycleAB: Bool = false
-    var rdsRTA: String = "StereoFool: Native FM MPX + RDS"
+    var rdsRTA: String = "StereoFool: FM MPX + RDS Audio Processor"
     var rdsRTB: String = "StereoFool: FM MPX Generator"
     var rdsRTCR: Bool = true
     var rdsRTCentered: Bool = false
@@ -201,6 +204,8 @@ struct AppConfig {
         cfg.stereoWidenMix = mpx.double("stereo_widen_mix", defaultValue: cfg.stereoWidenMix)
         cfg.multibandEnabled = mpx.bool("multiband_enabled", defaultValue: cfg.multibandEnabled)
         cfg.multibandMode = mpx.int("multiband_mode", defaultValue: cfg.multibandMode)
+        cfg.multibandPresetID = mpx.string("multiband_preset_id", defaultValue: cfg.multibandPresetID)
+        cfg.multibandIntensity = mpx.string("multiband_intensity", defaultValue: cfg.multibandIntensity)
         cfg.multibandLowHz = mpx.double("multiband_low_hz", defaultValue: cfg.multibandLowHz)
         cfg.multibandHighHz = mpx.double("multiband_high_hz", defaultValue: cfg.multibandHighHz)
         cfg.multibandX1Hz = mpx.double("multiband_x1_hz", defaultValue: cfg.multibandX1Hz)
@@ -311,6 +316,7 @@ struct AppConfig {
         // Note: monitor_rate_hz only affects the optional monitoring audio capture, not main render rate
         // Main render rate uses the default sample_rate or is determined by hardware capability
         cfg.blockSize = max(2048, interfaces.int("blocksize", defaultValue: cfg.blockSize))
+        cfg.fftWindow96kHz = interfaces.bool("fft_window_92khz", defaultValue: cfg.fftWindow96kHz)
         return cfg
     }
 
@@ -360,6 +366,8 @@ struct AppConfig {
             "stereo_widen_mix = \(Self.formatFloat(stereoWidenMix))",
             "multiband_enabled = \(Self.boolString(multibandEnabled))",
             "multiband_mode = \(multibandMode)",
+            "multiband_preset_id = \(multibandPresetID)",
+            "multiband_intensity = \(multibandIntensity)",
             "multiband_low_hz = \(Self.formatFloat(multibandLowHz))",
             "multiband_high_hz = \(Self.formatFloat(multibandHighHz))",
             "multiband_x1_hz = \(Self.formatFloat(multibandX1Hz))",
@@ -446,6 +454,7 @@ struct AppConfig {
             "monitor_enabled = \(Self.boolString(monitorEnabled))",
             "monitor_rate_hz = \(Self.formatFloat(sampleRate))",
             "blocksize = \(blockSize)",
+            "fft_window_92khz = \(Self.boolString(fftWindow96kHz))",
             "input_device_uid = \(inputDeviceUID ?? "")",
             "output_device_uid = \(outputDeviceUID ?? "")",
             "monitor_device_uid = \(monitorDeviceUID ?? "")",

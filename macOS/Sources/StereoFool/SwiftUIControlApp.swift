@@ -6,6 +6,12 @@ import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
 
+// Sizes
+private let kWindowWidth: CGFloat = 700
+private let kWindowHeight: CGFloat = 330
+private let kWindowMinWidth: CGFloat = 700
+private let kWindowMinHeight: CGFloat = 330
+
 private struct MonitoringStatusLine: View {
     let isRunning: Bool
 
@@ -508,8 +514,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let w = NSWindow(contentViewController: hostingController)
         w.title = "Scopes"
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        w.setContentSize(NSSize(width: 800, height: 500))
-        w.minSize = NSSize(width: 600, height: 400)
+        w.setContentSize(NSSize(width: kWindowWidth, height: kWindowHeight))
+        w.minSize = NSSize(width: kWindowMinWidth, height: kWindowMinHeight)
         w.isReleasedWhenClosed = false
         w.delegate = self
         w.center()
@@ -535,8 +541,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let w = NSWindow(contentViewController: hostingController)
         w.title = "Spectrum"
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        w.setContentSize(NSSize(width: 800, height: 400))
-        w.minSize = NSSize(width: 600, height: 300)
+        w.setContentSize(NSSize(width: kWindowWidth, height: kWindowHeight))
+        w.minSize = NSSize(width: kWindowMinWidth, height: kWindowMinHeight)
         w.isReleasedWhenClosed = false
         w.delegate = self
         w.center()
@@ -563,8 +569,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let w = NSWindow(contentViewController: hostingController)
         w.title = "Levels"
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        w.setContentSize(NSSize(width: 500, height: 400))
-        w.minSize = NSSize(width: 400, height: 300)
+        w.setContentSize(NSSize(width: kWindowWidth, height: kWindowHeight))
+        w.minSize = NSSize(width: kWindowMinWidth, height: kWindowMinHeight)
         w.isReleasedWhenClosed = false
         w.delegate = self
         w.center()
@@ -668,7 +674,7 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var spectrumWindowVisible: Bool = false
 
     private let configPath: String
-    private var config: AppConfig
+    var config: AppConfig
     private var runningEngine: AudioOutputEngine?
     private var monitorTimer: Timer?
     private var lastMonitorRefreshTime: TimeInterval?
@@ -885,6 +891,8 @@ final class StereoFoolViewModel: ObservableObject {
 
         config.multibandEnabled = true
         config.multibandMode = preset.mode
+        config.multibandPresetID = id
+        config.multibandIntensity = intensity.rawValue
 
         if let lowHz = preset.lowHz {
             config.multibandLowHz = lowHz
@@ -1410,12 +1418,13 @@ final class StereoFoolViewModel: ObservableObject {
         let samples = raw.samples
         let sampleRate = raw.sampleRate
 
+        let maxDisplayHz: Double = config.fftWindow96kHz ? 96_000.0 : 60_000.0
         spectrumQueue.async { [weak self] in
             let spectrum = Self.computeMPXSpectrum(
                 samples: samples,
                 sampleRate: sampleRate,
                 displayBins: 640,
-                maxDisplayHz: 92_000.0
+                maxDisplayHz: maxDisplayHz
             )
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -2894,11 +2903,6 @@ private struct MPXSpectrumView: View {
 
     private let dbMin: Float = -100.0
     private let dbMax: Float = 0.0
-    private let markerFrequencies: [(freq: Double, label: String, color: Color)] = [
-        (19_000.0, "19 kHz Pilot", .yellow),
-        (38_000.0, "38 kHz L-R", .yellow),
-        (57_000.0, "57 kHz RDS", .yellow),
-    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -3009,14 +3013,6 @@ private struct MPXSpectrumView: View {
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
             HStack(spacing: 14) {
-                ForEach(Array(markerFrequencies.enumerated()), id: \.offset) { _, marker in
-                    HStack(spacing: 6) {
-                        Circle()
-                            .fill(marker.color.opacity(0.9))
-                            .frame(width: 6, height: 6)
-                        Text(marker.label)
-                    }
-                }
                 let maxDisplayHz = max(1_000.0, maxHz)
                 if nyquistHz > 0.0, nyquistHz < maxDisplayHz {
                     HStack(spacing: 6) {
@@ -3085,12 +3081,18 @@ private struct KeyValueGrid: View {
 
 private struct ProcessingSectionView: View {
     @ObservedObject var model: StereoFoolViewModel
-    @State private var orbassPresetID: String = "chr"
-    @State private var multibandPresetID: String = "3_chr"
-    @State private var multibandIntensity: MultibandPresetIntensity = .normal
 
     var body: some View {
         Form {
+            Section {
+                HStack {
+                    Button("Reset Processing to Defaults") {
+                        model.resetProcessingToDefaults()
+                    }
+                    Spacer()
+                }
+            }
+
             Section("Core Processing") {
                 Toggle("Bypass Processing", isOn: Binding(
                     get: { model.processingBypass },
@@ -3133,6 +3135,29 @@ private struct ProcessingSectionView: View {
             }
 
             Section("Multiband Dynamics") {
+                Picker("Preset", selection: Binding(
+                    get: { self.model.config.multibandPresetID },
+                    set: { newValue in
+                        let intensity = MultibandPresetIntensity(rawValue: self.model.config.multibandIntensity) ?? .normal
+                        self.model.config.multibandPresetID = newValue
+                        self.model.applyMultibandPreset(id: newValue, intensity: intensity)
+                    }
+                )) {
+                    ForEach(model.multibandPresetChoices) { preset in
+                        Text(preset.title).tag(preset.id)
+                    }
+                }
+                Picker("Intensity", selection: Binding(
+                    get: { MultibandPresetIntensity(rawValue: self.model.config.multibandIntensity) ?? .normal },
+                    set: { newValue in
+                        self.model.config.multibandIntensity = newValue.rawValue
+                        self.model.applyMultibandPreset(id: self.model.config.multibandPresetID, intensity: newValue)
+                    }
+                )) {
+                    ForEach(MultibandPresetIntensity.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
                 Toggle("Enable Multiband", isOn: model.configBinding(\.multibandEnabled))
                 Picker("Mode", selection: model.configBinding(\.multibandMode)) {
                     Text("2-band").tag(2)
@@ -3141,16 +3166,34 @@ private struct ProcessingSectionView: View {
                 }
                 DoubleSliderRow(title: "Knee", value: model.configBinding(\.multibandKneeDB), range: 0...12, format: "%.1f dB")
                 DoubleSliderRow(title: "Link", value: model.configBinding(\.multibandLinkStrength), range: 0...1, format: "%.2f")
-                DoubleSliderRow(title: "X1 Crossover", value: model.configBinding(\.multibandX1Hz), range: 30...300, format: "%.0f Hz")
-                DoubleSliderRow(title: "X2 Crossover", value: model.configBinding(\.multibandX2Hz), range: 120...1200, format: "%.0f Hz")
+                Toggle("Program-dependent Release", isOn: model.configBinding(\.multibandReleaseProgramDependent))
+                DoubleSliderRow(title: "X1", value: model.configBinding(\.multibandX1Hz), range: 30...300, format: "%.0f Hz")
+                DoubleSliderRow(title: "X2", value: model.configBinding(\.multibandX2Hz), range: 120...1200, format: "%.0f Hz")
+                DoubleSliderRow(title: "X3", value: model.configBinding(\.multibandX3Hz), range: 600...4000, format: "%.0f Hz")
+                DoubleSliderRow(title: "X4", value: model.configBinding(\.multibandX4Hz), range: 2500...12000, format: "%.0f Hz")
+                DoubleSliderRow(title: "Low Threshold", value: model.configBinding(\.multibandLowThresholdDB), range: (-40)...(-6), format: "%.1f dB")
+                DoubleSliderRow(title: "Mid Threshold", value: model.configBinding(\.multibandMidThresholdDB), range: (-40)...(-6), format: "%.1f dB")
+                DoubleSliderRow(title: "High Threshold", value: model.configBinding(\.multibandHighThresholdDB), range: (-40)...(-6), format: "%.1f dB")
+                DoubleSliderRow(title: "Low Ratio", value: model.configBinding(\.multibandLowRatio), range: 1...8, format: "%.2f")
+                DoubleSliderRow(title: "Mid Ratio", value: model.configBinding(\.multibandMidRatio), range: 1...8, format: "%.2f")
+                DoubleSliderRow(title: "High Ratio", value: model.configBinding(\.multibandHighRatio), range: 1...8, format: "%.2f")
+                DoubleSliderRow(title: "Low Attack", value: model.configBinding(\.multibandLowAttackMS), range: 1...120, format: "%.1f")
+                DoubleSliderRow(title: "Mid Attack", value: model.configBinding(\.multibandMidAttackMS), range: 1...120, format: "%.1f")
+                DoubleSliderRow(title: "High Attack", value: model.configBinding(\.multibandHighAttackMS), range: 1...120, format: "%.1f")
+                DoubleSliderRow(title: "Low Release", value: model.configBinding(\.multibandLowReleaseMS), range: 40...1200, format: "%.0f")
+                DoubleSliderRow(title: "Mid Release", value: model.configBinding(\.multibandMidReleaseMS), range: 40...1200, format: "%.0f")
+                DoubleSliderRow(title: "High Release", value: model.configBinding(\.multibandHighReleaseMS), range: 40...1200, format: "%.0f")
+                DoubleSliderRow(title: "Makeup", value: model.configBinding(\.multibandMakeupDB), range: -12...18, format: "%.1f dB")
             }
 
-            Section("Stereo Widener & Limiter") {
+            Section("Stereo Widener") {
                 Toggle("Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled))
                 DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth), range: 0...1, format: "%.2f")
                 DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter), range: 0...1, format: "%.2f")
                 DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix), range: 0...1, format: "%.2f")
-                Divider()
+            }
+
+            Section("Composite Limiter") {
                 Toggle("Enable Composite Limiter", isOn: model.configBinding(\.compositeLimiterEnabled))
                 DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz), range: 40...90, format: "%.1f kHz")
             }
@@ -3519,6 +3562,15 @@ private struct SettingsSectionView: View {
                             Button("Reload Config") { model.reloadConfigFromDisk() }
                             Button("Refresh Devices") { model.refreshDevices() }
                         }
+                    }
+                }
+
+                Card(title: "FFT Spectrum") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Toggle("96 kHz Window", isOn: model.configBinding(\.fftWindow96kHz))
+                        Text("When enabled, shows full 96 kHz spectrum. When disabled, shows 60 kHz FM band.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
