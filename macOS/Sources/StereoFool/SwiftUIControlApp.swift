@@ -3496,7 +3496,7 @@ private struct RDSSectionView: View {
                 }
 
                 Card(title: "Long PS, Flags, AF") {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
                         Toggle("Enable Long PS (15A)", isOn: model.configBinding(\.rdsEnableLPS))
                         TextField("Long PS Text", text: model.configBinding(\.rdsLongPS32))
                         Toggle("Center Long PS", isOn: model.configBinding(\.rdsLPSCentered))
@@ -3504,48 +3504,60 @@ private struct RDSSectionView: View {
 
                         Divider()
 
-                        Toggle("TP", isOn: model.configBinding(\.rdsTP))
-                        Toggle("TA", isOn: model.configBinding(\.rdsTA))
-                        Toggle("Music/Speech (MS)", isOn: model.configBinding(\.rdsMS))
-                        Toggle("DI Stereo", isOn: model.configBinding(\.rdsDI_STEREO))
-                        Toggle("DI Artificial Head", isOn: model.configBinding(\.rdsDI_HEAD))
-                        Toggle("DI Compressed", isOn: model.configBinding(\.rdsDI_COMP))
-                        Toggle("DI Dynamic PTY", isOn: model.configBinding(\.rdsDI_DYN))
+                        let flagCols: [GridItem] = [
+                            GridItem(.flexible(minimum: 100)),
+                            GridItem(.flexible(minimum: 100)),
+                            GridItem(.flexible(minimum: 100))
+                        ]
+                        LazyVGrid(columns: flagCols, alignment: .leading, spacing: 8) {
+                            Toggle("TP", isOn: model.configBinding(\.rdsTP))
+                            Toggle("TA", isOn: model.configBinding(\.rdsTA))
+                            Toggle("MS", isOn: model.configBinding(\.rdsMS))
+                            Toggle("DI Stereo", isOn: model.configBinding(\.rdsDI_STEREO))
+                            Toggle("DI Head", isOn: model.configBinding(\.rdsDI_HEAD))
+                            Toggle("DI Comp", isOn: model.configBinding(\.rdsDI_COMP))
+                            Toggle("DI Dyn PTY", isOn: model.configBinding(\.rdsDI_DYN))
+                        }
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
 
                         Divider()
 
                         Toggle("Enable AF", isOn: model.configBinding(\.rdsEnableAF))
-                        Picker("AF Method", selection: model.configBinding(\.rdsAFMethod)) {
-                            Text("Method A").tag("A")
-                            Text("Method B").tag("B")
+                        HStack(spacing: 12) {
+                            Picker("AF Method", selection: model.configBinding(\.rdsAFMethod)) {
+                                Text("Method A").tag("A")
+                                Text("Method B").tag("B")
+                            }
+                            .frame(width: 100)
+                            TextField("AF List", text: model.configBinding(\.rdsAFList))
+                                .textFieldStyle(.roundedBorder)
                         }
-                        TextField("AF List", text: model.configBinding(\.rdsAFList))
                     }
                 }
 
                 Card(title: "Scheduler & Advanced") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        TextField("Group Sequence", text: model.configBinding(\.rdsGroupSequence))
-                        Toggle("Scheduler Auto", isOn: model.configBinding(\.rdsSchedulerAuto))
-                        Toggle(
-                            "Use Standard Schedule",
-                            isOn: model.configBinding(\.rdsSchedulerStandard))
-                        Toggle(
-                            "Include LPS in Standard Schedule",
-                            isOn: model.configBinding(\.rdsSchedulerStandardLPS))
-                        Toggle("Enable CT (4A)", isOn: model.configBinding(\.rdsEnableCT))
-                        Toggle("Enable ID (1A)", isOn: model.configBinding(\.rdsEnableID))
+                    DisclosureGroup("Scheduler & Advanced") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            TextField("Group Sequence", text: model.configBinding(\.rdsGroupSequence))
+                            Toggle("Scheduler Auto", isOn: model.configBinding(\.rdsSchedulerAuto))
+                            Toggle("Use Standard Schedule", isOn: model.configBinding(\.rdsSchedulerStandard))
+                            Toggle("Include LPS in Standard", isOn: model.configBinding(\.rdsSchedulerStandardLPS))
+                            Toggle("Enable CT (4A)", isOn: model.configBinding(\.rdsEnableCT))
+                            Toggle("Enable ID (1A)", isOn: model.configBinding(\.rdsEnableID))
 
-                        Divider()
+                            Divider()
 
-                        LabeledContent("LIC") {
-                            TextField("", text: model.hexByteBinding(\.rdsLIC))
-                                .font(.system(.body, design: .monospaced))
-                                .frame(width: 80)
+                            LabeledContent("LIC") {
+                                TextField("", text: model.hexByteBinding(\.rdsLIC))
+                                    .font(.system(.body, design: .monospaced))
+                                    .frame(width: 80)
+                            }
+                            DoubleSliderRow(
+                                title: "Clock Offset", value: model.configBinding(\.rdsTZOffset),
+                                range: -12...14, format: "%.1f h")
                         }
-                        DoubleSliderRow(
-                            title: "Clock Offset", value: model.configBinding(\.rdsTZOffset),
-                            range: -12...14, format: "%.1f h")
+                        .padding(.top, 4)
                     }
                 }
 
