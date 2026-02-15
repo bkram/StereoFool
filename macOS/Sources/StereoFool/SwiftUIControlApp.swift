@@ -11,12 +11,13 @@ private struct MonitoringStatusLine: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Circle()
-                .fill(isRunning ? .green : .secondary)
-                .frame(width: 8, height: 8)
+            Image(systemName: isRunning ? "circle.fill" : "circle")
+                .font(.system(size: 8))
+                .foregroundStyle(isRunning ? .green : .secondary)
 
             Text(isRunning ? "Running" : "Stopped")
-                .font(.body.weight(.medium))
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -1965,12 +1966,13 @@ private struct RootView: View {
                     Button {
                         model.toggleBypass()
                     } label: {
-                        Label(model.processingBypass ? "Bypass On" : "Bypass",
+                        Label("Bypass",
                               systemImage: model.processingBypass ? "bolt.slash.fill" : "bolt.fill")
                     }
                     .disabled(model.isBusy)
                     .accessibilityLabel(model.processingBypass ? "Disable bypass (processing enabled)" : "Enable bypass (processing disabled)")
                 }
+                .controlSize(.small)
             }
         }
         .toolbarTitleDisplayMode(.inline)
@@ -1982,12 +1984,17 @@ private struct Card<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(title).font(.headline)
-            content
+        GroupBox {
+            VStack(alignment: .leading, spacing: 12) {
+                content
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 2)
+        } label: {
+            Text(title)
+                .font(.headline)
         }
-        .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .groupBoxStyle(.automatic)
     }
 }
 
@@ -1995,29 +2002,33 @@ private struct MonitoringDashboardView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        Form {
-            Section("Status") {
-                MonitoringHealthSummaryRow(health: model.streamHealth)
-            }
-
-            Section("Routing") {
-                LabeledContent("Input") {
-                    Text(model.selectedInputUID.isEmpty ? "—" : model.inputDevices.first { $0.uid == model.selectedInputUID }?.name ?? "—")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Card(title: "Status") {
+                    MonitoringHealthSummaryRow(health: model.streamHealth)
                 }
-                LabeledContent("Output") {
-                    Text(model.selectedOutputUID.isEmpty ? "—" : model.outputDevices.first { $0.uid == model.selectedOutputUID }?.name ?? "—")
+
+                Card(title: "Routing") {
+                    LabeledContent("Input") {
+                        Text(model.selectedInputUID.isEmpty ? "—" : model.inputDevices.first { $0.uid == model.selectedInputUID }?.name ?? "—")
+                    }
+                    LabeledContent("Output") {
+                        Text(model.selectedOutputUID.isEmpty ? "—" : model.outputDevices.first { $0.uid == model.selectedOutputUID }?.name ?? "—")
+                    }
+                }
+
+                Card(title: "RDS") {
+                    MonitoringRDSSnapshotSectionView(model: model)
+                }
+
+                Card(title: "DSP") {
+                    MonitoringDSPStatusSectionView(model: model)
                 }
             }
-
-            Section("RDS") {
-                MonitoringRDSSnapshotSectionView(model: model)
-            }
-
-            Section("DSP") {
-                MonitoringDSPStatusSectionView(model: model)
-            }
+            .padding(20)
+            .frame(maxWidth: 760, alignment: .topLeading)
         }
-        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
     }
 }
 
@@ -2059,46 +2070,46 @@ private struct MonitoringTransportHeader: View {
 
 private struct MonitoringHealthSummaryRow: View {
     let health: MonitoringStreamHealth
-    @State private var showDetails: Bool = false
+    @State private var expanded: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        DisclosureGroup(isExpanded: $expanded) {
+            Divider().padding(.vertical, 6)
+
+            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
+                GridRow {
+                    MonitoringDetailValue("Ring", ringText)
+                    MonitoringDetailValue("Overflows (10s)", "\(health.overflowsRecent)")
+                }
+                GridRow {
+                    MonitoringDetailValue("Underflows (10s)", "\(health.underflowsRecent)")
+                    MonitoringDetailValue(
+                        "Totals", "O:\(health.overflowsTotal) U:\(health.underflowsTotal)")
+                }
+                GridRow {
+                    MonitoringDetailValue("Rates", rateText)
+                    EmptyView()
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } label: {
             HStack(spacing: 10) {
-                Circle()
-                    .fill(indicatorColor)
-                    .frame(width: 8, height: 8)
+                Image(systemName: "circle.fill")
+                    .font(.system(size: 8))
+                    .foregroundStyle(indicatorColor)
+
                 Text(health.isRunning ? "Running" : "Stopped")
                     .font(.body.weight(.medium))
+
                 Text("• Buffer \(health.bufferSummary)")
                     .foregroundStyle(.secondary)
-                Spacer()
-                Button(showDetails ? "Less" : "More") {
-                    showDetails.toggle()
-                }
-                .buttonStyle(.link)
-            }
-            if showDetails {
-                Divider()
-                Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                    GridRow {
-                        MonitoringDetailValue("Ring", ringText)
-                        MonitoringDetailValue("Overflows (10s)", "\(health.overflowsRecent)")
-                    }
-                    GridRow {
-                        MonitoringDetailValue("Underflows (10s)", "\(health.underflowsRecent)")
-                        MonitoringDetailValue(
-                            "Totals", "O:\(health.overflowsTotal) U:\(health.underflowsTotal)")
-                    }
-                    GridRow {
-                        MonitoringDetailValue("Rates", rateText)
-                        EmptyView()
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
+
+                Spacer(minLength: 0)
             }
         }
-        .padding(.vertical, 4)
+        .disclosureGroupStyle(.automatic)
+        .padding(.vertical, 2)
     }
 
     private var summaryText: String {
