@@ -365,18 +365,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
         let helpMenu = NSMenu(title: "Help")
         
-        let openHelp = NSMenuItem(title: "StereoFool Help", action: #selector(showHelp), keyEquivalent: "?")
+        let openHelp = NSMenuItem(title: "StereoFool Help", action: #selector(showHelp), keyEquivalent: "/")
         openHelp.target = self
+        openHelp.keyEquivalentModifierMask = [.command, .shift]
         helpMenu.addItem(openHelp)
         
         helpMenu.addItem(NSMenuItem.separator())
         
         let docs = NSMenuItem(title: "Online Documentation", action: #selector(openDocs), keyEquivalent: "")
         docs.target = self
+        docs.isEnabled = true
         helpMenu.addItem(docs)
         
         helpItem.submenu = helpMenu
         mainMenu.addItem(helpItem)
+        
+        NSApp.helpMenu = helpMenu
 
         NSApp.mainMenu = mainMenu
     }
@@ -3690,21 +3694,21 @@ private enum HelpTopic: String, CaseIterable, Identifiable {
 }
 
 private struct HelpWindowView: View {
-    @State private var selection: HelpTopic? = .inputLevels
+    @State private var selection: HelpTopic = .inputLevels
 
     var body: some View {
         NavigationSplitView {
             List(HelpTopic.allCases, selection: $selection) { topic in
                 Label(topic.rawValue, systemImage: topic.icon)
                     .symbolRenderingMode(.hierarchical)
-                    .tag(topic as HelpTopic?)
+                    .tag(topic)
             }
             .listStyle(.sidebar)
             .navigationTitle("Help")
         } detail: {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    switch selection ?? .inputLevels {
+                    switch selection {
                     case .inputLevels:
                         HelpInputLevelsView()
                     case .rdsText:
@@ -3714,7 +3718,7 @@ private struct HelpWindowView: View {
                 .padding(20)
                 .frame(maxWidth: 720, alignment: .leading)
             }
-            .navigationTitle(selection?.rawValue ?? "Help")
+            .navigationTitle(selection.rawValue)
         }
         .navigationSplitViewStyle(.balanced)
         .toolbarTitleDisplayMode(.inline)
