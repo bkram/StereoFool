@@ -30,7 +30,6 @@ enum AppSection: String, CaseIterable, Identifiable {
     case rds = "RDS"
     case settings = "Settings"
     case help = "Help"
-    case about = "About"
 
     var id: String { rawValue }
 
@@ -43,7 +42,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .rds: return "dot.radiowaves.left.and.right"
         case .settings: return "gearshape"
         case .help: return "questionmark.circle"
-        case .about: return "info.circle"
         }
     }
 }
@@ -1965,8 +1963,6 @@ private struct RootView: View {
                     SettingsSectionView(model: model)
                 case .help:
                     HelpSectionView()
-                case .about:
-                    AboutSectionView()
                 }
             }
         }
