@@ -3090,227 +3090,75 @@ private struct ProcessingSectionView: View {
     @State private var multibandIntensity: MultibandPresetIntensity = .normal
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                PendingApplyCard(model: model)
-
-                HStack {
-                    Button("Reset Processing to Defaults") {
-                        model.resetProcessingToDefaults()
-                    }
-                    Spacer()
+        Form {
+            Section("Core Processing") {
+                Toggle("Bypass Processing", isOn: Binding(
+                    get: { model.processingBypass },
+                    set: { _ in model.toggleBypass() }
+                ))
+                Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
+                Picker("Pre-emphasis", selection: model.configBinding(\.preemphasisUS)) {
+                    Text("Off").tag(0)
+                    Text("50 us").tag(50)
+                    Text("75 us").tag(75)
                 }
-
-                Card(title: "Core Processing") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle(
-                            "Bypass Processing",
-                            isOn: Binding(
-                                get: { model.processingBypass },
-                                set: { _ in model.toggleBypass() }
-                            ))
-                        .accessibilityLabel("Bypass processing")
-                        Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
-                        .accessibilityLabel("Mono mode")
-                        Picker("Pre-emphasis", selection: model.configBinding(\.preemphasisUS)) {
-                            Text("Off").tag(0)
-                            Text("50 us").tag(50)
-                            Text("75 us").tag(75)
-                        }
-                        DoubleSliderRow(
-                            title: "Input Gain",
-                            value: Binding(
-                                get: { model.inputGainDB },
-                                set: {
-                                    model.inputGainDB = $0
-                                    model.persistBasicConfig()
-                                }
-                            ), range: -24...24, format: "%.1f dB",
-                            accessibilityLabel: "Input gain in dB")
-                        DoubleSliderRow(
-                            title: "HPF", value: model.configBinding(\.hpfHz), range: 10...180,
-                            format: "%.0f Hz",
-                            accessibilityLabel: "High pass filter frequency")
-                        DoubleSliderRow(
-                            title: "HF Trim", value: model.configBinding(\.hfTrimDB),
-                            range: -12...12, format: "%.1f dB",
-                            accessibilityLabel: "High frequency trim in dB")
-                        DoubleSliderRow(
-                            title: "HF Trim Freq", value: model.configBinding(\.hfTrimHz),
-                            range: 1_000...12_000, format: "%.0f Hz",
-                            accessibilityLabel: "High frequency trim frequency")
-                        DoubleSliderRow(
-                            title: "Program Lowpass",
-                            value: model.configBinding(\.programLowpassHz), range: 8_000...17_000,
-                            format: "%.0f Hz",
-                            accessibilityLabel: "Program lowpass filter frequency")
+                DoubleSliderRow(title: "Input Gain", value: Binding(
+                    get: { model.inputGainDB },
+                    set: {
+                        model.inputGainDB = $0
+                        model.persistBasicConfig()
                     }
-                }
-
-                Card(title: "Wideband AGC") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle(
-                            "Enable Wideband AGC", isOn: model.configBinding(\.widebandAGCEnabled))
-                        DoubleSliderRow(
-                            title: "Target", value: model.configBinding(\.widebandAGCTargetDB),
-                            range: -36 ... -6, format: "%.1f dB")
-                        DoubleSliderRow(
-                            title: "Attack", value: model.configBinding(\.widebandAGCAttackMS),
-                            range: 1...150, format: "%.1f ms")
-                        DoubleSliderRow(
-                            title: "Release", value: model.configBinding(\.widebandAGCReleaseMS),
-                            range: 40...1200, format: "%.1f ms")
-                        DoubleSliderRow(
-                            title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB),
-                            range: 0...24, format: "%.1f dB")
-                        DoubleSliderRow(
-                            title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB),
-                            range: -24...0, format: "%.1f dB")
-                    }
-                }
-
-                Card(title: "Orbass") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled))
-                        DoubleSliderRow(
-                            title: "Amount", value: model.configBinding(\.orbassAmount),
-                            range: 0...1.2, format: "%.2f")
-                        DoubleSliderRow(
-                            title: "Frequency", value: model.configBinding(\.orbassFreqHz),
-                            range: 40...180, format: "%.1f Hz")
-                        DoubleSliderRow(
-                            title: "Harmonics", value: model.configBinding(\.orbassHarmonics),
-                            range: 0...1.2, format: "%.2f")
-                        DoubleSliderRow(
-                            title: "Drive", value: model.configBinding(\.orbassDrive),
-                            range: 0.2...2.0, format: "%.2f")
-                    }
-                }
-
-                Card(title: "Multiband Dynamics") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 10) {
-                            Picker("Preset", selection: $multibandPresetID) {
-                                ForEach(model.multibandPresetChoices) { preset in
-                                    Text(preset.title).tag(preset.id)
-                                }
-                            }
-                            Picker("Intensity", selection: $multibandIntensity) {
-                                ForEach(MultibandPresetIntensity.allCases) { mode in
-                                    Text(mode.title).tag(mode)
-                                }
-                            }
-                            .frame(width: 110)
-                            Button("Load Preset") {
-                                model.applyMultibandPreset(
-                                    id: multibandPresetID, intensity: multibandIntensity)
-                            }
-                        }
-                        Toggle("Enable Multiband", isOn: model.configBinding(\.multibandEnabled))
-                        Picker("Mode", selection: model.configBinding(\.multibandMode)) {
-                            Text("2-band").tag(2)
-                            Text("3-band").tag(3)
-                            Text("5-band").tag(5)
-                        }
-                        DoubleSliderRow(
-                            title: "Knee", value: model.configBinding(\.multibandKneeDB),
-                            range: 0...12, format: "%.1f dB")
-                        DoubleSliderRow(
-                            title: "Link", value: model.configBinding(\.multibandLinkStrength),
-                            range: 0...1, format: "%.2f")
-                        Toggle(
-                            "Program-dependent Release",
-                            isOn: model.configBinding(\.multibandReleaseProgramDependent))
-                        DoubleSliderRow(
-                            title: "X1 Crossover", value: model.configBinding(\.multibandX1Hz),
-                            range: 30...300, format: "%.0f Hz")
-                        DoubleSliderRow(
-                            title: "X2 Crossover", value: model.configBinding(\.multibandX2Hz),
-                            range: 120...1200, format: "%.0f Hz")
-                        DoubleSliderRow(
-                            title: "X3 Crossover", value: model.configBinding(\.multibandX3Hz),
-                            range: 600...4000, format: "%.0f Hz")
-                        DoubleSliderRow(
-                            title: "X4 Crossover", value: model.configBinding(\.multibandX4Hz),
-                            range: 2500...12000, format: "%.0f Hz")
-                        DoubleSliderRow(
-                            title: "Low Threshold",
-                            value: model.configBinding(\.multibandLowThresholdDB),
-                            range: -40 ... -6, format: "%.1f dB")
-                        DoubleSliderRow(
-                            title: "Mid Threshold",
-                            value: model.configBinding(\.multibandMidThresholdDB),
-                            range: -40 ... -6, format: "%.1f dB")
-                        DoubleSliderRow(
-                            title: "High Threshold",
-                            value: model.configBinding(\.multibandHighThresholdDB),
-                            range: -40 ... -6, format: "%.1f dB")
-                        DoubleSliderRow(
-                            title: "Low Ratio", value: model.configBinding(\.multibandLowRatio),
-                            range: 1...8, format: "%.2f")
-                        DoubleSliderRow(
-                            title: "Mid Ratio", value: model.configBinding(\.multibandMidRatio),
-                            range: 1...8, format: "%.2f")
-                        DoubleSliderRow(
-                            title: "High Ratio", value: model.configBinding(\.multibandHighRatio),
-                            range: 1...8, format: "%.2f")
-                        DoubleSliderRow(
-                            title: "Low Attack", value: model.configBinding(\.multibandLowAttackMS),
-                            range: 1...120, format: "%.1f ms")
-                        DoubleSliderRow(
-                            title: "Mid Attack", value: model.configBinding(\.multibandMidAttackMS),
-                            range: 1...120, format: "%.1f ms")
-                        DoubleSliderRow(
-                            title: "High Attack",
-                            value: model.configBinding(\.multibandHighAttackMS), range: 1...120,
-                            format: "%.1f ms")
-                        DoubleSliderRow(
-                            title: "Low Release",
-                            value: model.configBinding(\.multibandLowReleaseMS), range: 40...1200,
-                            format: "%.1f ms")
-                        DoubleSliderRow(
-                            title: "Mid Release",
-                            value: model.configBinding(\.multibandMidReleaseMS), range: 40...1200,
-                            format: "%.1f ms")
-                        DoubleSliderRow(
-                            title: "High Release",
-                            value: model.configBinding(\.multibandHighReleaseMS), range: 40...1200,
-                            format: "%.1f ms")
-                        DoubleSliderRow(
-                            title: "Makeup", value: model.configBinding(\.multibandMakeupDB),
-                            range: -12...18, format: "%.1f dB")
-                    }
-                }
-
-                Card(title: "Stereo Widener & Limiter") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle(
-                            "Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled)
-                        )
-                        DoubleSliderRow(
-                            title: "Width", value: model.configBinding(\.stereoWidenWidth),
-                            range: 0...1, format: "%.2f")
-                        DoubleSliderRow(
-                            title: "Center", value: model.configBinding(\.stereoWidenCenter),
-                            range: 0...1, format: "%.2f")
-                        DoubleSliderRow(
-                            title: "Mix", value: model.configBinding(\.stereoWidenMix),
-                            range: 0...1, format: "%.2f")
-
-                        Divider()
-
-                        Toggle(
-                            "Enable Composite Limiter", isOn: model.configBinding(\.compositeLimiterEnabled))
-                        DoubleSliderRow(
-                            title: "Composite Deviation",
-                            value: model.configBinding(\.mpxDeviationKHz), range: 40...90,
-                            format: "%.1f kHz")
-                    }
-                }
+                ), range: -24...24, format: "%.1f dB")
+                DoubleSliderRow(title: "HPF", value: model.configBinding(\.hpfHz), range: 10...180, format: "%.0f Hz")
+                DoubleSliderRow(title: "HF Trim", value: model.configBinding(\.hfTrimDB), range: -12...12, format: "%.1f dB")
+                DoubleSliderRow(title: "HF Trim Freq", value: model.configBinding(\.hfTrimHz), range: 1_000...12_000, format: "%.0f Hz")
+                DoubleSliderRow(title: "Program Lowpass", value: model.configBinding(\.programLowpassHz), range: 8_000...17_000, format: "%.0f Hz")
             }
-            .padding(20)
-            .frame(maxWidth: 720, alignment: .topLeading)
+
+            Section("Wideband AGC") {
+                Toggle("Enable Wideband AGC", isOn: model.configBinding(\.widebandAGCEnabled))
+                DoubleSliderRow(title: "Target", value: model.configBinding(\.widebandAGCTargetDB), range: -36 ... -6, format: "%.1f dB")
+                DoubleSliderRow(title: "Attack", value: model.configBinding(\.widebandAGCAttackMS), range: 1...150, format: "%.1f ms")
+                DoubleSliderRow(title: "Release", value: model.configBinding(\.widebandAGCReleaseMS), range: 40...1200, format: "%.1f ms")
+                DoubleSliderRow(title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB), range: 0...24, format: "%.1f dB")
+                DoubleSliderRow(title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB), range: -24...0, format: "%.1f dB")
+            }
+
+            Section("Orbass") {
+                Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled))
+                DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount), range: 0...1.2, format: "%.2f")
+                DoubleSliderRow(title: "Frequency", value: model.configBinding(\.orbassFreqHz), range: 40...180, format: "%.1f Hz")
+                DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics), range: 0...1.2, format: "%.2f")
+                DoubleSliderRow(title: "Drive", value: model.configBinding(\.orbassDrive), range: 0.2...2.0, format: "%.2f")
+            }
+
+            Section("Multiband Dynamics") {
+                Toggle("Enable Multiband", isOn: model.configBinding(\.multibandEnabled))
+                Picker("Mode", selection: model.configBinding(\.multibandMode)) {
+                    Text("2-band").tag(2)
+                    Text("3-band").tag(3)
+                    Text("5-band").tag(5)
+                }
+                DoubleSliderRow(title: "Knee", value: model.configBinding(\.multibandKneeDB), range: 0...12, format: "%.1f dB")
+                DoubleSliderRow(title: "Link", value: model.configBinding(\.multibandLinkStrength), range: 0...1, format: "%.2f")
+                DoubleSliderRow(title: "X1 Crossover", value: model.configBinding(\.multibandX1Hz), range: 30...300, format: "%.0f Hz")
+                DoubleSliderRow(title: "X2 Crossover", value: model.configBinding(\.multibandX2Hz), range: 120...1200, format: "%.0f Hz")
+            }
+
+            Section("Stereo Widener & Limiter") {
+                Toggle("Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled))
+                DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth), range: 0...1, format: "%.2f")
+                DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter), range: 0...1, format: "%.2f")
+                DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix), range: 0...1, format: "%.2f")
+                Divider()
+                Toggle("Enable Composite Limiter", isOn: model.configBinding(\.compositeLimiterEnabled))
+                DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz), range: 40...90, format: "%.1f kHz")
+            }
         }
+        .formStyle(.grouped)
+        .frame(maxWidth: 720, alignment: .topLeading)
+        .padding(.horizontal, 10)
+        .controlSize(.small)
     }
 }
 
