@@ -2028,6 +2028,7 @@ private struct MonitoringDashboardView: View {
         .formStyle(.grouped)
         .frame(maxWidth: 720, alignment: .topLeading)
         .padding(.horizontal, 10)
+        .controlSize(.small)
     }
 
     private var inputName: String {
@@ -3643,6 +3644,7 @@ private struct HelpSectionView: View {
             }
         }
         .formStyle(.grouped)
+        .controlSize(.small)
     }
 }
 
@@ -3670,6 +3672,7 @@ private struct AboutSectionView: View {
             }
         }
         .formStyle(.grouped)
+        .controlSize(.small)
     }
 }
 
@@ -3762,11 +3765,12 @@ private struct DoubleSliderRow: View {
         LabeledContent(title) {
             HStack(spacing: 12) {
                 Slider(value: $value, in: range)
+                    .controlSize(.small)
                     .accessibilityLabel(accessibilityLabel ?? title)
                 Text(String(format: format, value))
                     .font(.system(.callout, design: .monospaced))
                     .foregroundStyle(.secondary)
-                    .frame(width: 110, alignment: .trailing)
+                    .frame(width: 70, alignment: .trailing)
             }
         }
     }
