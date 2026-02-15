@@ -29,7 +29,6 @@ enum AppSection: String, CaseIterable, Identifiable {
     case processing = "Processing"
     case rds = "RDS"
     case settings = "Settings"
-    case help = "Help"
 
     var id: String { rawValue }
 
@@ -41,7 +40,6 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .processing: return "slider.horizontal.3"
         case .rds: return "dot.radiowaves.left.and.right"
         case .settings: return "gearshape"
-        case .help: return "questionmark.circle"
         }
     }
 }
@@ -212,6 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var spectrumWindow: NSWindow?
     private var levelsWindow: NSWindow?
     private var aboutWindow: NSWindow?
+    private var helpWindow: NSWindow?
 
     init(configPath: String, runSeconds: Double?) {
         self.configPath = configPath
@@ -228,6 +227,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             levelsWindow = nil
         } else if sender == aboutWindow {
             aboutWindow = nil
+        } else if sender == helpWindow {
+            helpWindow = nil
         }
         return true
     }
@@ -363,6 +364,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
         let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
         let helpMenu = NSMenu(title: "Help")
+        
+        let openHelp = NSMenuItem(title: "StereoFool Help", action: #selector(showHelp), keyEquivalent: "?")
+        openHelp.target = self
+        helpMenu.addItem(openHelp)
+        
+        helpMenu.addItem(NSMenuItem.separator())
+        
+        let docs = NSMenuItem(title: "Online Documentation", action: #selector(openDocs), keyEquivalent: "")
+        docs.target = self
+        helpMenu.addItem(docs)
+        
         helpItem.submenu = helpMenu
         mainMenu.addItem(helpItem)
 
@@ -392,6 +404,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.makeKeyAndOrderFront(nil)
         aboutWindow = w
         app.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showHelp() {
+        let app = NSApplication.shared
+        if let existing = helpWindow {
+            if existing.isKeyWindow {
+                existing.close()
+            } else {
+                existing.makeKeyAndOrderFront(nil)
+                app.activate(ignoringOtherApps: true)
+            }
+            return
+        }
+        let helpView = HelpWindowView()
+        let hostingController = NSHostingController(rootView: helpView)
+        let w = NSWindow(contentViewController: hostingController)
+        w.title = "StereoFool Help"
+        w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        w.setContentSize(NSSize(width: 560, height: 560))
+        w.minSize = NSSize(width: 520, height: 420)
+        w.isReleasedWhenClosed = false
+        w.delegate = self
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        helpWindow = w
+        app.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openDocs() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/bkram/StereoFool")!)
     }
 
     @objc private func showSettings() {
@@ -1961,8 +2003,6 @@ private struct RootView: View {
                     RDSSectionView(model: model)
                 case .settings:
                     SettingsSectionView(model: model)
-                case .help:
-                    HelpSectionView()
                 }
             }
         }
@@ -3632,6 +3672,128 @@ private struct SettingsSectionView: View {
             }
             .padding(20)
         } 
+    }
+}
+
+private enum HelpTopic: String, CaseIterable, Identifiable {
+    case inputLevels = "Input Levels"
+    case rdsText = "RDS Text Format"
+
+    var id: String { rawValue }
+
+    var icon: String {
+        switch self {
+        case .inputLevels: return "waveform.path.ecg"
+        case .rdsText: return "dot.radiowaves.left.and.right"
+        }
+    }
+}
+
+private struct HelpWindowView: View {
+    @State private var selection: HelpTopic? = .inputLevels
+
+    var body: some View {
+        NavigationSplitView {
+            List(HelpTopic.allCases, selection: $selection) { topic in
+                Label(topic.rawValue, systemImage: topic.icon)
+                    .symbolRenderingMode(.hierarchical)
+                    .tag(topic as HelpTopic?)
+            }
+            .listStyle(.sidebar)
+            .navigationTitle("Help")
+        } detail: {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    switch selection ?? .inputLevels {
+                    case .inputLevels:
+                        HelpInputLevelsView()
+                    case .rdsText:
+                        HelpRDSTextView()
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: 720, alignment: .leading)
+            }
+            .navigationTitle(selection?.rawValue ?? "Help")
+        }
+        .navigationSplitViewStyle(.balanced)
+        .toolbarTitleDisplayMode(.inline)
+    }
+}
+
+private struct HelpInputLevelsView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Recommended targets for FM broadcast alignment.")
+                .foregroundStyle(.secondary)
+
+            GroupBox {
+                HStack(spacing: 18) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Peak")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("-18 to -6 dBFS")
+                            .font(.system(.title3, design: .rounded).weight(.semibold))
+                    }
+                    Divider().frame(height: 34)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Average (RMS)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("-24 to -20 dBFS")
+                            .font(.system(.title3, design: .rounded).weight(.semibold))
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 2)
+            }
+
+            Text("Notes")
+                .font(.headline)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("• US nominal: -20 dBFS")
+                Text("• Europe (EBU R68): -18 dBFS")
+                Text("• Very hot chains may peak near -6 dBFS")
+                Text("If you hit 0 dBFS, reduce input gain and re-check pre-emphasis behavior.")
+            }
+            .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct HelpRDSTextView: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Timed text sequences for PS and Radiotext.")
+                .foregroundStyle(.secondary)
+
+            GroupBox("Syntax") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("10s:First/10s:Second")
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+
+                    Text("Shows \"First\" for 10 seconds, then \"Second\" for 10 seconds, repeating.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            GroupBox("Examples") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("5s:StereoFool - 5s:FM Coder")
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                    Text("20s:Station Name/10s:Now Playing")
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                    Text("8s:Tune to 88.5/8s:My Frequency")
+                        .font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+        }
     }
 }
 
