@@ -1947,22 +1947,30 @@ private struct RootView: View {
         .navigationSplitViewStyle(.balanced)
         .navigationTitle("StereoFool")
         .toolbar {
-            ToolbarItem(placement: .principal) {
+            ToolbarItem(placement: .navigation) {
                 MonitoringStatusLine(isRunning: model.isRunning)
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                Button(model.isRunning ? "Stop" : "Start") {
-                    model.startOrStopTransport()
-                }
-                .keyboardShortcut(.space, modifiers: [])
-                .disabled(model.isBusy)
-                .accessibilityLabel(model.isRunning ? "Stop audio engine" : "Start audio engine")
+                ControlGroup {
+                    Button {
+                        model.startOrStopTransport()
+                    } label: {
+                        Label(model.isRunning ? "Stop" : "Start",
+                              systemImage: model.isRunning ? "stop.fill" : "play.fill")
+                    }
+                    .keyboardShortcut(.space, modifiers: [])
+                    .disabled(model.isBusy)
+                    .accessibilityLabel(model.isRunning ? "Stop audio engine" : "Start audio engine")
 
-                Button(model.processingBypass ? "Bypass On" : "Bypass") {
-                    model.toggleBypass()
+                    Button {
+                        model.toggleBypass()
+                    } label: {
+                        Label(model.processingBypass ? "Bypass On" : "Bypass",
+                              systemImage: model.processingBypass ? "bolt.slash.fill" : "bolt.fill")
+                    }
+                    .disabled(model.isBusy)
+                    .accessibilityLabel(model.processingBypass ? "Disable bypass (processing enabled)" : "Enable bypass (processing disabled)")
                 }
-                .disabled(model.isBusy)
-                .accessibilityLabel(model.processingBypass ? "Disable bypass (processing enabled)" : "Enable bypass (processing disabled)")
             }
         }
         .toolbarTitleDisplayMode(.inline)
@@ -2628,11 +2636,11 @@ private struct MeterBar: View {
                         .fill(
                             LinearGradient(
                                 colors: [
-                                    Color.green.opacity(0.92),
-                                    Color.green.opacity(0.92),
-                                    Color.yellow.opacity(0.92),
-                                    Color.orange.opacity(0.95),
-                                    Color.red.opacity(0.95),
+                                    Color.green.opacity(0.85),
+                                    Color.green.opacity(0.85),
+                                    Color.yellow.opacity(0.85),
+                                    Color.orange.opacity(0.9),
+                                    Color.red.opacity(0.9),
                                 ],
                                 startPoint: .leading,
                                 endPoint: .trailing
@@ -2901,18 +2909,18 @@ private struct MPXSpectrumView: View {
                 fill.addLine(to: CGPoint(x: plotRect.minX, y: plotRect.maxY))
                 fill.closeSubpath()
                 let gradient = Gradient(colors: [
-                    Color.red.opacity(0.85),
-                    Color.yellow.opacity(0.80),
-                    Color.green.opacity(0.72),
-                    Color.cyan.opacity(0.66),
-                    Color.blue.opacity(0.58),
+                    Color.red.opacity(0.65),
+                    Color.yellow.opacity(0.60),
+                    Color.green.opacity(0.55),
+                    Color.cyan.opacity(0.50),
+                    Color.blue.opacity(0.45),
                 ])
                 context.fill(
                     fill,
                     with: .linearGradient(
                         gradient, startPoint: CGPoint(x: 0, y: 0),
                         endPoint: CGPoint(x: 0, y: size.height)))
-                context.stroke(line, with: .color(.white.opacity(0.85)), lineWidth: 1.4)
+                context.stroke(line, with: .color(.white.opacity(0.7)), lineWidth: 1.0)
 
                 if nyquist > 0.0, nyquist < maxDisplayHz {
                     let xNyquist = xPosition(forHz: nyquist, in: plotRect, maxHz: maxDisplayHz)
