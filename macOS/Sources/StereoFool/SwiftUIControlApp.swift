@@ -1949,7 +1949,7 @@ private struct RootView: View {
         .navigationSplitViewStyle(.balanced)
         .navigationTitle("StereoFool")
         .toolbar {
-            ToolbarItem(placement: .navigation) {
+            ToolbarItem(placement: .status) {
                 MonitoringStatusLine(isRunning: model.isRunning)
             }
             ToolbarItemGroup(placement: .primaryAction) {
@@ -2003,33 +2003,41 @@ private struct MonitoringDashboardView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Card(title: "Status") {
-                    MonitoringHealthSummaryRow(health: model.streamHealth)
-                }
+        Form {
+            Section("Status") {
+                MonitoringHealthSummaryRow(health: model.streamHealth)
+            }
 
-                Card(title: "Routing") {
-                    LabeledContent("Input") {
-                        Text(model.selectedInputUID.isEmpty ? "—" : model.inputDevices.first { $0.uid == model.selectedInputUID }?.name ?? "—")
-                    }
-                    LabeledContent("Output") {
-                        Text(model.selectedOutputUID.isEmpty ? "—" : model.outputDevices.first { $0.uid == model.selectedOutputUID }?.name ?? "—")
-                    }
+            Section("Routing") {
+                LabeledContent("Input") {
+                    Text(inputName)
                 }
-
-                Card(title: "RDS") {
-                    MonitoringRDSSnapshotSectionView(model: model)
-                }
-
-                Card(title: "DSP") {
-                    MonitoringDSPStatusSectionView(model: model)
+                LabeledContent("Output") {
+                    Text(outputName)
                 }
             }
-            .padding(24)
-            .frame(maxWidth: 720, alignment: .topLeading)
+
+            Section("RDS") {
+                MonitoringRDSSnapshotSectionView(model: model)
+            }
+
+            Section("DSP") {
+                MonitoringDSPStatusSectionView(model: model)
+            }
         }
-        .scrollContentBackground(.hidden)
+        .formStyle(.grouped)
+        .frame(maxWidth: 720, alignment: .topLeading)
+        .padding(.horizontal, 10)
+    }
+
+    private var inputName: String {
+        guard !model.selectedInputUID.isEmpty else { return "—" }
+        return model.inputDevices.first(where: { $0.uid == model.selectedInputUID })?.name ?? "—"
+    }
+
+    private var outputName: String {
+        guard !model.selectedOutputUID.isEmpty else { return "—" }
+        return model.outputDevices.first(where: { $0.uid == model.selectedOutputUID })?.name ?? "—"
     }
 }
 
@@ -2075,25 +2083,16 @@ private struct MonitoringHealthSummaryRow: View {
 
     var body: some View {
         DisclosureGroup(isExpanded: $expanded) {
-            Divider().padding(.vertical, 6)
-
-            Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
-                GridRow {
-                    MonitoringDetailValue("Ring", ringText)
-                    MonitoringDetailValue("Overflows (10s)", "\(health.overflowsRecent)")
-                }
-                GridRow {
-                    MonitoringDetailValue("Underflows (10s)", "\(health.underflowsRecent)")
-                    MonitoringDetailValue(
-                        "Totals", "O:\(health.overflowsTotal) U:\(health.underflowsTotal)")
-                }
-                GridRow {
-                    MonitoringDetailValue("Rates", rateText)
-                    EmptyView()
-                }
+            VStack(spacing: 6) {
+                LabeledContent("Ring") { Text(ringText).textSelection(.enabled) }
+                LabeledContent("Overflows (10s)") { Text("\(health.overflowsRecent)") }
+                LabeledContent("Underflows (10s)") { Text("\(health.underflowsRecent)") }
+                LabeledContent("Totals") { Text("O:\(health.overflowsTotal) U:\(health.underflowsTotal)") }
+                LabeledContent("Rates") { Text(rateText) }
             }
             .font(.caption)
             .foregroundStyle(.secondary)
+            .padding(.top, 6)
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: "circle.fill")
@@ -2630,6 +2629,13 @@ private struct MeterBar: View {
     private let scaleTicks: [Double] = [0.0, 0.33, 0.66, 0.83, 0.92, 1.0]
     private let scaleLabels: [String] = ["-36", "-24", "-12", "-6", "-3", "0 dBFS"]
 
+    private var meterTint: Color {
+        if level >= 0.92 { return .red }
+        if level >= 0.83 { return .orange }
+        if level >= 0.66 { return .yellow }
+        return .green
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             GeometryReader { geo in
@@ -2645,19 +2651,7 @@ private struct MeterBar: View {
                             .offset(x: (tick * geo.size.width) - 0.5)
                     }
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color.green.opacity(0.85),
-                                    Color.green.opacity(0.85),
-                                    Color.yellow.opacity(0.85),
-                                    Color.orange.opacity(0.9),
-                                    Color.red.opacity(0.9),
-                                ],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
+                        .fill(meterTint.opacity(0.75))
                         .frame(width: max(0.0, width))
                     if peakLevel != nil {
                         Rectangle()
