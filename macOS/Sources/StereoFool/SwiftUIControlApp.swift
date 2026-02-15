@@ -213,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var scopesWindow: NSWindow?
     private var spectrumWindow: NSWindow?
     private var levelsWindow: NSWindow?
+    private var aboutWindow: NSWindow?
 
     init(configPath: String, runSeconds: Double?) {
         self.configPath = configPath
@@ -227,6 +228,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             model?.spectrumWindowVisible = false
         } else if sender == levelsWindow {
             levelsWindow = nil
+        } else if sender == aboutWindow {
+            aboutWindow = nil
         }
         return true
     }
@@ -369,13 +372,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc private func showAbout() {
-        NSApplication.shared.orderFrontStandardAboutPanel(
-            options: [
-                .applicationName: "StereoFool",
-                .applicationVersion: AppConfig.appVersion,
-                .credits: NSAttributedString(string: "© 2026 Bkram Developments")
-            ]
-        )
+        let app = NSApplication.shared
+        if let existing = aboutWindow {
+            if existing.isKeyWindow {
+                existing.close()
+            } else {
+                existing.makeKeyAndOrderFront(nil)
+                app.activate(ignoringOtherApps: true)
+            }
+            return
+        }
+        let aboutView = AboutSectionView()
+        let hostingController = NSHostingController(rootView: aboutView)
+        let w = NSWindow(contentViewController: hostingController)
+        w.title = "About StereoFool"
+        w.styleMask = [.titled, .closable]
+        w.setContentSize(NSSize(width: 450, height: 500))
+        w.isReleasedWhenClosed = false
+        w.delegate = self
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        aboutWindow = w
+        app.activate(ignoringOtherApps: true)
     }
 
     @objc private func showSettings() {
