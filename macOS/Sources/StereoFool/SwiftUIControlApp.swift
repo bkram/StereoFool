@@ -3707,7 +3707,7 @@ private struct HelpWindowView: View {
             .navigationTitle("Help")
         } detail: {
             ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 12) {
                     switch selection {
                     case .inputLevels:
                         HelpInputLevelsView()
@@ -3716,7 +3716,7 @@ private struct HelpWindowView: View {
                     }
                 }
                 .padding(20)
-                .frame(maxWidth: 720, alignment: .leading)
+                .frame(maxWidth: 640, alignment: .leading)
             }
             .navigationTitle(selection.rawValue)
         }
@@ -3725,45 +3725,61 @@ private struct HelpWindowView: View {
     }
 }
 
+private func CodeBlock(_ text: String) -> some View {
+    Text(text)
+        .font(.system(.callout, design: .monospaced))
+        .textSelection(.enabled)
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+}
+
 private struct HelpInputLevelsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Recommended targets for FM broadcast alignment.")
                 .foregroundStyle(.secondary)
+                .font(.callout)
 
             GroupBox {
                 HStack(spacing: 18) {
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("Peak")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Text("-18 to -6 dBFS")
-                            .font(.system(.title3, design: .rounded).weight(.semibold))
+                            .font(.body.weight(.semibold))
                     }
-                    Divider().frame(height: 34)
-                    VStack(alignment: .leading, spacing: 6) {
+                    Divider().frame(height: 28)
+                    VStack(alignment: .leading, spacing: 4) {
                         Text("Average (RMS)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         Text("-24 to -20 dBFS")
-                            .font(.system(.title3, design: .rounded).weight(.semibold))
+                            .font(.body.weight(.semibold))
                     }
                     Spacer()
                 }
-                .padding(.vertical, 2)
+                .padding(.vertical, 4)
             }
 
             Text("Notes")
                 .font(.headline)
+                .padding(.top, 4)
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text("• US nominal: -20 dBFS")
                 Text("• Europe (EBU R68): -18 dBFS")
                 Text("• Very hot chains may peak near -6 dBFS")
                 Text("If you hit 0 dBFS, reduce input gain and re-check pre-emphasis behavior.")
             }
             .foregroundStyle(.secondary)
+            .font(.callout)
+
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: 640, alignment: .leading)
     }
 }
 
@@ -3772,32 +3788,31 @@ private struct HelpRDSTextView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Timed text sequences for PS and Radiotext.")
                 .foregroundStyle(.secondary)
+                .font(.callout)
 
-            GroupBox("Syntax") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("10s:First/10s:Second")
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
+            Text("Syntax")
+                .font(.headline)
+                .padding(.top, 4)
 
-                    Text("Shows \"First\" for 10 seconds, then \"Second\" for 10 seconds, repeating.")
-                        .foregroundStyle(.secondary)
-                }
-            }
+            CodeBlock("10s:First/10s:Second")
 
-            GroupBox("Examples") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("5s:StereoFool - 5s:FM Coder")
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                    Text("20s:Station Name/10s:Now Playing")
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                    Text("8s:Tune to 88.5/8s:My Frequency")
-                        .font(.system(.body, design: .monospaced))
-                        .textSelection(.enabled)
-                }
-            }
+            Text("Shows \"First\" for 10 seconds, then \"Second\" for 10 seconds, repeating.")
+                .foregroundStyle(.secondary)
+                .font(.callout)
+
+            Text("Examples")
+                .font(.headline)
+                .padding(.top, 8)
+
+            CodeBlock("""
+5s:StereoFool - 5s:FM Coder
+20s:Station Name/10s:Now Playing
+8s:Tune to 88.5/8s:My Frequency
+""")
+
+            Spacer(minLength: 0)
         }
+        .frame(maxWidth: 640, alignment: .leading)
     }
 }
 
