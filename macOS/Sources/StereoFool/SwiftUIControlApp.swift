@@ -369,7 +369,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc private func showAbout() {
-        model?.selectedSection = .about
+        NSApplication.shared.orderFrontStandardAboutPanel(
+            options: [
+                .applicationName: "StereoFool",
+                .applicationVersion: AppConfig.appVersion,
+                .credits: NSAttributedString(string: "© 2026 Bkram Developments")
+            ]
+        )
     }
 
     @objc private func showSettings() {
