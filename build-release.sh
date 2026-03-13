@@ -9,6 +9,7 @@ VERSION=${1:-0.8}
 OUTPUT_DIR="macOS/dist"
 APP_NAME="StereoFool"
 ICON_FILE="macOS/Resources/StereoFool.icns"
+ENTITLEMENTS="macOS/StereoFool.entitlements"
 
 echo "Building StereoFool $VERSION release (universal binary)..."
 
@@ -16,7 +17,7 @@ echo "Building StereoFool $VERSION release (universal binary)..."
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-# Build release binary for both architectures
+# Build release binary for both architectures with entitlements
 echo "Building arm64..."
 swift build --package-path macOS -c release --arch arm64
 
@@ -34,7 +35,14 @@ echo "Creating universal binary..."
 lipo -create \
     "macOS/.build/arm64-apple-macosx/release/StereoFool" \
     "macOS/.build/x86_64-apple-macosx/release/StereoFool" \
-    -output "$APP_DIR/Contents/MacOS/StereoFool"
+    -output "$OUTPUT_DIR/StereoFool-universal"
+
+# Sign with entitlements (ad-hoc signing for development/testing)
+echo "Signing binary with entitlements..."
+codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$OUTPUT_DIR/StereoFool-universal"
+
+# Copy signed binary to app bundle
+cp "$OUTPUT_DIR/StereoFool-universal" "$APP_DIR/Contents/MacOS/StereoFool"
 
 if [ -f "$ICON_FILE" ]; then
     cp "$ICON_FILE" "$APP_DIR/Contents/Resources/"
@@ -65,12 +73,17 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>StereoFool needs microphone access for FM signal input.</string>
+    <string>StereoFool needs microphone access to capture audio input for FM signal processing.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2024. All rights reserved.</string>
 </dict>
 </plist>
 EOF
+
+# Embed entitlements in the app bundle
+cp "$ENTITLEMENTS" "$APP_DIR/Contents/Resources/StereoFool.entitlements"
 
 # Create default config
 cat > "$OUTPUT_DIR/StereoFool.ini" << 'EOF'
