@@ -17,7 +17,7 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
-      - name: Build Release
+      - name: Build Release (Universal Binary)
         run: |
           VERSION=${GITHUB_REF#refs/tags/v}
           ./build-release.sh "$VERSION"
@@ -27,7 +27,6 @@ jobs:
         with:
           files: |
             macOS/dist/StereoFool-*.dmg
-            macOS/dist/StereoFool.app.tar.gz
           draft: false
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
         env:

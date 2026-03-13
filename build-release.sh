@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build StereoFool release DMG
+# Build StereoFool release DMG with universal binary
 
 set -e
 
@@ -10,15 +10,18 @@ OUTPUT_DIR="macOS/dist"
 APP_NAME="StereoFool"
 ICON_FILE="macOS/Resources/StereoFool.icns"
 
-echo "Building StereoFool $VERSION release..."
+echo "Building StereoFool $VERSION release (universal binary)..."
 
 # Clean output directory
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-# Build release binary
-echo "Building release binary..."
-swift build --package-path macOS -c release
+# Build release binary for both architectures
+echo "Building arm64..."
+swift build --package-path macOS -c release --arch arm64
+
+echo "Building x86_64..."
+swift build --package-path macOS -c release --arch x86_64
 
 # Create .app bundle structure
 APP_DIR="$OUTPUT_DIR/$APP_NAME.app"
@@ -26,9 +29,13 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-# Copy executable
-RELEASE_DIR="macOS/.build/arm64-apple-macosx/release"
-cp "$RELEASE_DIR/StereoFool" "$APP_DIR/Contents/MacOS/"
+# Create universal binary
+echo "Creating universal binary..."
+lipo -create \
+    "macOS/.build/arm64-apple-macosx/release/StereoFool" \
+    "macOS/.build/x86_64-apple-macosx/release/StereoFool" \
+    -output "$APP_DIR/Contents/MacOS/StereoFool"
+
 if [ -f "$ICON_FILE" ]; then
     cp "$ICON_FILE" "$APP_DIR/Contents/Resources/"
 fi
