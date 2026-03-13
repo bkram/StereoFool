@@ -1,7 +1,24 @@
 import Foundation
 
 struct AppConfig {
-    static let appVersion: String = "0.7"
+    static let appVersion: String = "0.8"
+
+    static var defaultINIPath: String {
+        let fileManager = FileManager.default
+        if let appSupport = fileManager.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first {
+            return appSupport
+                .appendingPathComponent("StereoFool", isDirectory: true)
+                .appendingPathComponent("StereoFool.ini", isDirectory: false)
+                .path
+        }
+        return ((NSHomeDirectory() as NSString)
+            .appendingPathComponent("Library/Application Support/StereoFool/StereoFool.ini")
+            as NSString)
+            .standardizingPath
+    }
 
     var sampleRate: Double = 192_000.0
     var fftWindow96kHz: Bool = true
@@ -24,7 +41,7 @@ struct AppConfig {
     var hpfHz: Double = 30.0
     var hfTrimDB: Double = 0.0
     var hfTrimHz: Double = 4000.0
-    var programLowpassHz: Double = 15_000.0
+    var programLowpassHz: Double = 16_400.0
     var limitMPX: Bool = true
     var limitThreshold: Double = 0.98
     var limitLookaheadMS: Double = 5.0

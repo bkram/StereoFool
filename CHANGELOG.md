@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8
+
+### Added
+- Multiband dynamics presets (CHR/EDM, Rock, AC/Pop, Country, Talk, Urban, Dance, News, Jazz, Classical) with intensity control (Light/Normal/Heavy)
+- FFT spectrum window toggle (96 kHz full / 60 kHz FM band)
+- Reset Processing to Defaults button
+- Default PTY set to Science
+
+### Changed
+- Updated default RDS text to "StereoFool: FM MPX + RDS Audio Processor"
+- Unified window sizes for Scopes, Spectrum, and Levels windows (700x500, min 600x450)
+- Processing section refactored with HIG-compliant plain Section style
+- MPX spectrum display simplified (removed 19 kHz pilot marker)
+- Window size constants centralized for easy configuration
+
+### Fixed
+- Level meters now properly displayed in Levels window
+- Removed duplicate state variables in Processing section
+
 ## 0.7
 
 - Initial native macOS release built with Swift + SwiftUI.

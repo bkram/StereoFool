@@ -11,16 +11,111 @@ private let kWindowWidth: CGFloat = 700
 private let kWindowHeight: CGFloat = 330
 private let kWindowMinWidth: CGFloat = 700
 private let kWindowMinHeight: CGFloat = 330
+private let kStereoFoolIconSymbol = "\u{1F3A7}"
+
+private func makeStereoFoolAppIcon(size: CGFloat = 512) -> NSImage {
+    let image = NSImage(size: NSSize(width: size, height: size))
+    image.lockFocus()
+
+    let bounds = NSRect(origin: .zero, size: image.size)
+    let inset = size * 0.07
+    let rect = bounds.insetBy(dx: inset, dy: inset)
+    let radius = size * 0.22
+
+    let shadow = NSShadow()
+    shadow.shadowColor = NSColor.black.withAlphaComponent(0.22)
+    shadow.shadowBlurRadius = size * 0.03
+    shadow.shadowOffset = NSSize(width: 0, height: -(size * 0.015))
+    shadow.set()
+
+    let panelPath = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+    NSGradient(colors: [
+        NSColor(calibratedRed: 0.12, green: 0.45, blue: 0.63, alpha: 1.0),
+        NSColor(calibratedRed: 0.04, green: 0.16, blue: 0.28, alpha: 1.0),
+    ])?.draw(in: panelPath, angle: -90)
+
+    NSGraphicsContext.current?.saveGraphicsState()
+    panelPath.addClip()
+
+    NSColor.white.withAlphaComponent(0.10).setStroke()
+    let borderPath = NSBezierPath(roundedRect: rect.insetBy(dx: size * 0.006, dy: size * 0.006), xRadius: radius, yRadius: radius)
+    borderPath.lineWidth = size * 0.012
+    borderPath.stroke()
+
+    let center = NSPoint(x: bounds.midX, y: bounds.midY)
+    let symbolFont = NSFont(name: "Apple Color Emoji", size: size * 0.42)
+        ?? NSFont.systemFont(ofSize: size * 0.42, weight: .black)
+    let shadowStyle = NSShadow()
+    shadowStyle.shadowColor = NSColor.black.withAlphaComponent(0.18)
+    shadowStyle.shadowBlurRadius = size * 0.02
+    shadowStyle.shadowOffset = NSSize(width: 0, height: -(size * 0.012))
+    let symbolAttributes: [NSAttributedString.Key: Any] = [
+        .font: symbolFont,
+        .foregroundColor: NSColor(calibratedWhite: 0.98, alpha: 1.0),
+        .shadow: shadowStyle,
+    ]
+    let symbol = NSAttributedString(string: kStereoFoolIconSymbol, attributes: symbolAttributes)
+    let symbolSize = symbol.size()
+    let symbolRect = NSRect(
+        x: center.x - (symbolSize.width / 2),
+        y: center.y - (symbolSize.height / 2) - (size * 0.03),
+        width: symbolSize.width,
+        height: symbolSize.height
+    )
+    symbol.draw(in: symbolRect)
+
+    let waveform = NSBezierPath()
+    let waveformColor = NSColor(calibratedRed: 0.34, green: 0.84, blue: 0.77, alpha: 0.95)
+    let waveformLineWidth = size * 0.022
+    let waveformY = rect.maxY - (size * 0.14)
+    let waveformLeft = rect.minX + (size * 0.16)
+    let waveformWidth = rect.width - (size * 0.32)
+    waveform.move(to: NSPoint(x: waveformLeft, y: waveformY))
+    waveform.curve(
+        to: NSPoint(x: waveformLeft + (waveformWidth * 0.2), y: waveformY),
+        controlPoint1: NSPoint(x: waveformLeft + (waveformWidth * 0.05), y: waveformY),
+        controlPoint2: NSPoint(x: waveformLeft + (waveformWidth * 0.12), y: waveformY - (size * 0.035))
+    )
+    waveform.curve(
+        to: NSPoint(x: waveformLeft + (waveformWidth * 0.4), y: waveformY),
+        controlPoint1: NSPoint(x: waveformLeft + (waveformWidth * 0.28), y: waveformY + (size * 0.055)),
+        controlPoint2: NSPoint(x: waveformLeft + (waveformWidth * 0.34), y: waveformY + (size * 0.01))
+    )
+    waveform.curve(
+        to: NSPoint(x: waveformLeft + (waveformWidth * 0.62), y: waveformY),
+        controlPoint1: NSPoint(x: waveformLeft + (waveformWidth * 0.47), y: waveformY - (size * 0.06)),
+        controlPoint2: NSPoint(x: waveformLeft + (waveformWidth * 0.55), y: waveformY - (size * 0.015))
+    )
+    waveform.curve(
+        to: NSPoint(x: waveformLeft + (waveformWidth * 0.8), y: waveformY),
+        controlPoint1: NSPoint(x: waveformLeft + (waveformWidth * 0.69), y: waveformY + (size * 0.05)),
+        controlPoint2: NSPoint(x: waveformLeft + (waveformWidth * 0.75), y: waveformY + (size * 0.015))
+    )
+    waveform.curve(
+        to: NSPoint(x: waveformLeft + waveformWidth, y: waveformY),
+        controlPoint1: NSPoint(x: waveformLeft + (waveformWidth * 0.88), y: waveformY - (size * 0.035)),
+        controlPoint2: NSPoint(x: waveformLeft + (waveformWidth * 0.95), y: waveformY)
+    )
+    waveform.lineWidth = waveformLineWidth
+    waveform.lineCapStyle = .round
+    waveform.lineJoinStyle = .round
+    waveformColor.setStroke()
+    waveform.stroke()
+
+    NSGraphicsContext.current?.restoreGraphicsState()
+    image.unlockFocus()
+    return image
+}
 
 private struct MonitoringStatusLine: View {
     let isRunning: Bool
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: isRunning ? "circle.fill" : "circle")
-                .font(.system(size: 8))
-                .foregroundStyle(isRunning ? .green : .secondary)
-
+            Circle()
+                .fill(isRunning ? Color.green : Color.gray)
+                .frame(width: 8, height: 8)
+            
             Text(isRunning ? "Running" : "Stopped")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -30,24 +125,52 @@ private struct MonitoringStatusLine: View {
 
 enum AppSection: String, CaseIterable, Identifiable {
     case monitoring = "Monitoring"
-    case system = "System"
-    case interfaces = "Interfaces"
     case processing = "Processing"
     case rds = "RDS"
-    case settings = "Settings"
 
     var id: String { rawValue }
 
     var icon: String {
         switch self {
         case .monitoring: return "waveform"
-        case .system: return "cpu"
-        case .interfaces: return "cable.connector"
         case .processing: return "slider.horizontal.3"
         case .rds: return "dot.radiowaves.left.and.right"
-        case .settings: return "gearshape"
         }
     }
+
+    var detailTitle: String { rawValue }
+
+    var detailSubtitle: String {
+        switch self {
+        case .monitoring:
+            return "Overview and live status"
+        case .processing:
+            return "DSP controls and presets"
+        case .rds:
+            return "Program service and carrier settings"
+        }
+    }
+}
+
+enum ProcessingTab: String, CaseIterable, Identifiable {
+    case core = "Core"
+    case agc = "AGC"
+    case orbass = "Orbass"
+    case multiband = "Multiband"
+    case widener = "Widener"
+    case limiter = "Limiter"
+
+    var id: String { rawValue }
+}
+
+enum RDSTab: String, CaseIterable, Identifiable {
+    case program = "Program"
+    case radiotext = "Radiotext"
+    case longPS = "Long PS"
+    case flags = "Flags"
+    case carrier = "Carrier"
+
+    var id: String { rawValue }
 }
 
 struct PresetChoice: Identifiable {
@@ -217,6 +340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var levelsWindow: NSWindow?
     private var aboutWindow: NSWindow?
     private var helpWindow: NSWindow?
+    private var settingsWindow: NSWindow?
 
     init(configPath: String, runSeconds: Double?) {
         self.configPath = configPath
@@ -224,7 +348,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if sender == scopesWindow {
+        if sender == window {
+            sender.orderOut(nil)
+            return false
+        } else if sender == scopesWindow {
             scopesWindow = nil
         } else if sender == spectrumWindow {
             spectrumWindow = nil
@@ -235,11 +362,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             aboutWindow = nil
         } else if sender == helpWindow {
             helpWindow = nil
+        } else if sender == settingsWindow {
+            settingsWindow = nil
         }
         return true
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        guard !flag else { return true }
+        showMainWindow()
+        return true
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.applicationIconImage = makeStereoFoolAppIcon()
         NSApp.activate(ignoringOtherApps: true)
         
         let vm = StereoFoolViewModel(configPath: configPath)
@@ -258,8 +394,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.center()
         w.title = "StereoFool"
         w.titleVisibility = .visible
-        w.toolbarStyle = .unifiedCompact
         w.minSize = NSSize(width: 900, height: 620)
+        w.delegate = self
+        
         w.contentView = host
         w.makeKeyAndOrderFront(nil)
         window = w
@@ -277,7 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        false
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -298,11 +435,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // App Menu (unchanged)
         let appItem = NSMenuItem()
         let appMenu = NSMenu(title: appName)
-        appMenu.addItem(
+        let aboutItem = appMenu.addItem(
             withTitle: "About \(appName)", action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
         appMenu.addItem(NSMenuItem.separator())
-        appMenu.addItem(
-            withTitle: "Preferences...", action: #selector(showSettings), keyEquivalent: ",")
+        let settingsItem = appMenu.addItem(
+            withTitle: "Settings...", action: #selector(showSettings), keyEquivalent: ",")
+        settingsItem.target = self
         appMenu.addItem(withTitle: "Services", action: nil, keyEquivalent: "").submenu = NSMenu(
             title: "Services")
         appMenu.addItem(NSMenuItem.separator())
@@ -326,9 +465,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // File Menu
         let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "File")
-        fileMenu.addItem(withTitle: "Open...", action: #selector(openConfig), keyEquivalent: "o")
-        fileMenu.addItem(withTitle: "Save", action: #selector(saveConfig), keyEquivalent: "s")
-        fileMenu.addItem(withTitle: "Save As...", action: #selector(saveConfigAs), keyEquivalent: "S").keyEquivalentModifierMask = [.command, .shift]
+        let openItem = fileMenu.addItem(withTitle: "Open...", action: #selector(openConfig), keyEquivalent: "o")
+        openItem.target = self
+        let saveItem = fileMenu.addItem(withTitle: "Save", action: #selector(saveConfig), keyEquivalent: "s")
+        saveItem.target = self
+        let saveAsItem = fileMenu.addItem(withTitle: "Save As...", action: #selector(saveConfigAs), keyEquivalent: "S")
+        saveAsItem.target = self
+        saveAsItem.keyEquivalentModifierMask = [.command, .shift]
         fileItem.submenu = fileMenu
         mainMenu.addItem(fileItem)
 
@@ -336,16 +479,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let transportItem = NSMenuItem(title: "Control", action: nil, keyEquivalent: "")
         let transportMenu = NSMenu(title: "Control")
 
-        transportMenu.addItem(
-            withTitle: "Start/Stop", action: #selector(toggleTransport), keyEquivalent: "."
-        ).keyEquivalentModifierMask = []
-        transportMenu.addItem(
+        let startStopItem = transportMenu.addItem(
+            withTitle: "Start/Stop", action: #selector(toggleTransport), keyEquivalent: "t"
+        )
+        startStopItem.target = self
+        startStopItem.keyEquivalentModifierMask = [.command]
+        let bypassItem = transportMenu.addItem(
             withTitle: "Bypass", action: #selector(toggleBypass), keyEquivalent: "b")
-        transportMenu.addItem(
+        bypassItem.target = self
+        let resetPeaksItem = transportMenu.addItem(
             withTitle: "Reset Peaks", action: #selector(resetPeaks), keyEquivalent: "r")
+        resetPeaksItem.target = self
         transportMenu.addItem(NSMenuItem.separator())
-        transportMenu.addItem(
-            withTitle: "Apply Pending Changes", action: #selector(applyPendingChanges), keyEquivalent: "a")
+        let applyItem = transportMenu.addItem(
+            withTitle: "Apply Pending Changes", action: #selector(applyPendingChanges), keyEquivalent: "A")
+        applyItem.target = self
+        applyItem.keyEquivalentModifierMask = [.command, .shift]
 
         transportItem.submenu = transportMenu
         mainMenu.addItem(transportItem)
@@ -354,10 +503,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let windowItem = NSMenuItem(title: "Window", action: nil, keyEquivalent: "")
         let windowMenu = NSMenu(title: "Window")
         
-        windowMenu.addItem(withTitle: "Main", action: #selector(showMainWindow), keyEquivalent: "1")
-        windowMenu.addItem(withTitle: "Spectrum", action: #selector(showSpectrumWindow), keyEquivalent: "8")
-        windowMenu.addItem(withTitle: "Levels", action: #selector(showLevelsWindow), keyEquivalent: "9")
-        windowMenu.addItem(withTitle: "Scopes", action: #selector(showScopesWindow), keyEquivalent: "0")
+        let mainWindowItem = windowMenu.addItem(withTitle: "Main", action: #selector(showMainWindow), keyEquivalent: "1")
+        mainWindowItem.target = self
+        let spectrumItem = windowMenu.addItem(withTitle: "Spectrum", action: #selector(showSpectrumWindow), keyEquivalent: "8")
+        spectrumItem.target = self
+        let levelsItem = windowMenu.addItem(withTitle: "Levels", action: #selector(showLevelsWindow), keyEquivalent: "9")
+        levelsItem.target = self
+        let scopesItem = windowMenu.addItem(withTitle: "Scopes", action: #selector(showScopesWindow), keyEquivalent: "0")
+        scopesItem.target = self
         
         windowMenu.addItem(NSMenuItem.separator())
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
@@ -367,6 +520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         
         windowItem.submenu = windowMenu
         mainMenu.addItem(windowItem)
+        NSApp.windowsMenu = windowMenu
 
         let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
         let helpMenu = NSMenu(title: "Help")
@@ -447,7 +601,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc private func showSettings() {
-        model?.selectedSection = .settings
+        let app = NSApplication.shared
+        if let existing = settingsWindow {
+            existing.makeKeyAndOrderFront(nil)
+            app.activate(ignoringOtherApps: true)
+            return
+        }
+        guard let vm = model else { return }
+        let settingsView = SettingsWindowView(model: vm)
+        let hostingController = NSHostingController(rootView: settingsView)
+        let w = NSWindow(contentViewController: hostingController)
+        w.title = "Settings"
+        w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        w.toolbarStyle = .unified
+        w.setContentSize(NSSize(width: 780, height: 620))
+        w.minSize = NSSize(width: 700, height: 520)
+        w.isReleasedWhenClosed = false
+        w.delegate = self
+        w.center()
+        w.makeKeyAndOrderFront(nil)
+        settingsWindow = w
+        app.activate(ignoringOtherApps: true)
     }
 
     @objc private func toggleTransport() {
@@ -489,8 +663,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.center()
         w.title = "StereoFool"
         w.titleVisibility = .visible
-        w.toolbarStyle = .unified
         w.minSize = NSSize(width: 900, height: 620)
+        w.delegate = self
         w.contentView = host
         w.makeKeyAndOrderFront(nil)
         window = w
@@ -610,6 +784,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 @MainActor
 final class StereoFoolViewModel: ObservableObject {
     @Published var selectedSection: AppSection = .monitoring
+    @Published var selectedProcessingTab: ProcessingTab = .core
+    @Published var selectedRDSTab: RDSTab = .program
     @Published var statusText: String = "Idle"
     @Published var pendingRuntimeApply: Bool = false
 
@@ -667,7 +843,7 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var inputScope: [Float] = Array(repeating: 0.0, count: 128)
     @Published var outputScope: [Float] = Array(repeating: 0.0, count: 128)
     @Published var scopeTimebaseMS: Double = 10.0
-    @Published var scopeAutoGainEnabled: Bool = false
+    @Published var scopeAutoGainEnabled: Bool = true
     @Published var mpxSpectrumDB: [Float] = Array(repeating: -100.0, count: 640)
     @Published var mpxSpectrumMaxHz: Double = 92_000.0
     @Published var mpxSpectrumNyquistHz: Double = 0.0
@@ -1988,66 +2164,55 @@ extension String {
 
 private struct RootView: View {
     @ObservedObject var model: StereoFoolViewModel
-    @State private var splitVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $splitVisibility) {
-            List(selection: $model.selectedSection) {
-                ForEach(AppSection.allCases) { section in
-                    Label(section.rawValue, systemImage: section.icon)
-                        .symbolRenderingMode(.hierarchical)
-                        .tag(section)
-                }
-            }
-            .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 260)
-        } detail: {
-            Group {
-                switch model.selectedSection {
-                case .monitoring:
-                    MonitoringDashboardView(model: model)
-                case .system:
-                    SystemSectionView(model: model)
-                case .interfaces:
-                    InterfacesSectionView(model: model)
-                case .processing:
-                    ProcessingSectionView(model: model)
-                case .rds:
-                    RDSSectionView(model: model)
-                case .settings:
-                    SettingsSectionView(model: model)
-                }
-            }
-        }
-        .navigationSplitViewStyle(.balanced)
-        .navigationTitle("StereoFool")
-        .toolbar {
-            ToolbarItem(placement: .status) {
-                MonitoringStatusLine(isRunning: model.isRunning)
-            }
-            ToolbarItemGroup(placement: .primaryAction) {
-                ControlGroup {
-                    Button {
-                        model.startOrStopTransport()
-                    } label: {
-                        Image(systemName: model.isRunning ? "stop.fill" : "play.fill")
+        HSplitView {
+            VStack(spacing: 0) {
+                List(selection: $model.selectedSection) {
+                    Section {
+                        ForEach(AppSection.allCases) { section in
+                            Label(section.rawValue, systemImage: section.icon)
+                                .tag(section)
+                        }
                     }
-                    .keyboardShortcut(.space, modifiers: [])
-                    .disabled(model.isBusy)
-                    .accessibilityLabel(model.isRunning ? "Stop audio engine" : "Start audio engine")
+                }
+                .listStyle(.sidebar)
+                .scrollDisabled(true)
 
-                    Button {
-                        model.toggleBypass()
-                    } label: {
-                        Image(systemName: model.processingBypass ? "bolt.slash.fill" : "bolt.fill")
-                    }
-                    .disabled(model.isBusy)
-                    .accessibilityLabel(model.processingBypass ? "Disable bypass" : "Enable bypass")
-                }
-                .controlSize(.small)
+                Spacer()
             }
+            .frame(width: 220)
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack {
+                    Text(model.selectedSection.detailTitle)
+                        .font(.title2.weight(.semibold))
+                    Spacer()
+                }
+                .padding(.top, 16)
+                .padding(.horizontal, 22)
+                .padding(.bottom, 8)
+
+                Text(model.selectedSection.detailSubtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 16)
+
+                Group {
+                    switch model.selectedSection {
+                    case .monitoring:
+                        MonitoringDashboardView(model: model)
+                    case .processing:
+                        ProcessingSectionView(model: model)
+                    case .rds:
+                        RDSSectionView(model: model)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .toolbarTitleDisplayMode(.inline)
     }
 }
 
@@ -2056,17 +2221,21 @@ private struct Card<Content: View>: View {
     @ViewBuilder var content: Content
 
     var body: some View {
-        GroupBox {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.headline)
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 8)
+                .padding(.horizontal, 4)
+            
             VStack(alignment: .leading, spacing: 12) {
                 content
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 2)
-        } label: {
-            Text(title)
-                .font(.headline)
+            .padding(16)
+            .background(Color(nsColor: .controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 10))
         }
-        .groupBoxStyle(.automatic)
     }
 }
 
@@ -2074,32 +2243,64 @@ private struct MonitoringDashboardView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        Form {
-            Section("Status") {
-                MonitoringHealthSummaryRow(health: model.streamHealth)
-            }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Card(title: "Status") {
+                    VStack(alignment: .leading, spacing: 12) {
+                        MonitoringHealthSummaryRow(health: model.streamHealth)
 
-            Section("Routing") {
-                LabeledContent("Input") {
-                    Text(inputName)
+                        HStack(spacing: 12) {
+                            Button {
+                                model.startOrStopTransport()
+                            } label: {
+                                HStack {
+                                    Image(systemName: model.isRunning ? "stop.fill" : "play.fill")
+                                    Text(model.isRunning ? "Stop" : "Start")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.isBusy)
+                            .keyboardShortcut("t", modifiers: [.command])
+
+                            Button {
+                                model.toggleBypass()
+                            } label: {
+                                HStack {
+                                    Image(systemName: model.processingBypass ? "bolt.slash.fill" : "bolt.fill")
+                                    Text(model.processingBypass ? "Bypass On" : "Bypass Off")
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(model.isBusy)
+                            .keyboardShortcut("b", modifiers: [.command])
+                        }
+                    }
                 }
-                LabeledContent("Output") {
-                    Text(outputName)
+
+                Card(title: "Interfaces") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        LabeledContent("Input") {
+                            Text(inputName)
+                        }
+                        LabeledContent("Output") {
+                            Text(outputName)
+                        }
+                    }
+                }
+
+                Card(title: "DSP") {
+                    MonitoringDSPStatusSectionView(model: model)
+                }
+
+                Card(title: "RDS") {
+                    MonitoringRDSSnapshotSectionView(model: model)
                 }
             }
-
-            Section("RDS") {
-                MonitoringRDSSnapshotSectionView(model: model)
-            }
-
-            Section("DSP") {
-                MonitoringDSPStatusSectionView(model: model)
-            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .formStyle(.grouped)
-        .frame(maxWidth: 720, alignment: .topLeading)
-        .padding(.horizontal, 10)
-        .controlSize(.small)
     }
 
     private var inputName: String {
@@ -2137,7 +2338,6 @@ private struct MonitoringTransportHeader: View {
                 model.startOrStopTransport()
             }
             .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.space, modifiers: [])
             .disabled(model.isBusy)
         }
         .padding(.horizontal, 20)
@@ -2280,7 +2480,7 @@ private struct MonitoringRuntimeSectionView: View {
                     .pickerStyle(.menu)
                     .accessibilityLabel("Input device")
                 }
-                LabeledContent("Output") {
+                LabeledContent("MPX Output") {
                     Picker(
                         "",
                         selection: Binding(
@@ -2313,7 +2513,7 @@ private struct MonitoringRuntimeSectionView: View {
                 .accessibilityLabel("Enable monitor output")
 
                 if model.monitorEnabled {
-                    LabeledContent("Monitor Out") {
+                    LabeledContent("Monitor Output Device (Decoded MPX Simulation)") {
                         Picker(
                             "",
                             selection: Binding(
@@ -2330,6 +2530,7 @@ private struct MonitoringRuntimeSectionView: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.menu)
+                        .accessibilityLabel("Monitor output device decoded MPX simulation")
                     }
                 }
             }
@@ -2568,7 +2769,7 @@ private struct RuntimeCardView: View {
                     ))
 
                 if model.monitorEnabled {
-                    LabeledContent("Monitor Out") {
+                    LabeledContent("Monitor Output Device (Decoded MPX Simulation)") {
                         Picker(
                             "",
                             selection: Binding(
@@ -2585,6 +2786,7 @@ private struct RuntimeCardView: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.menu)
+                        .accessibilityLabel("Monitor output device decoded MPX simulation")
                     }
                 }
 
@@ -2613,6 +2815,36 @@ private struct RDSSnapshotCardView: View {
     var body: some View {
         Card(title: "RDS Snapshot") {
             KeyValueGrid(rows: model.rdsRows)
+        }
+    }
+}
+
+private struct RDSAdvancedCardView: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Scheduler & Advanced") {
+            VStack(alignment: .leading, spacing: 10) {
+                TextField("Group Sequence", text: model.configBinding(\.rdsGroupSequence))
+                Toggle("Scheduler Auto", isOn: model.configBinding(\.rdsSchedulerAuto))
+                Toggle("Use Standard Schedule", isOn: model.configBinding(\.rdsSchedulerStandard))
+                Toggle(
+                    "Include LPS in Standard",
+                    isOn: model.configBinding(\.rdsSchedulerStandardLPS))
+                Toggle("Enable CT (4A)", isOn: model.configBinding(\.rdsEnableCT))
+                Toggle("Enable ID (1A)", isOn: model.configBinding(\.rdsEnableID))
+
+                Divider()
+
+                LabeledContent("LIC") {
+                    TextField("", text: model.hexByteBinding(\.rdsLIC))
+                        .font(.system(.body, design: .monospaced))
+                        .frame(width: 80)
+                }
+                DoubleSliderRow(
+                    title: "Clock Offset", value: model.configBinding(\.rdsTZOffset),
+                    range: -12...14, format: "%.1f h")
+            }
         }
     }
 }
@@ -2788,7 +3020,7 @@ private struct DSPStatusCardView: View {
 
 private struct ScopesCardView: View {
     @ObservedObject var model: StereoFoolViewModel
-    private let scopeTimebasesMS: [Double] = [2.0, 5.0, 10.0, 20.0, 50.0]
+    private let scopeTimebasesMS: [Double] = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
     var body: some View {
         Card(title: "Scopes") {
@@ -3083,125 +3315,188 @@ private struct ProcessingSectionView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        Form {
-            Section {
-                HStack {
-                    Button("Reset Processing to Defaults") {
-                        model.resetProcessingToDefaults()
-                    }
-                    Spacer()
+        VStack(spacing: 0) {
+            Picker("", selection: $model.selectedProcessingTab) {
+                ForEach(ProcessingTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
                 }
             }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding()
 
-            Section("Core Processing") {
-                Toggle("Bypass Processing", isOn: Binding(
-                    get: { model.processingBypass },
-                    set: { _ in model.toggleBypass() }
-                ))
-                Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
-                Picker("Pre-emphasis", selection: model.configBinding(\.preemphasisUS)) {
-                    Text("Off").tag(0)
-                    Text("50 us").tag(50)
-                    Text("75 us").tag(75)
-                }
-                DoubleSliderRow(title: "Input Gain", value: Binding(
-                    get: { model.inputGainDB },
-                    set: {
-                        model.inputGainDB = $0
-                        model.persistBasicConfig()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    switch model.selectedProcessingTab {
+                    case .core:
+                        ProcessingCoreTab(model: model)
+                    case .agc:
+                        ProcessingAGCTab(model: model)
+                    case .orbass:
+                        ProcessingOrbassTab(model: model)
+                    case .multiband:
+                        ProcessingMultibandTab(model: model)
+                    case .widener:
+                        ProcessingWidenerTab(model: model)
+                    case .limiter:
+                        ProcessingLimiterTab(model: model)
                     }
-                ), range: -24...24, format: "%.1f dB")
-                DoubleSliderRow(title: "HPF", value: model.configBinding(\.hpfHz), range: 10...180, format: "%.0f Hz")
-                DoubleSliderRow(title: "HF Trim", value: model.configBinding(\.hfTrimDB), range: -12...12, format: "%.1f dB")
-                DoubleSliderRow(title: "HF Trim Freq", value: model.configBinding(\.hfTrimHz), range: 1_000...12_000, format: "%.0f Hz")
-                DoubleSliderRow(title: "Program Lowpass", value: model.configBinding(\.programLowpassHz), range: 8_000...17_000, format: "%.0f Hz")
-            }
 
-            Section("Wideband AGC") {
-                Toggle("Enable Wideband AGC", isOn: model.configBinding(\.widebandAGCEnabled))
-                DoubleSliderRow(title: "Target", value: model.configBinding(\.widebandAGCTargetDB), range: -36 ... -6, format: "%.1f dB")
-                DoubleSliderRow(title: "Attack", value: model.configBinding(\.widebandAGCAttackMS), range: 1...150, format: "%.1f ms")
-                DoubleSliderRow(title: "Release", value: model.configBinding(\.widebandAGCReleaseMS), range: 40...1200, format: "%.1f ms")
-                DoubleSliderRow(title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB), range: 0...24, format: "%.1f dB")
-                DoubleSliderRow(title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB), range: -24...0, format: "%.1f dB")
-            }
-
-            Section("Orbass") {
-                Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled))
-                DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount), range: 0...1.2, format: "%.2f")
-                DoubleSliderRow(title: "Frequency", value: model.configBinding(\.orbassFreqHz), range: 40...180, format: "%.1f Hz")
-                DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics), range: 0...1.2, format: "%.2f")
-                DoubleSliderRow(title: "Drive", value: model.configBinding(\.orbassDrive), range: 0.2...2.0, format: "%.2f")
-            }
-
-            Section("Multiband Dynamics") {
-                Picker("Preset", selection: Binding(
-                    get: { self.model.config.multibandPresetID },
-                    set: { newValue in
-                        let intensity = MultibandPresetIntensity(rawValue: self.model.config.multibandIntensity) ?? .normal
-                        self.model.config.multibandPresetID = newValue
-                        self.model.applyMultibandPreset(id: newValue, intensity: intensity)
-                    }
-                )) {
-                    ForEach(model.multibandPresetChoices) { preset in
-                        Text(preset.title).tag(preset.id)
+                    HStack {
+                        Spacer()
+                        Button("Reset Processing to Defaults") {
+                            model.resetProcessingToDefaults()
+                        }
+                        .buttonStyle(.bordered)
                     }
                 }
-                Picker("Intensity", selection: Binding(
-                    get: { MultibandPresetIntensity(rawValue: self.model.config.multibandIntensity) ?? .normal },
-                    set: { newValue in
-                        self.model.config.multibandIntensity = newValue.rawValue
-                        self.model.applyMultibandPreset(id: self.model.config.multibandPresetID, intensity: newValue)
-                    }
-                )) {
-                    ForEach(MultibandPresetIntensity.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                Toggle("Enable Multiband", isOn: model.configBinding(\.multibandEnabled))
-                Picker("Mode", selection: model.configBinding(\.multibandMode)) {
-                    Text("2-band").tag(2)
-                    Text("3-band").tag(3)
-                    Text("5-band").tag(5)
-                }
-                DoubleSliderRow(title: "Knee", value: model.configBinding(\.multibandKneeDB), range: 0...12, format: "%.1f dB")
-                DoubleSliderRow(title: "Link", value: model.configBinding(\.multibandLinkStrength), range: 0...1, format: "%.2f")
-                Toggle("Program-dependent Release", isOn: model.configBinding(\.multibandReleaseProgramDependent))
-                DoubleSliderRow(title: "X1", value: model.configBinding(\.multibandX1Hz), range: 30...300, format: "%.0f Hz")
-                DoubleSliderRow(title: "X2", value: model.configBinding(\.multibandX2Hz), range: 120...1200, format: "%.0f Hz")
-                DoubleSliderRow(title: "X3", value: model.configBinding(\.multibandX3Hz), range: 600...4000, format: "%.0f Hz")
-                DoubleSliderRow(title: "X4", value: model.configBinding(\.multibandX4Hz), range: 2500...12000, format: "%.0f Hz")
-                DoubleSliderRow(title: "Low Threshold", value: model.configBinding(\.multibandLowThresholdDB), range: (-40)...(-6), format: "%.1f dB")
-                DoubleSliderRow(title: "Mid Threshold", value: model.configBinding(\.multibandMidThresholdDB), range: (-40)...(-6), format: "%.1f dB")
-                DoubleSliderRow(title: "High Threshold", value: model.configBinding(\.multibandHighThresholdDB), range: (-40)...(-6), format: "%.1f dB")
-                DoubleSliderRow(title: "Low Ratio", value: model.configBinding(\.multibandLowRatio), range: 1...8, format: "%.2f")
-                DoubleSliderRow(title: "Mid Ratio", value: model.configBinding(\.multibandMidRatio), range: 1...8, format: "%.2f")
-                DoubleSliderRow(title: "High Ratio", value: model.configBinding(\.multibandHighRatio), range: 1...8, format: "%.2f")
-                DoubleSliderRow(title: "Low Attack", value: model.configBinding(\.multibandLowAttackMS), range: 1...120, format: "%.1f")
-                DoubleSliderRow(title: "Mid Attack", value: model.configBinding(\.multibandMidAttackMS), range: 1...120, format: "%.1f")
-                DoubleSliderRow(title: "High Attack", value: model.configBinding(\.multibandHighAttackMS), range: 1...120, format: "%.1f")
-                DoubleSliderRow(title: "Low Release", value: model.configBinding(\.multibandLowReleaseMS), range: 40...1200, format: "%.0f")
-                DoubleSliderRow(title: "Mid Release", value: model.configBinding(\.multibandMidReleaseMS), range: 40...1200, format: "%.0f")
-                DoubleSliderRow(title: "High Release", value: model.configBinding(\.multibandHighReleaseMS), range: 40...1200, format: "%.0f")
-                DoubleSliderRow(title: "Makeup", value: model.configBinding(\.multibandMakeupDB), range: -12...18, format: "%.1f dB")
-            }
-
-            Section("Stereo Widener") {
-                Toggle("Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled))
-                DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth), range: 0...1, format: "%.2f")
-                DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter), range: 0...1, format: "%.2f")
-                DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix), range: 0...1, format: "%.2f")
-            }
-
-            Section("Composite Limiter") {
-                Toggle("Enable Composite Limiter", isOn: model.configBinding(\.compositeLimiterEnabled))
-                DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz), range: 40...90, format: "%.1f kHz")
+                .padding(20)
+                .frame(maxWidth: 800, alignment: .topLeading)
             }
         }
-        .formStyle(.grouped)
-        .frame(maxWidth: 720, alignment: .topLeading)
-        .padding(.horizontal, 10)
-        .controlSize(.small)
+    }
+}
+
+private struct ProcessingCoreTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Core Processing") {
+            Toggle("Bypass Processing", isOn: Binding(
+                get: { model.processingBypass },
+                set: { _ in model.toggleBypass() }
+            ))
+            Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
+            Picker("Pre-emphasis", selection: model.configBinding(\.preemphasisUS)) {
+                Text("Off").tag(0)
+                Text("50 us").tag(50)
+                Text("75 us").tag(75)
+            }
+            .pickerStyle(.segmented)
+            DoubleSliderRow(title: "Input Gain", value: Binding(
+                get: { model.inputGainDB },
+                set: {
+                    model.inputGainDB = $0
+                    model.persistBasicConfig()
+                }
+            ), range: -24...24, format: "%.1f dB")
+            DoubleSliderRow(title: "HPF", value: model.configBinding(\.hpfHz), range: 10...180, format: "%.0f Hz")
+            DoubleSliderRow(title: "HF Trim", value: model.configBinding(\.hfTrimDB), range: -12...12, format: "%.1f dB")
+            DoubleSliderRow(title: "HF Trim Freq", value: model.configBinding(\.hfTrimHz), range: 1_000...12_000, format: "%.0f Hz")
+            DoubleSliderRow(title: "Program Lowpass", value: model.configBinding(\.programLowpassHz), range: 8_000...17_000, format: "%.0f Hz")
+        }
+    }
+}
+
+private struct ProcessingAGCTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Wideband AGC") {
+            Toggle("Enable Wideband AGC", isOn: model.configBinding(\.widebandAGCEnabled))
+            DoubleSliderRow(title: "Target", value: model.configBinding(\.widebandAGCTargetDB), range: -36 ... -6, format: "%.1f dB")
+            DoubleSliderRow(title: "Attack", value: model.configBinding(\.widebandAGCAttackMS), range: 1...150, format: "%.1f ms")
+            DoubleSliderRow(title: "Release", value: model.configBinding(\.widebandAGCReleaseMS), range: 40...1200, format: "%.1f ms")
+            DoubleSliderRow(title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB), range: 0...24, format: "%.1f dB")
+            DoubleSliderRow(title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB), range: -24...0, format: "%.1f dB")
+        }
+    }
+}
+
+private struct ProcessingOrbassTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Orbass") {
+            Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled))
+            DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount), range: 0...1.2, format: "%.2f")
+            DoubleSliderRow(title: "Frequency", value: model.configBinding(\.orbassFreqHz), range: 40...180, format: "%.1f Hz")
+            DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics), range: 0...1.2, format: "%.2f")
+            DoubleSliderRow(title: "Drive", value: model.configBinding(\.orbassDrive), range: 0.2...2.0, format: "%.2f")
+        }
+    }
+}
+
+private struct ProcessingMultibandTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Multiband Dynamics") {
+            Picker("Preset", selection: Binding(
+                get: { self.model.config.multibandPresetID },
+                set: { newValue in
+                    let intensity = MultibandPresetIntensity(rawValue: self.model.config.multibandIntensity) ?? .normal
+                    self.model.config.multibandPresetID = newValue
+                    self.model.applyMultibandPreset(id: newValue, intensity: intensity)
+                }
+            )) {
+                ForEach(model.multibandPresetChoices) { preset in
+                    Text(preset.title).tag(preset.id)
+                }
+            }
+            Picker("Intensity", selection: Binding(
+                get: { MultibandPresetIntensity(rawValue: self.model.config.multibandIntensity) ?? .normal },
+                set: { newValue in
+                    self.model.config.multibandIntensity = newValue.rawValue
+                    self.model.applyMultibandPreset(id: self.model.config.multibandPresetID, intensity: newValue)
+                }
+            )) {
+                ForEach(MultibandPresetIntensity.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            Toggle("Enable Multiband", isOn: model.configBinding(\.multibandEnabled))
+            Picker("Mode", selection: model.configBinding(\.multibandMode)) {
+                Text("2-band").tag(2)
+                Text("3-band").tag(3)
+                Text("5-band").tag(5)
+            }
+            DoubleSliderRow(title: "Knee", value: model.configBinding(\.multibandKneeDB), range: 0...12, format: "%.1f dB")
+            DoubleSliderRow(title: "Link", value: model.configBinding(\.multibandLinkStrength), range: 0...1, format: "%.2f")
+            Toggle("Program-dependent Release", isOn: model.configBinding(\.multibandReleaseProgramDependent))
+            DoubleSliderRow(title: "X1", value: model.configBinding(\.multibandX1Hz), range: 30...300, format: "%.0f Hz")
+            DoubleSliderRow(title: "X2", value: model.configBinding(\.multibandX2Hz), range: 120...1200, format: "%.0f Hz")
+            DoubleSliderRow(title: "X3", value: model.configBinding(\.multibandX3Hz), range: 600...4000, format: "%.0f Hz")
+            DoubleSliderRow(title: "X4", value: model.configBinding(\.multibandX4Hz), range: 2500...12000, format: "%.0f Hz")
+            DoubleSliderRow(title: "Low Threshold", value: model.configBinding(\.multibandLowThresholdDB), range: (-40)...(-6), format: "%.1f dB")
+            DoubleSliderRow(title: "Mid Threshold", value: model.configBinding(\.multibandMidThresholdDB), range: (-40)...(-6), format: "%.1f dB")
+            DoubleSliderRow(title: "High Threshold", value: model.configBinding(\.multibandHighThresholdDB), range: (-40)...(-6), format: "%.1f dB")
+            DoubleSliderRow(title: "Low Ratio", value: model.configBinding(\.multibandLowRatio), range: 1...8, format: "%.2f")
+            DoubleSliderRow(title: "Mid Ratio", value: model.configBinding(\.multibandMidRatio), range: 1...8, format: "%.2f")
+            DoubleSliderRow(title: "High Ratio", value: model.configBinding(\.multibandHighRatio), range: 1...8, format: "%.2f")
+            DoubleSliderRow(title: "Low Attack", value: model.configBinding(\.multibandLowAttackMS), range: 1...120, format: "%.1f")
+            DoubleSliderRow(title: "Mid Attack", value: model.configBinding(\.multibandMidAttackMS), range: 1...120, format: "%.1f")
+            DoubleSliderRow(title: "High Attack", value: model.configBinding(\.multibandHighAttackMS), range: 1...120, format: "%.1f")
+            DoubleSliderRow(title: "Low Release", value: model.configBinding(\.multibandLowReleaseMS), range: 40...1200, format: "%.0f")
+            DoubleSliderRow(title: "Mid Release", value: model.configBinding(\.multibandMidReleaseMS), range: 40...1200, format: "%.0f")
+            DoubleSliderRow(title: "High Release", value: model.configBinding(\.multibandHighReleaseMS), range: 40...1200, format: "%.0f")
+            DoubleSliderRow(title: "Makeup", value: model.configBinding(\.multibandMakeupDB), range: -12...18, format: "%.1f dB")
+        }
+    }
+}
+
+private struct ProcessingWidenerTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Stereo Widener") {
+            Toggle("Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled))
+            DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth), range: 0...1, format: "%.2f")
+            DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter), range: 0...1, format: "%.2f")
+            DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix), range: 0...1, format: "%.2f")
+        }
+    }
+}
+
+private struct ProcessingLimiterTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Composite Limiter") {
+            Toggle("Enable Composite Limiter", isOn: model.configBinding(\.compositeLimiterEnabled))
+            DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz), range: 40...90, format: "%.1f kHz")
+        }
     }
 }
 
@@ -3218,153 +3513,126 @@ private struct LevelsOnlyView: View {
     }
 }
 
-private struct SystemSectionView: View {
+private struct SystemSettingsSectionContent: View {
     @ObservedObject var model: StereoFoolViewModel
 
     private let sampleRates: [Double] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000]
     private let blockSizes: [Int] = [2048, 4096, 8192]
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                PendingApplyCard(model: model)
-
-                Card(title: "Audio Engine") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Picker("Sample Rate", selection: model.configBinding(\.sampleRate)) {
-                            ForEach(sampleRates, id: \.self) { rate in
-                                Text("\(Int(rate)) Hz").tag(rate)
-                            }
-                        }
-                        .disabled(model.isRunning)
-                        Picker("Block Size", selection: model.configBinding(\.blockSize)) {
-                            ForEach(blockSizes, id: \.self) { size in
-                                Text("\(size)").tag(size)
-                            }
-                        }
-                        Toggle(
-                            "Auto Start at Launch",
-                            isOn: model.configBinding(\.rdsAutoStart, restartRequired: false))
-                    }
-                }
-
-                Card(title: "Source") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Picker(
-                            "Source Mode",
-                            selection: Binding(
-                                get: { model.sourceMode },
-                                set: {
-                                    model.sourceMode = $0
-                                    model.persistBasicConfig()
-                                }
-                            )
-                        ) {
-                            Text("Audio Input").tag("input")
-                        }
-                    }
-                }
-
-                Card(title: "Composite Mix") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
-                        DoubleSliderRow(
-                            title: "Pilot Level", value: model.configBinding(\.pilotLevel),
-                            range: 0...0.2, format: "%.3f")
-                        DoubleSliderRow(
-                            title: "Sum Level", value: model.configBinding(\.sumLevel),
-                            range: 0...1.5, format: "%.2f")
-                        DoubleSliderRow(
-                            title: "Diff Level", value: model.configBinding(\.diffLevel),
-                            range: 0...1.5, format: "%.2f")
-                    }
+        Group {
+            Picker("Sample Rate", selection: model.configBinding(\.sampleRate)) {
+                ForEach(sampleRates, id: \.self) { rate in
+                    Text("\(Int(rate)) Hz").tag(rate)
                 }
             }
-            .padding(20)
-            .frame(maxWidth: 720, alignment: .topLeading)
+            .pickerStyle(.menu)
+            .disabled(model.isRunning)
+
+            Picker("Block Size", selection: model.configBinding(\.blockSize)) {
+                ForEach(blockSizes, id: \.self) { size in
+                    Text("\(size)").tag(size)
+                }
+            }
+            .pickerStyle(.menu)
+
+            Toggle(
+                "Auto Start at Launch",
+                isOn: model.configBinding(\.rdsAutoStart, restartRequired: false))
+
+            Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
+
+            DoubleSliderRow(
+                title: "Pilot Level", value: model.configBinding(\.pilotLevel),
+                range: 0...0.2, format: "%.3f")
+            DoubleSliderRow(
+                title: "Sum Level", value: model.configBinding(\.sumLevel),
+                range: 0...1.5, format: "%.2f")
+            DoubleSliderRow(
+                title: "Diff Level", value: model.configBinding(\.diffLevel),
+                range: 0...1.5, format: "%.2f")
         }
     }
 }
 
-private struct InterfacesSectionView: View {
+private struct InterfacesSettingsSectionContent: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                PendingApplyCard(model: model)
-
-                Card(title: "Device Routing") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Picker(
-                            "Input Device",
-                            selection: Binding(
-                                get: { model.selectedInputUID },
-                                set: {
-                                    model.selectedInputUID = $0
-                                    model.persistBasicConfig()
-                                }
-                            )
-                        ) {
-                            if model.inputDevices.isEmpty {
-                                Text("No input devices").tag("")
-                            } else {
-                                ForEach(model.inputDevices, id: \.uid) { device in
-                                    Text(device.name).tag(device.uid)
-                                }
-                            }
-                        }
-                        Picker(
-                            "Output Device",
-                            selection: Binding(
-                                get: { model.selectedOutputUID },
-                                set: {
-                                    model.selectedOutputUID = $0
-                                    model.persistBasicConfig()
-                                }
-                            )
-                        ) {
-                            if model.outputDevices.isEmpty {
-                                Text("No output devices").tag("")
-                            } else {
-                                ForEach(model.outputDevices, id: \.uid) { device in
-                                    Text(device.name).tag(device.uid)
-                                }
-                            }
-                        }
-                        Toggle(
-                            "Enable Monitor Output",
-                            isOn: Binding(
-                                get: { model.monitorEnabled },
-                                set: {
-                                    model.monitorEnabled = $0
-                                    model.persistBasicConfig()
-                                }
-                            ))
-                        if model.monitorEnabled {
-                            Picker(
-                                "Monitor Device",
-                                selection: Binding(
-                                    get: { model.selectedMonitorUID },
-                                    set: {
-                                        model.selectedMonitorUID = $0
-                                        model.persistBasicConfig()
-                                    }
-                                )
-                            ) {
-                                if model.outputDevices.isEmpty {
-                                    Text("No output devices").tag("")
-                                } else {
-                                    ForEach(model.outputDevices, id: \.uid) { device in
-                                        Text(device.name).tag(device.uid)
-                                    }
-                                }
-                            }
-                        }
+        Group {
+            Picker(
+                "Input Device",
+                selection: Binding(
+                    get: { model.selectedInputUID },
+                    set: {
+                        model.selectedInputUID = $0
+                        model.persistBasicConfig()
+                    }
+                )
+            ) {
+                if model.inputDevices.isEmpty {
+                    Text("No input devices").tag("")
+                } else {
+                    ForEach(model.inputDevices, id: \.uid) { device in
+                        Text(device.name).tag(device.uid)
                     }
                 }
             }
-            .padding(20)
+            .pickerStyle(.menu)
+
+                Picker(
+                    "MPX Output Device",
+                    selection: Binding(
+                    get: { model.selectedOutputUID },
+                    set: {
+                        model.selectedOutputUID = $0
+                        model.persistBasicConfig()
+                    }
+                )
+            ) {
+                if model.outputDevices.isEmpty {
+                    Text("No output devices").tag("")
+                } else {
+                    ForEach(model.outputDevices, id: \.uid) { device in
+                        Text(device.name).tag(device.uid)
+                    }
+                }
+            }
+            .pickerStyle(.menu)
+
+            Picker(
+                "Monitor Output Device (Decoded MPX Simulation)",
+                selection: Binding(
+                    get: { model.selectedMonitorUID },
+                    set: {
+                        model.selectedMonitorUID = $0
+                        model.persistBasicConfig()
+                    }
+                )
+            ) {
+                if model.outputDevices.isEmpty {
+                    Text("No output devices").tag("")
+                } else {
+                    ForEach(model.outputDevices, id: \.uid) { device in
+                        Text(device.name).tag(device.uid)
+                    }
+                }
+            }
+            .pickerStyle(.menu)
+
+            Toggle(
+                "Enable Monitor Output",
+                isOn: Binding(
+                    get: { model.monitorEnabled },
+                    set: {
+                        model.monitorEnabled = $0
+                        model.persistBasicConfig()
+                    }
+                ))
+
+            Text("When Enable Monitor Output is on, this device is used for decoded MPX monitoring.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -3373,166 +3641,225 @@ private struct RDSSectionView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                PendingApplyCard(model: model)
-                RDSSnapshotCardView(model: model)
-
-                HStack {
-                    Button("Reset RDS to Defaults") {
-                        model.resetRDSToDefaults()
-                    }
-                    Spacer()
-                }
-
-                Card(title: "Program Service") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Enable RDS", isOn: model.configBinding(\.enRDS))
-                            .accessibilityLabel("Enable RDS")
-                        TextField("PS Dynamic", text: model.configBinding(\.rdsPSDynamic))
-                        Toggle("Center PS", isOn: model.configBinding(\.rdsPSCentered))
-                        LabeledContent("PI Code") {
-                            TextField("", text: model.piBinding())
-                                .font(.system(.body, design: .monospaced))
-                                .frame(width: 90)
-                        }
-                        LabeledContent("ECC") {
-                            TextField("", text: model.hexByteBinding(\.rdsECC))
-                                .font(.system(.body, design: .monospaced))
-                                .frame(width: 80)
-                        }
-                        Picker("Program Type (PTY)", selection: model.ptyBinding()) {
-                            ForEach(model.ptyChoices, id: \.0) { pty in
-                                Text("\(pty.0) · \(pty.1)").tag(pty.0)
-                            }
-                        }
-                        Toggle("Enable PTYN", isOn: model.configBinding(\.rdsEnablePTYN))
-                        TextField("PTYN", text: model.configBinding(\.rdsPTYN))
-                        Toggle("Center PTYN", isOn: model.configBinding(\.rdsPTYNCentered))
-                    }
-                }
-
-                Card(title: "Radiotext & RT+") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle("Manual RT Buffers", isOn: model.configBinding(\.rdsRTManualBuffers))
-                        if model.value(for: \.rdsRTManualBuffers) {
-                            TextField("RT Buffer A", text: model.configBinding(\.rdsRTA))
-                            TextField("RT Buffer B", text: model.configBinding(\.rdsRTB))
-                            Picker(
-                                "Active Buffer", selection: model.configBinding(\.rdsRTActiveBuffer)
-                            ) {
-                                Text("A").tag(0)
-                                Text("B").tag(1)
-                            }
-                        } else {
-                            TextField("Radiotext", text: model.configBinding(\.rdsRTText))
-                        }
-                        Picker("RT Mode", selection: model.configBinding(\.rdsRTMode)) {
-                            Text("2A (64 chars)").tag("2A")
-                            Text("2B (32 chars)").tag("2B")
-                        }
-                        Toggle("Cycle A/B", isOn: model.configBinding(\.rdsRTCycle))
-                        Toggle("Cycle Same Message A/B", isOn: model.configBinding(\.rdsRTCycleAB))
-                        DoubleSliderRow(
-                            title: "Cycle Time", value: model.configBinding(\.rdsRTCycleTime),
-                            range: 1...20, format: "%.1f s")
-                        IntStepperRow(
-                            title: "AB Cycle Count",
-                            value: model.configBinding(\.rdsRTABCycleCount), range: 1...99, step: 1,
-                            format: "%d")
-                        Toggle("Center RT", isOn: model.configBinding(\.rdsRTCentered))
-                        Toggle("Append CR", isOn: model.configBinding(\.rdsRTCR))
-                        Toggle("Enable RT+", isOn: model.configBinding(\.rdsEnableRTPlus))
-                        TextField("RT+ Format A", text: model.configBinding(\.rdsRTPlusFormatA))
-                        TextField("RT+ Format B", text: model.configBinding(\.rdsRTPlusFormatB))
-                    }
-                }
-
-                Card(title: "Long PS, Flags, AF") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Toggle("Enable Long PS (15A)", isOn: model.configBinding(\.rdsEnableLPS))
-                        TextField("Long PS Text", text: model.configBinding(\.rdsLongPS32))
-                        Toggle("Center Long PS", isOn: model.configBinding(\.rdsLPSCentered))
-                        Toggle("Append CR", isOn: model.configBinding(\.rdsLPSCR))
-
-                        Divider()
-
-                        let flagCols: [GridItem] = [
-                            GridItem(.flexible(minimum: 100)),
-                            GridItem(.flexible(minimum: 100)),
-                            GridItem(.flexible(minimum: 100))
-                        ]
-                        LazyVGrid(columns: flagCols, alignment: .leading, spacing: 8) {
-                            Toggle("TP", isOn: model.configBinding(\.rdsTP))
-                            Toggle("TA", isOn: model.configBinding(\.rdsTA))
-                            Toggle("MS", isOn: model.configBinding(\.rdsMS))
-                            Toggle("DI Stereo", isOn: model.configBinding(\.rdsDI_STEREO))
-                            Toggle("DI Head", isOn: model.configBinding(\.rdsDI_HEAD))
-                            Toggle("DI Comp", isOn: model.configBinding(\.rdsDI_COMP))
-                            Toggle("DI Dyn PTY", isOn: model.configBinding(\.rdsDI_DYN))
-                        }
-                        .toggleStyle(.switch)
-                        .controlSize(.small)
-
-                        Divider()
-
-                        Toggle("Enable AF", isOn: model.configBinding(\.rdsEnableAF))
-                        HStack(spacing: 12) {
-                            Picker("AF Method", selection: model.configBinding(\.rdsAFMethod)) {
-                                Text("Method A").tag("A")
-                                Text("Method B").tag("B")
-                            }
-                            .frame(width: 100)
-                            TextField("AF List", text: model.configBinding(\.rdsAFList))
-                                .textFieldStyle(.roundedBorder)
-                        }
-                    }
-                }
-
-                Card(title: "Scheduler & Advanced") {
-                    DisclosureGroup("Scheduler & Advanced") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            TextField("Group Sequence", text: model.configBinding(\.rdsGroupSequence))
-                            Toggle("Scheduler Auto", isOn: model.configBinding(\.rdsSchedulerAuto))
-                            Toggle("Use Standard Schedule", isOn: model.configBinding(\.rdsSchedulerStandard))
-                            Toggle("Include LPS in Standard", isOn: model.configBinding(\.rdsSchedulerStandardLPS))
-                            Toggle("Enable CT (4A)", isOn: model.configBinding(\.rdsEnableCT))
-                            Toggle("Enable ID (1A)", isOn: model.configBinding(\.rdsEnableID))
-
-                            Divider()
-
-                            LabeledContent("LIC") {
-                                TextField("", text: model.hexByteBinding(\.rdsLIC))
-                                    .font(.system(.body, design: .monospaced))
-                                    .frame(width: 80)
-                            }
-                            DoubleSliderRow(
-                                title: "Clock Offset", value: model.configBinding(\.rdsTZOffset),
-                                range: -12...14, format: "%.1f h")
-                        }
-                        .padding(.top, 4)
-                    }
-                }
-
-                Card(title: "RDS Carrier") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        DoubleSliderRow(
-                            title: "RDS Level", value: model.configBinding(\.rdsLevel),
-                            range: 0...7.5, format: "%.2f kHz")
-                        DoubleSliderRow(
-                            title: "Subcarrier Frequency", value: model.configBinding(\.rdsFreq),
-                            range: 40_000...80_000, format: "%.0f Hz")
-                        Toggle("Gaussian Shaping", isOn: model.configBinding(\.rdsGaussianEnabled))
-                        DoubleSliderRow(
-                            title: "Gaussian BW", value: model.configBinding(\.rdsGaussianBWHZ),
-                            range: 600...6_000, format: "%.0f Hz")
-                        IntStepperRow(
-                            title: "Gaussian Taps", value: model.oddTapBinding(), range: 9...401,
-                            step: 2, format: "%d")
-                    }
+        VStack(spacing: 0) {
+            Picker("", selection: $model.selectedRDSTab) {
+                ForEach(RDSTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
                 }
             }
-            .padding(20)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    switch model.selectedRDSTab {
+                    case .program:
+                        RDSProgramTab(model: model)
+                    case .radiotext:
+                        RDSRadiotextTab(model: model)
+                    case .longPS:
+                        RDSLongPSTab(model: model)
+                    case .flags:
+                        RDSFlagsTab(model: model)
+                    case .carrier:
+                        RDSCarrierTab(model: model)
+                    }
+
+                    HStack {
+                        Spacer()
+                        Button("Reset RDS to Defaults") {
+                            model.resetRDSToDefaults()
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                }
+                .padding(20)
+                .frame(maxWidth: 800, alignment: .topLeading)
+            }
+        }
+    }
+}
+
+private struct RDSProgramTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Program Service") {
+            Toggle("Enable RDS", isOn: model.configBinding(\.enRDS))
+            TextField("PS Dynamic", text: model.configBinding(\.rdsPSDynamic))
+            Toggle("Center PS", isOn: model.configBinding(\.rdsPSCentered))
+            LabeledContent("PI Code") {
+                TextField("", text: model.piBinding())
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 90)
+            }
+            LabeledContent("ECC") {
+                TextField("", text: model.hexByteBinding(\.rdsECC))
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 80)
+            }
+            Picker("Program Type (PTY)", selection: model.ptyBinding()) {
+                ForEach(model.ptyChoices, id: \.0) { pty in
+                    Text("\(pty.0) · \(pty.1)").tag(pty.0)
+                }
+            }
+            Toggle("Enable PTYN", isOn: model.configBinding(\.rdsEnablePTYN))
+            TextField("PTYN", text: model.configBinding(\.rdsPTYN))
+            Toggle("Center PTYN", isOn: model.configBinding(\.rdsPTYNCentered))
+        }
+
+        Card(title: "Snapshot") {
+            KeyValueGrid(rows: model.rdsRows)
+        }
+    }
+}
+
+private struct RDSRadiotextTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Radiotext & RT+") {
+            Toggle("Manual RT Buffers", isOn: model.configBinding(\.rdsRTManualBuffers))
+            if model.value(for: \.rdsRTManualBuffers) {
+                TextField("RT Buffer A", text: model.configBinding(\.rdsRTA))
+                TextField("RT Buffer B", text: model.configBinding(\.rdsRTB))
+                Picker("Active Buffer", selection: model.configBinding(\.rdsRTActiveBuffer)) {
+                    Text("A").tag(0)
+                    Text("B").tag(1)
+                }
+            } else {
+                TextField("Radiotext", text: model.configBinding(\.rdsRTText))
+            }
+            Picker("RT Mode", selection: model.configBinding(\.rdsRTMode)) {
+                Text("2A (64 chars)").tag("2A")
+                Text("2B (32 chars)").tag("2B")
+            }
+            .pickerStyle(.segmented)
+            Toggle("Cycle A/B", isOn: model.configBinding(\.rdsRTCycle))
+            Toggle("Cycle Same Message A/B", isOn: model.configBinding(\.rdsRTCycleAB))
+            DoubleSliderRow(
+                title: "Cycle Time", value: model.configBinding(\.rdsRTCycleTime),
+                range: 1...20, format: "%.1f s")
+            IntStepperRow(
+                title: "AB Cycle Count",
+                value: model.configBinding(\.rdsRTABCycleCount), range: 1...99, step: 1,
+                format: "%d")
+            Toggle("Center RT", isOn: model.configBinding(\.rdsRTCentered))
+            Toggle("Append CR", isOn: model.configBinding(\.rdsRTCR))
+            Toggle("Enable RT+", isOn: model.configBinding(\.rdsEnableRTPlus))
+            TextField("RT+ Format A", text: model.configBinding(\.rdsRTPlusFormatA))
+            TextField("RT+ Format B", text: model.configBinding(\.rdsRTPlusFormatB))
+        }
+    }
+}
+
+private struct RDSLongPSTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Long PS") {
+            Toggle("Enable Long PS (15A)", isOn: model.configBinding(\.rdsEnableLPS))
+            TextField("Long PS Text", text: model.configBinding(\.rdsLongPS32))
+            Toggle("Center Long PS", isOn: model.configBinding(\.rdsLPSCentered))
+            Toggle("Append CR", isOn: model.configBinding(\.rdsLPSCR))
+        }
+    }
+}
+
+private struct RDSFlagsTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Flags") {
+            LazyVGrid(columns: [
+                GridItem(.flexible(minimum: 100)),
+                GridItem(.flexible(minimum: 100)),
+                GridItem(.flexible(minimum: 100))
+            ], alignment: .leading, spacing: 8) {
+                Toggle("TP", isOn: model.configBinding(\.rdsTP))
+                Toggle("TA", isOn: model.configBinding(\.rdsTA))
+                Toggle("MS", isOn: model.configBinding(\.rdsMS))
+                Toggle("DI Stereo", isOn: model.configBinding(\.rdsDI_STEREO))
+                Toggle("DI Head", isOn: model.configBinding(\.rdsDI_HEAD))
+                Toggle("DI Comp", isOn: model.configBinding(\.rdsDI_COMP))
+                Toggle("DI Dyn PTY", isOn: model.configBinding(\.rdsDI_DYN))
+            }
+            .toggleStyle(.switch)
+
+            Toggle("Enable AF", isOn: model.configBinding(\.rdsEnableAF))
+            HStack(spacing: 12) {
+                Picker("AF Method", selection: model.configBinding(\.rdsAFMethod)) {
+                    Text("Method A").tag("A")
+                    Text("Method B").tag("B")
+                }
+                .frame(width: 100)
+                TextField("AF List", text: model.configBinding(\.rdsAFList))
+                    .textFieldStyle(.roundedBorder)
+            }
+        }
+    }
+}
+
+private struct RDSCarrierTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "RDS Carrier") {
+            DoubleSliderRow(
+                title: "RDS Level", value: model.configBinding(\.rdsLevel),
+                range: 0...7.5, format: "%.2f kHz")
+            DoubleSliderRow(
+                title: "Subcarrier Frequency", value: model.configBinding(\.rdsFreq),
+                range: 40_000...80_000, format: "%.0f Hz")
+            Toggle("Gaussian Shaping", isOn: model.configBinding(\.rdsGaussianEnabled))
+            DoubleSliderRow(
+                title: "Gaussian BW", value: model.configBinding(\.rdsGaussianBWHZ),
+                range: 600...6_000, format: "%.0f Hz")
+            IntStepperRow(
+                title: "Gaussian Taps", value: model.oddTapBinding(), range: 9...401,
+                step: 2, format: "%d")
+        }
+
+        Card(title: "Scheduler & Advanced") {
+            TextField("Group Sequence", text: model.configBinding(\.rdsGroupSequence))
+            Toggle("Scheduler Auto", isOn: model.configBinding(\.rdsSchedulerAuto))
+            Toggle("Use Standard Schedule", isOn: model.configBinding(\.rdsSchedulerStandard))
+            Toggle(
+                "Include LPS in Standard",
+                isOn: model.configBinding(\.rdsSchedulerStandardLPS))
+            Toggle("Enable CT (4A)", isOn: model.configBinding(\.rdsEnableCT))
+            Toggle("Enable ID (1A)", isOn: model.configBinding(\.rdsEnableID))
+            LabeledContent("LIC") {
+                TextField("", text: model.hexByteBinding(\.rdsLIC))
+                    .font(.system(.body, design: .monospaced))
+                    .frame(width: 80)
+            }
+            DoubleSliderRow(
+                title: "Clock Offset", value: model.configBinding(\.rdsTZOffset),
+                range: -12...14, format: "%.1f h")
+        }
+    }
+}
+
+private struct RDSAdvancedTab: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "RDS Carrier") {
+            DoubleSliderRow(
+                title: "RDS Level", value: model.configBinding(\.rdsLevel),
+                range: 0...7.5, format: "%.2f kHz")
+            DoubleSliderRow(
+                title: "Subcarrier Frequency", value: model.configBinding(\.rdsFreq),
+                range: 40_000...80_000, format: "%.0f Hz")
+            Toggle("Gaussian Shaping", isOn: model.configBinding(\.rdsGaussianEnabled))
+            DoubleSliderRow(
+                title: "Gaussian BW", value: model.configBinding(\.rdsGaussianBWHZ),
+                range: 600...6_000, format: "%.0f Hz")
+            IntStepperRow(
+                title: "Gaussian Taps", value: model.oddTapBinding(), range: 9...401,
+                step: 2, format: "%d")
         }
     }
 }
@@ -3541,41 +3868,49 @@ private struct SettingsSectionView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                Card(title: "Settings") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Configuration path")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Text(model.configFilePath)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                        Text("Status")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                        Text(model.statusText)
-                            .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                        HStack(spacing: 10) {
-                            Button("Reveal Config") { model.revealConfigInFinder() }
-                            Button("Reload Config") { model.reloadConfigFromDisk() }
-                            Button("Refresh Devices") { model.refreshDevices() }
-                        }
-                    }
+        Form {
+            Section("Configuration") {
+                LabeledContent("Path") {
+                    Text(model.configFilePath)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
-
-                Card(title: "FFT Spectrum") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Toggle("96 kHz Window", isOn: model.configBinding(\.fftWindow96kHz))
-                        Text("When enabled, shows full 96 kHz spectrum. When disabled, shows 60 kHz FM band.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                HStack(spacing: 10) {
+                    Button("Reveal Config") { model.revealConfigInFinder() }
+                    Button("Reload Config") { model.reloadConfigFromDisk() }
+                    Button("Refresh Devices") { model.refreshDevices() }
                 }
             }
-            .padding(20)
-        } 
+
+            Section("Interfaces") {
+                InterfacesSettingsSectionContent(model: model)
+            }
+
+            Section("Audio Engine") {
+                SystemSettingsSectionContent(model: model)
+            }
+
+            Section("Spectrum") {
+                Toggle("96 kHz Window", isOn: model.configBinding(\.fftWindow96kHz))
+                Text("When enabled, shows full 96 kHz spectrum. When disabled, shows the 60 kHz FM band.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(maxWidth: 720, alignment: .topLeading)
+        .padding(.horizontal, 10)
+        .controlSize(.small)
+    }
+}
+
+private struct SettingsWindowView: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        SettingsSectionView(model: model)
+            .navigationTitle("Settings")
     }
 }
 
@@ -3917,7 +4252,7 @@ private struct IntStepperRow: View {
 
 struct ScopesOnlyView: View {
     @ObservedObject var model: StereoFoolViewModel
-    private let scopeTimebasesMS: [Double] = [2.0, 5.0, 10.0, 20.0, 50.0]
+    private let scopeTimebasesMS: [Double] = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
     var body: some View {
         VStack(spacing: 16) {

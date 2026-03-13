@@ -1,6 +1,6 @@
 # StereoFool
 
-Version: 0.6
+Version: 0.8
 
 StereoFool is a Python app that generates an FM composite MPX signal with RDS and serves a
 browser-based control panel. It synthesizes pilot/RDS, muxes stereo audio sources, and sends

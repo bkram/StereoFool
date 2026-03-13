@@ -21,6 +21,20 @@ Default runs with GUI. Use `--nogui` for headless mode.
 - Avoid reintroducing separate Stereo/RDS menus; use unified navigation.
 - Avoid adding non-ASCII characters to source or docs.
 
+## UI/UX Guidelines (Apple HIG)
+
+- **No buttons in the title bar** - All controls must be in the content area, not in the toolbar or title bar.
+- Use native macOS window chrome (standard title bar with close/minimize/zoom buttons).
+- Use `HSplitView` for sidebar layout (not `NavigationSplitView` if collapse is not needed).
+- Use `NavigationSplitView` only when sidebar collapse is required.
+- Use `.listStyle(.sidebar)` for sidebar navigation.
+- Use standard macOS form styling with `Card` components using `LabeledContent`.
+- Use `.buttonStyle(.bordered)` and `.buttonStyle(.borderedProminent)` for buttons.
+- Use `.pickerStyle(.segmented)` for tab pickers within sections.
+- Use `.pickerStyle(.menu)` for dropdown pickers.
+- Card corner radius: 10pt.
+- Spacing between cards: 16pt.
+
 ## Testing
 
 - Manual smoke test: start the app with `--gui` and verify audio output.

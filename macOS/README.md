@@ -66,7 +66,7 @@ swift run --package-path macOS StereoFool --config /path/to/your-macos.ini
 Build a `.app` bundle and installable `.dmg`:
 
 ```bash
-./macOS/scripts/make-release-dmg.sh --version 0.1.0
+./macOS/scripts/make-release-dmg.sh --version 0.8
 ```
 
 Artifacts are written to `macOS/dist/` by default.
