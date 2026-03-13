@@ -37,8 +37,17 @@ lipo -create \
     "macOS/.build/x86_64-apple-macosx/release/StereoFool" \
     -output "$APP_DIR/Contents/MacOS/StereoFool"
 
-echo "Note: App is not code-signed. For distribution, sign with a valid Apple Developer certificate."
-echo "To run without signing, users may need to run: xattr -cr '$APP_DIR'"
+# Ad-hoc sign the app (gives it a stable identity for permissions)
+echo "Ad-hoc signing app bundle..."
+codesign --force --deep --sign - "$APP_DIR"
+
+# Verify signature
+echo "Verifying signature..."
+if spctl --assess --type exec "$APP_DIR" 2>&1 | grep -q "accepted"; then
+    echo "Signature: accepted (ad-hoc)"
+else
+    echo "Note: App uses ad-hoc signature. Run: xattr -cr '$APP_DIR' if needed."
+fi
 
 if [ -f "$ICON_FILE" ]; then
     cp "$ICON_FILE" "$APP_DIR/Contents/Resources/"
