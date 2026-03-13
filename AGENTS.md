@@ -3,7 +3,7 @@
 ## Project basics
 
 - Primary entrypoint: `macOS/Package.swift`
-- Config file: `macOS/StereoFool.ini`
+- Default config file: `~/Library/Application Support/StereoFool/StereoFool.ini`
 - Native macOS app built with Swift + SwiftUI
 
 ## How to run

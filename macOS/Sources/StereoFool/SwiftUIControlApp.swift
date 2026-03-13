@@ -4132,7 +4132,10 @@ private struct DisclaimerBox: View {
                     .font(.headline)
             }
             
-            Text("This software is provided for experimental and educational purposes only.")
+            Text("StereoFool is a native macOS FM composite (MPX) generator with stereo encoding, optional RDS, and decoded monitor output.")
+                .font(.caption)
+
+            Text("This software is provided for experimental and educational purposes only and is not suitable for production broadcast use.")
                 .font(.caption)
             
             Text("It may not conform to any applicable technical standards, regulatory requirements, or broadcast specifications related to:")
