@@ -30,19 +30,15 @@ rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-# Create universal binary
+# Copy universal binary to app bundle
 echo "Creating universal binary..."
 lipo -create \
     "macOS/.build/arm64-apple-macosx/release/StereoFool" \
     "macOS/.build/x86_64-apple-macosx/release/StereoFool" \
-    -output "$OUTPUT_DIR/StereoFool-universal"
+    -output "$APP_DIR/Contents/MacOS/StereoFool"
 
-# Sign with entitlements (ad-hoc signing for development/testing)
-echo "Signing binary with entitlements..."
-codesign --force --deep --sign - --entitlements "$ENTITLEMENTS" "$OUTPUT_DIR/StereoFool-universal"
-
-# Copy signed binary to app bundle
-cp "$OUTPUT_DIR/StereoFool-universal" "$APP_DIR/Contents/MacOS/StereoFool"
+echo "Note: App is not code-signed. For distribution, sign with a valid Apple Developer certificate."
+echo "To run without signing, users may need to run: xattr -cr '$APP_DIR'"
 
 if [ -f "$ICON_FILE" ]; then
     cp "$ICON_FILE" "$APP_DIR/Contents/Resources/"
