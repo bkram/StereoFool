@@ -742,6 +742,7 @@ private final class BasicRDSCoder {
     private static let offsetC = 0x168
     private static let offsetCp = 0x1E0
     private static let offsetD = 0x1B4
+    private static let gregorianCalendar = Calendar(identifier: .gregorian)
 
     private let enabled: Bool
     private let levelScale: Float
@@ -778,17 +779,20 @@ private final class BasicRDSCoder {
     private let schedulerStandard: Bool
     private let schedulerStandardLPS: Bool
     private let psFrames: [String]
+    private let psFrameBytes: [[UInt8]]
     private let rtFrames: [String]
     private let psSequence: [TimedTextFrame]
     private let rtSequence: [TimedTextFrame]
     private let ptynEnabled: Bool
     private let ptynCentered: Bool
     private let ptynFrames: [String]
+    private let ptynFrameBytes: [[UInt8]]
     private let ptynSequence: [TimedTextFrame]
     private let lpsEnabled: Bool
     private let lpsCentered: Bool
     private let lpsCR: Bool
     private let lpsFrames: [String]
+    private let lpsPreparedFrameBytes: [[UInt8]]
     private let lpsSequence: [TimedTextFrame]
     private let rtPlusEnabled: Bool
     private let rtPlusFormatA: String
@@ -824,6 +828,10 @@ private final class BasicRDSCoder {
     private var rtABFlag: Int = 0
     private var rtABCycles: Int = 0
     private var lastManualRTBuffer: Int = 0
+    private var rtManualPreparedA: String
+    private var rtManualPreparedABytes: [UInt8]
+    private var rtManualPreparedB: String
+    private var rtManualPreparedBBytes: [UInt8]
     private var ptynSegment: Int = 0
     private var ptynFrameIndex: Int = 0
     private var ptynSeqIndex: Int = 0
@@ -880,6 +888,7 @@ private final class BasicRDSCoder {
         self.schedulerStandardLPS = config.rdsSchedulerStandardLPS
         self.psFrames = Self.parseTimedFrames(
             config.rdsPSDynamic, width: 8, uppercase: true, center: psCentered)
+        self.psFrameBytes = psFrames.map(Self.utf8Bytes)
         self.rtFrames = Self.parseTimedFrames(
             config.rdsRTText,
             width: rtMode2B ? 32 : 64,
@@ -898,6 +907,7 @@ private final class BasicRDSCoder {
         self.ptynCentered = config.rdsPTYNCentered
         self.ptynFrames = Self.parseTimedFrames(
             config.rdsPTYN, width: 8, uppercase: true, center: ptynCentered)
+        self.ptynFrameBytes = ptynFrames.map(Self.utf8Bytes)
         self.ptynSequence = Self.parseTimedSequence(
             config.rdsPTYN, width: 8, uppercase: true, center: ptynCentered)
         self.lpsEnabled = config.rdsEnableLPS
@@ -905,6 +915,9 @@ private final class BasicRDSCoder {
         self.lpsCR = config.rdsLPSCR
         self.lpsFrames = Self.parseTimedFrames(
             config.rdsLongPS32, width: 32, uppercase: false, center: lpsCentered)
+        self.lpsPreparedFrameBytes = lpsFrames.map {
+            Self.utf8Bytes(config.rdsLPSCR ? Self.prepareCRFrame($0, width: 32) : $0)
+        }
         self.lpsSequence = Self.parseTimedSequence(
             config.rdsLongPS32, width: 32, uppercase: false, center: lpsCentered)
         self.rtPlusEnabled = config.rdsEnableRTPlus
@@ -915,6 +928,16 @@ private final class BasicRDSCoder {
         self.eccCode = Self.parseHexByte(config.rdsECC)
         self.licCode = Self.parseHexByte(config.rdsLIC)
         self.tzOffset = config.rdsTZOffset
+        self.rtManualPreparedA = ""
+        self.rtManualPreparedABytes = []
+        self.rtManualPreparedB = ""
+        self.rtManualPreparedBBytes = []
+        let preparedA = Self.prepareRTFrame(rtBufferA, width: rtMode2B ? 32 : 64, centered: rtCentered, appendCR: rtCR)
+        self.rtManualPreparedA = preparedA
+        self.rtManualPreparedABytes = Self.utf8Bytes(preparedA)
+        let preparedB = Self.prepareRTFrame(rtBufferB, width: rtMode2B ? 32 : 64, centered: rtCentered, appendCR: rtCR)
+        self.rtManualPreparedB = preparedB
+        self.rtManualPreparedBBytes = Self.utf8Bytes(preparedB)
         self.sampleRate = max(8_000.0, sampleRate)
         let now = Date().timeIntervalSinceReferenceDate
         self.psSeqStart = now
@@ -1238,8 +1261,7 @@ private final class BasicRDSCoder {
 
     private func buildGroup0(versionB: Bool) -> [UInt8] {
         updatePSSequenceIfNeeded()
-        let frame = psSequence.isEmpty ? psFrames[psFrameIndex] : psSequence[psSeqIndex].text
-        let bytes = Array(frame.utf8)
+        let bytes = psSequence.isEmpty ? psFrameBytes[psFrameIndex] : Self.utf8Bytes(psSequence[psSeqIndex].text)
         let segment = psSegment % 4
         psSegment += 1
         let diBit = diBitForSegment(segment) ? 0x04 : 0x00
@@ -1266,8 +1288,9 @@ private final class BasicRDSCoder {
     private func buildGroup2(versionB: Bool) -> [UInt8] {
         let useVersionB = rtMode2B || versionB
         let limit = useVersionB ? 32 : 64
-        let frame = currentRTFrame(limit: limit)
-        let bytes = Array(frame.utf8)
+        let frameData = currentRTFrame(limit: limit)
+        let frame = frameData.text
+        let bytes = frameData.bytes
         let segment = rtSegment % 16
         rtSegment += 1
         let abFlag: Int
@@ -1317,9 +1340,8 @@ private final class BasicRDSCoder {
 
     private func buildGroup10A() -> [UInt8] {
         updatePTYNSequenceIfNeeded()
-        let frame =
-            ptynSequence.isEmpty ? ptynFrames[ptynFrameIndex] : ptynSequence[ptynSeqIndex].text
-        let bytes = Array(frame.utf8)
+        let bytes =
+            ptynSequence.isEmpty ? ptynFrameBytes[ptynFrameIndex] : Self.utf8Bytes(ptynSequence[ptynSeqIndex].text)
         let segment = ptynSegment % 2
         ptynSegment += 1
         let idx = segment * 4
@@ -1375,9 +1397,14 @@ private final class BasicRDSCoder {
 
     private func buildGroup15A() -> [UInt8] {
         updateLPSSequenceIfNeeded()
-        let frame = lpsSequence.isEmpty ? lpsFrames[lpsFrameIndex] : lpsSequence[lpsSeqIndex].text
-        let prepared = lpsCR ? Self.prepareCRFrame(frame, width: 32) : frame
-        let bytes = Array(prepared.utf8)
+        let bytes: [UInt8]
+        if lpsSequence.isEmpty {
+            bytes = lpsPreparedFrameBytes[lpsFrameIndex]
+        } else {
+            let frame = lpsSequence[lpsSeqIndex].text
+            let prepared = lpsCR ? Self.prepareCRFrame(frame, width: 32) : frame
+            bytes = Self.utf8Bytes(prepared)
+        }
         let segment = lpsSegment % 8
         lpsSegment += 1
         let idx = segment * 4
@@ -1411,8 +1438,7 @@ private final class BasicRDSCoder {
     private func buildClockTimeGroupIfNeeded() -> [UInt8]? {
         guard enCT else { return nil }
         let now = Date()
-        let calendar = Calendar(identifier: .gregorian)
-        let comps = calendar.dateComponents(
+        let comps = Self.gregorianCalendar.dateComponents(
             [.year, .month, .day, .hour, .minute, .second], from: now)
         guard let year = comps.year,
             let month = comps.month,
@@ -1434,8 +1460,7 @@ private final class BasicRDSCoder {
     private func buildClockTimeGroupImmediate() -> [UInt8]? {
         guard enCT else { return nil }
         let now = Date()
-        let calendar = Calendar(identifier: .gregorian)
-        let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute], from: now)
+        let comps = Self.gregorianCalendar.dateComponents([.year, .month, .day, .hour, .minute], from: now)
         guard let year = comps.year,
             let month = comps.month,
             let day = comps.day,
@@ -1620,20 +1645,23 @@ private final class BasicRDSCoder {
         return rtActiveBuffer
     }
 
-    private func currentRTFrame(limit: Int) -> String {
+    private func currentRTFrame(limit: Int) -> (text: String, bytes: [UInt8]) {
         if rtManualBuffers {
             let buf = currentManualRTBuffer()
             if buf != lastManualRTBuffer {
                 rtSegment = 0
                 lastManualRTBuffer = buf
             }
-            let raw = buf == 0 ? rtBufferA : rtBufferB
-            return Self.prepareRTFrame(raw, width: limit, centered: rtCentered, appendCR: rtCR)
+            if buf == 0 {
+                return (rtManualPreparedA, rtManualPreparedABytes)
+            }
+            return (rtManualPreparedB, rtManualPreparedBBytes)
         }
 
         guard !rtSequence.isEmpty else {
-            return Self.prepareRTFrame(
+            let frame = Self.prepareRTFrame(
                 rtFrames[rtFrameIndex], width: limit, centered: rtCentered, appendCR: rtCR)
+            return (frame, Self.utf8Bytes(frame))
         }
 
         let now = Date().timeIntervalSinceReferenceDate
@@ -1657,7 +1685,12 @@ private final class BasicRDSCoder {
         }
 
         let frame = rtSequence[min(rtSeqIndex, rtSequence.count - 1)].text
-        return Self.prepareRTFrame(frame, width: limit, centered: rtCentered, appendCR: rtCR)
+        let prepared = Self.prepareRTFrame(frame, width: limit, centered: rtCentered, appendCR: rtCR)
+        return (prepared, Self.utf8Bytes(prepared))
+    }
+
+    private static func utf8Bytes(_ text: String) -> [UInt8] {
+        Array(text.utf8)
     }
 
     private func buildGroupBits(

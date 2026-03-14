@@ -449,6 +449,19 @@ final class AudioOutputEngine {
         inputConversionBufferStereoR = [Float](repeating: 0.0, count: safeFrames)
     }
 
+    private func ensureInputConversionCapacity(frames: Int) {
+        guard frames > 0 else { return }
+        if inputConversionBuffer.count < frames {
+            inputConversionBuffer = [Float](repeating: 0.0, count: frames)
+        }
+        if inputConversionBufferStereoL.count < frames {
+            inputConversionBufferStereoL = [Float](repeating: 0.0, count: frames)
+        }
+        if inputConversionBufferStereoR.count < frames {
+            inputConversionBufferStereoR = [Float](repeating: 0.0, count: frames)
+        }
+    }
+
     private func appendRoutingNote(_ note: String) {
         if let current = routingNote, !current.isEmpty {
             routingNote = current + " " + note
@@ -501,22 +514,21 @@ final class AudioOutputEngine {
         }
         if let channels = buffer.int16ChannelData {
             let scale: Float = 1.0 / 32768.0
-            var left = Array(repeating: Float.zero, count: frames)
-            var right = Array(repeating: Float.zero, count: frames)
+            ensureInputConversionCapacity(frames: frames)
             if chanCount >= 2 {
                 for i in 0..<frames {
-                    left[i] = Float(channels[0][i]) * scale
-                    right[i] = Float(channels[1][i]) * scale
+                    inputConversionBufferStereoL[i] = Float(channels[0][i]) * scale
+                    inputConversionBufferStereoR[i] = Float(channels[1][i]) * scale
                 }
             } else {
                 for i in 0..<frames {
                     let s = Float(channels[0][i]) * scale
-                    left[i] = s
-                    right[i] = s
+                    inputConversionBufferStereoL[i] = s
+                    inputConversionBufferStereoR[i] = s
                 }
             }
-            left.withUnsafeBufferPointer { l in
-                right.withUnsafeBufferPointer { r in
+            inputConversionBufferStereoL.withUnsafeBufferPointer { l in
+                inputConversionBufferStereoR.withUnsafeBufferPointer { r in
                     ring.write(left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
                     if throttled {
                         let meter = Self.computeStereoMeter(
@@ -538,22 +550,21 @@ final class AudioOutputEngine {
         }
         if let channels = buffer.int32ChannelData {
             let scale: Float = 1.0 / 2147483648.0
-            var left = Array(repeating: Float.zero, count: frames)
-            var right = Array(repeating: Float.zero, count: frames)
+            ensureInputConversionCapacity(frames: frames)
             if chanCount >= 2 {
                 for i in 0..<frames {
-                    left[i] = Float(channels[0][i]) * scale
-                    right[i] = Float(channels[1][i]) * scale
+                    inputConversionBufferStereoL[i] = Float(channels[0][i]) * scale
+                    inputConversionBufferStereoR[i] = Float(channels[1][i]) * scale
                 }
             } else {
                 for i in 0..<frames {
                     let s = Float(channels[0][i]) * scale
-                    left[i] = s
-                    right[i] = s
+                    inputConversionBufferStereoL[i] = s
+                    inputConversionBufferStereoR[i] = s
                 }
             }
-            left.withUnsafeBufferPointer { l in
-                right.withUnsafeBufferPointer { r in
+            inputConversionBufferStereoL.withUnsafeBufferPointer { l in
+                inputConversionBufferStereoR.withUnsafeBufferPointer { r in
                     ring.write(left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
                     if throttled {
                         let meter = Self.computeStereoMeter(
@@ -575,21 +586,20 @@ final class AudioOutputEngine {
         }
         let audioBuffers = UnsafeMutableAudioBufferListPointer(buffer.mutableAudioBufferList)
         if isInterleaved, audioBuffers.count == 1, let mData = audioBuffers[0].mData {
-            var left = Array(repeating: Float.zero, count: frames)
-            var right = Array(repeating: Float.zero, count: frames)
+            ensureInputConversionCapacity(frames: frames)
             switch buffer.format.commonFormat {
             case .pcmFormatFloat32:
                 let interleaved = mData.assumingMemoryBound(to: Float.self)
                 if chanCount >= 2 {
                     for i in 0..<frames {
-                        left[i] = interleaved[i * chanCount]
-                        right[i] = interleaved[i * chanCount + 1]
+                        inputConversionBufferStereoL[i] = interleaved[i * chanCount]
+                        inputConversionBufferStereoR[i] = interleaved[i * chanCount + 1]
                     }
                 } else {
                     for i in 0..<frames {
                         let s = interleaved[i]
-                        left[i] = s
-                        right[i] = s
+                        inputConversionBufferStereoL[i] = s
+                        inputConversionBufferStereoR[i] = s
                     }
                 }
             case .pcmFormatInt16:
@@ -597,14 +607,14 @@ final class AudioOutputEngine {
                 let scale: Float = 1.0 / 32768.0
                 if chanCount >= 2 {
                     for i in 0..<frames {
-                        left[i] = Float(interleaved[i * chanCount]) * scale
-                        right[i] = Float(interleaved[i * chanCount + 1]) * scale
+                        inputConversionBufferStereoL[i] = Float(interleaved[i * chanCount]) * scale
+                        inputConversionBufferStereoR[i] = Float(interleaved[i * chanCount + 1]) * scale
                     }
                 } else {
                     for i in 0..<frames {
                         let s = Float(interleaved[i]) * scale
-                        left[i] = s
-                        right[i] = s
+                        inputConversionBufferStereoL[i] = s
+                        inputConversionBufferStereoR[i] = s
                     }
                 }
             case .pcmFormatInt32:
@@ -612,21 +622,21 @@ final class AudioOutputEngine {
                 let scale: Float = 1.0 / 2147483648.0
                 if chanCount >= 2 {
                     for i in 0..<frames {
-                        left[i] = Float(interleaved[i * chanCount]) * scale
-                        right[i] = Float(interleaved[i * chanCount + 1]) * scale
+                        inputConversionBufferStereoL[i] = Float(interleaved[i * chanCount]) * scale
+                        inputConversionBufferStereoR[i] = Float(interleaved[i * chanCount + 1]) * scale
                     }
                 } else {
                     for i in 0..<frames {
                         let s = Float(interleaved[i]) * scale
-                        left[i] = s
-                        right[i] = s
+                        inputConversionBufferStereoL[i] = s
+                        inputConversionBufferStereoR[i] = s
                     }
                 }
             default:
                 return
             }
-            left.withUnsafeBufferPointer { l in
-                right.withUnsafeBufferPointer { r in
+            inputConversionBufferStereoL.withUnsafeBufferPointer { l in
+                inputConversionBufferStereoR.withUnsafeBufferPointer { r in
                     ring.write(left: l.baseAddress!, right: r.baseAddress!, frameCount: frames)
                     if throttled {
                         let meter = Self.computeStereoMeter(

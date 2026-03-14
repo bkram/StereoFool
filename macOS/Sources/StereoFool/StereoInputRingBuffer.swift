@@ -4,6 +4,8 @@ final class StereoInputRingBuffer {
     private let capacity: Int
     private var left: [Float]
     private var right: [Float]
+    private var readScratchLeft: [Float]
+    private var readScratchRight: [Float]
     private var readIndex: Int = 0
     private var writeIndex: Int = 0
     private var count: Int = 0
@@ -20,6 +22,8 @@ final class StereoInputRingBuffer {
         self.capacity = n
         self.left = Array(repeating: 0.0, count: n)
         self.right = Array(repeating: 0.0, count: n)
+        self.readScratchLeft = Array(repeating: 0.0, count: min(4096, n))
+        self.readScratchRight = Array(repeating: 0.0, count: min(4096, n))
     }
 
     func write(
@@ -227,49 +231,63 @@ final class StereoInputRingBuffer {
         let nominalRatio = Double(nominal) / Double(max(1, frameCount))
         let step = max(0.25, min(4.0, nominalRatio * (1.0 + resampleRatioTrim)))
 
-        var localPhase = resamplePhase
-        var missing = 0
-        for i in 0..<frameCount {
-            let base = Int(localPhase)
-            if base >= available {
-                outLeft[i] = 0.0
-                outRight[i] = 0.0
-                missing += 1
-            } else {
-                let frac = Float(localPhase - Double(base))
-                let idx0 = (readIndex + base) % capacity
-                let nextBase = min(base + 1, available - 1)
-                let idx1 = (readIndex + nextBase) % capacity
-                let l0 = left[idx0]
-                let l1 = left[idx1]
-                let r0 = right[idx0]
-                let r1 = right[idx1]
-                let l = l0 + ((l1 - l0) * frac)
-                let r = r0 + ((r1 - r0) * frac)
-                outLeft[i] = l
-                outRight[i] = r
-                lastLeft = l
-                lastRight = r
-            }
-            localPhase += step
-        }
+        let startPhase = resamplePhase
+        let phaseEnd = startPhase + (step * Double(frameCount))
+        let neededFrames = min(available, max(1, Int(ceil(phaseEnd)) + 1))
+        ensureScratchCapacity(neededFrames)
+        copyOutOfRing(
+            intoLeft: &readScratchLeft,
+            outRight: &readScratchRight,
+            startIndex: readIndex,
+            frameCount: neededFrames
+        )
 
-        let consumed = min(available, Int(localPhase))
+        let consumed = min(available, Int(phaseEnd))
         readIndex = (readIndex + consumed) % capacity
         count -= consumed
         if consumed >= available {
             resamplePhase = 0.0
         } else {
-            resamplePhase = localPhase - Double(consumed)
+            resamplePhase = phaseEnd - Double(consumed)
             // Prevent extreme phase values from accumulating
             if resamplePhase > Double(capacity) / 2 {
                 resamplePhase = Double(capacity) / 4
             }
         }
+        lock.unlock()
+
+        var localPhase = startPhase
+        var missing = 0
+        var finalLeft: Float = lastLeft
+        var finalRight: Float = lastRight
+        for i in 0..<frameCount {
+            let base = Int(localPhase)
+            if base >= neededFrames {
+                outLeft[i] = 0.0
+                outRight[i] = 0.0
+                missing += 1
+            } else {
+                let frac = Float(localPhase - Double(base))
+                let idx1 = min(base + 1, neededFrames - 1)
+                let l0 = readScratchLeft[base]
+                let l1 = readScratchLeft[idx1]
+                let r0 = readScratchRight[base]
+                let r1 = readScratchRight[idx1]
+                let l = l0 + ((l1 - l0) * frac)
+                let r = r0 + ((r1 - r0) * frac)
+                outLeft[i] = l
+                outRight[i] = r
+                finalLeft = l
+                finalRight = r
+            }
+            localPhase += step
+        }
+
         if missing > 0 {
             underflowCount += UInt64(missing)
         }
-        lock.unlock()
+        lastLeft = finalLeft
+        lastRight = finalRight
         return missing
     }
 
@@ -296,5 +314,61 @@ final class StereoInputRingBuffer {
         let buffered = count
         lock.unlock()
         return (over, under, buffered)
+    }
+
+    private func ensureScratchCapacity(_ frameCount: Int) {
+        guard frameCount > 0 else { return }
+        if readScratchLeft.count < frameCount {
+            readScratchLeft = Array(repeating: 0.0, count: frameCount)
+        }
+        if readScratchRight.count < frameCount {
+            readScratchRight = Array(repeating: 0.0, count: frameCount)
+        }
+    }
+
+    private func copyOutOfRing(
+        intoLeft dstLeft: inout [Float],
+        outRight dstRight: inout [Float],
+        startIndex: Int,
+        frameCount: Int
+    ) {
+        guard frameCount > 0 else { return }
+        var remaining = frameCount
+        var srcIdx = startIndex
+        var dstOffset = 0
+        while remaining > 0 {
+            let chunk = min(remaining, capacity - srcIdx)
+            dstLeft.withUnsafeMutableBufferPointer { leftBuffer in
+                dstRight.withUnsafeMutableBufferPointer { rightBuffer in
+                    left.withUnsafeBufferPointer { srcLeft in
+                        right.withUnsafeBufferPointer { srcRight in
+                            leftBuffer.baseAddress!.advanced(by: dstOffset).update(
+                                from: srcLeft.baseAddress!.advanced(by: srcIdx),
+                                count: chunk
+                            )
+                            rightBuffer.baseAddress!.advanced(by: dstOffset).update(
+                                from: srcRight.baseAddress!.advanced(by: srcIdx),
+                                count: chunk
+                            )
+                        }
+                    }
+                }
+            }
+            srcIdx = (srcIdx + chunk) % capacity
+            dstOffset += chunk
+            remaining -= chunk
+        }
+    }
+
+    private func fillWithSilence(
+        outLeft: UnsafeMutablePointer<Float>,
+        outRight: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    ) {
+        guard frameCount > 0 else { return }
+        for i in 0..<frameCount {
+            outLeft[i] = 0.0
+            outRight[i] = 0.0
+        }
     }
 }

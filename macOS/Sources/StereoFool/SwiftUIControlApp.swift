@@ -241,6 +241,133 @@ private struct PeakHoldState {
     var holdRemaining: Double = 0.0
 }
 
+private final class MPXSpectrumAnalyzer: @unchecked Sendable {
+    private var fftSetup: FFTSetup?
+    private var fftLog2: vDSP_Length = 0
+    private var window: [Float] = []
+    private var signal: [Float] = []
+    private var windowed: [Float] = []
+    private var real: [Float] = []
+    private var imag: [Float] = []
+    private var magnitudesSq: [Float] = []
+    private var spectrumDB: [Float] = []
+    private var mapped: [Float] = []
+
+    deinit {
+        if let fftSetup {
+            vDSP_destroy_fftsetup(fftSetup)
+        }
+    }
+
+    func compute(
+        samples: [Float],
+        sampleRate: Double,
+        displayBins: Int,
+        maxDisplayHz: Double
+    ) -> (dbBins: [Float], maxHz: Double, nyquistHz: Double) {
+        let safeBins = max(64, displayBins)
+        let nyquist = max(1_000.0, sampleRate * 0.5)
+        let maxHz = max(1_000.0, maxDisplayHz)
+        guard samples.count >= 256 else {
+            return (Array(repeating: -100.0, count: safeBins), maxHz, nyquist)
+        }
+
+        let maxFFTSize = min(samples.count, 8192)
+        let log2n = Int(floor(log2(Double(maxFFTSize))))
+        let n = max(256, 1 << log2n)
+        prepareBuffers(fftSize: n, displayBins: safeBins)
+
+        signal.withUnsafeMutableBufferPointer { buffer in
+            samples.suffix(n).withUnsafeBufferPointer { source in
+                buffer.baseAddress?.update(from: source.baseAddress!, count: n)
+            }
+        }
+
+        var mean: Float = 0.0
+        vDSP_meanv(signal, 1, &mean, vDSP_Length(n))
+        var negMean = -mean
+        vDSP_vsadd(signal, 1, &negMean, &signal, 1, vDSP_Length(n))
+        vDSP_vmul(signal, 1, window, 1, &windowed, 1, vDSP_Length(n))
+
+        guard let fftSetup else {
+            return (Array(repeating: -100.0, count: safeBins), maxHz, nyquist)
+        }
+
+        real.withUnsafeMutableBufferPointer { realBP in
+            imag.withUnsafeMutableBufferPointer { imagBP in
+                var split = DSPSplitComplex(realp: realBP.baseAddress!, imagp: imagBP.baseAddress!)
+                windowed.withUnsafeBufferPointer { src in
+                    src.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: n / 2) { complexSrc in
+                        vDSP_ctoz(complexSrc, 2, &split, 1, vDSP_Length(n / 2))
+                    }
+                }
+                vDSP_fft_zrip(fftSetup, &split, 1, fftLog2, FFTDirection(FFT_FORWARD))
+                vDSP_zvmags(&split, 1, &magnitudesSq, 1, vDSP_Length(n / 2))
+            }
+        }
+
+        let invN = 1.0 / Float(n)
+        if !magnitudesSq.isEmpty {
+            let dcAmp = sqrtf(max(0.0, magnitudesSq[0])) * invN
+            spectrumDB[0] = max(-100.0, min(0.0, 20.0 * log10f(max(1e-9, dcAmp))))
+        }
+        if magnitudesSq.count > 1 {
+            for k in 1..<magnitudesSq.count {
+                let amp = (2.0 * sqrtf(max(0.0, magnitudesSq[k]))) * invN
+                spectrumDB[k] = max(-100.0, min(0.0, 20.0 * log10f(max(1e-9, amp))))
+            }
+        }
+
+        let sourceCount = max(1, spectrumDB.count)
+        for i in 0..<safeBins {
+            let ratio = safeBins > 1 ? (Double(i) / Double(safeBins - 1)) : 0.0
+            let freq = ratio * maxHz
+            if freq > nyquist {
+                mapped[i] = -100.0
+                continue
+            }
+            let srcPos = (freq / nyquist) * Double(sourceCount - 1)
+            let i0 = max(0, min(sourceCount - 1, Int(srcPos.rounded(.down))))
+            let i1 = max(0, min(sourceCount - 1, i0 + 1))
+            let frac = Float(srcPos - Double(i0))
+            let a = spectrumDB[i0]
+            let b = spectrumDB[i1]
+            mapped[i] = a + ((b - a) * frac)
+        }
+        return (mapped, maxHz, nyquist)
+    }
+
+    private func prepareBuffers(fftSize: Int, displayBins: Int) {
+        let requiredLog2 = vDSP_Length(log2(Double(fftSize)))
+        if fftLog2 != requiredLog2 || fftSetup == nil {
+            if let fftSetup {
+                vDSP_destroy_fftsetup(fftSetup)
+            }
+            fftSetup = vDSP_create_fftsetup(requiredLog2, FFTRadix(kFFTRadix2))
+            fftLog2 = requiredLog2
+        }
+
+        if window.count != fftSize {
+            window = Array(repeating: 0.0, count: fftSize)
+            signal = Array(repeating: 0.0, count: fftSize)
+            windowed = Array(repeating: 0.0, count: fftSize)
+            vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
+        }
+
+        let halfSize = fftSize / 2
+        if real.count != halfSize {
+            real = Array(repeating: 0.0, count: halfSize)
+            imag = Array(repeating: 0.0, count: halfSize)
+            magnitudesSq = Array(repeating: 0.0, count: halfSize)
+            spectrumDB = Array(repeating: -100.0, count: halfSize)
+        }
+
+        if mapped.count != displayBins {
+            mapped = Array(repeating: -100.0, count: displayBins)
+        }
+    }
+}
+
 private struct OrbassPreset {
     let id: String
     let title: String
@@ -877,20 +1004,23 @@ final class StereoFoolViewModel: ObservableObject {
     private var lastSpectrumRefreshTime: TimeInterval?
     private var spectrumUpdateInFlight: Bool = false
     private let spectrumQueue = DispatchQueue(label: "StereoFool.MPXSpectrum", qos: .userInitiated)
+    private let spectrumAnalyzer = MPXSpectrumAnalyzer()
 
     init(configPath: String) {
         self.configPath = configPath
+        let loadedConfig: AppConfig
         do {
-            self.config = try AppConfig.load(fromINI: configPath)
+            loadedConfig = try AppConfig.load(fromINI: configPath)
         } catch {
-            self.config = AppConfig()
-            try? self.config.save(toINI: configPath)
+            loadedConfig = AppConfig()
+            try? loadedConfig.save(toINI: configPath)
         }
+        self.config = loadedConfig
 
-        self.sourceMode = config.sourceMode
-        self.monitorEnabled = config.monitorEnabled
-        self.processingBypass = config.processingBypass
-        self.inputGainDB = config.inputGainDB
+        self.sourceMode = loadedConfig.sourceMode
+        self.monitorEnabled = loadedConfig.monitorEnabled
+        self.processingBypass = loadedConfig.processingBypass
+        self.inputGainDB = loadedConfig.inputGainDB
 
         refreshDevices()
         refreshMonitoringSnapshot()
@@ -991,7 +1121,7 @@ final class StereoFoolViewModel: ObservableObject {
         _ value: T,
         restartRequired: Bool = true
     ) {
-        objectWillChange.send()
+        publishConfigChange()
         config[keyPath: keyPath] = value
         saveConfig(restartRequired: restartRequired)
     }
@@ -1045,7 +1175,7 @@ final class StereoFoolViewModel: ObservableObject {
 
     func applyOrbassPreset(id: String) {
         guard let preset = Self.orbassPresets.first(where: { $0.id == id }) else { return }
-        objectWillChange.send()
+        publishConfigChange()
         config.orbassEnabled = preset.enabled
         config.orbassAmount = preset.amount
         config.orbassFreqHz = preset.freqHz
@@ -1063,7 +1193,7 @@ final class StereoFoolViewModel: ObservableObject {
 
     func applyMultibandPreset(id: String, intensity: MultibandPresetIntensity) {
         guard let preset = Self.multibandPresets.first(where: { $0.id == id }) else { return }
-        objectWillChange.send()
+        publishConfigChange()
 
         config.multibandEnabled = true
         config.multibandMode = preset.mode
@@ -1595,8 +1725,9 @@ final class StereoFoolViewModel: ObservableObject {
         let sampleRate = raw.sampleRate
 
         let maxDisplayHz: Double = config.fftWindow96kHz ? 96_000.0 : 60_000.0
+        let analyzer = spectrumAnalyzer
         spectrumQueue.async { [weak self] in
-            let spectrum = Self.computeMPXSpectrum(
+            let spectrum = analyzer.compute(
                 samples: samples,
                 sampleRate: sampleRate,
                 displayBins: 640,
@@ -1610,91 +1741,6 @@ final class StereoFoolViewModel: ObservableObject {
                 self.spectrumUpdateInFlight = false
             }
         }
-    }
-
-    nonisolated private static func computeMPXSpectrum(
-        samples: [Float],
-        sampleRate: Double,
-        displayBins: Int,
-        maxDisplayHz: Double
-    ) -> (dbBins: [Float], maxHz: Double, nyquistHz: Double) {
-        let safeBins = max(64, displayBins)
-        let nyquist = max(1_000.0, sampleRate * 0.5)
-        let maxHz = max(1_000.0, maxDisplayHz)
-        guard samples.count >= 256 else {
-            return (Array(repeating: -100.0, count: safeBins), maxHz, nyquist)
-        }
-
-        let maxFFTSize = min(samples.count, 8192)
-        let log2n = Int(floor(log2(Double(maxFFTSize))))
-        let n = max(256, 1 << log2n)
-        var signal = Array(samples.suffix(n))
-
-        var mean: Float = 0.0
-        vDSP_meanv(signal, 1, &mean, vDSP_Length(n))
-        var negMean = -mean
-        vDSP_vsadd(signal, 1, &negMean, &signal, 1, vDSP_Length(n))
-
-        var window = Array(repeating: Float.zero, count: n)
-        vDSP_hann_window(&window, vDSP_Length(n), Int32(vDSP_HANN_NORM))
-        var windowed = Array(repeating: Float.zero, count: n)
-        vDSP_vmul(signal, 1, window, 1, &windowed, 1, vDSP_Length(n))
-
-        let fftLog2 = vDSP_Length(log2(Double(n)))
-        guard let setup = vDSP_create_fftsetup(fftLog2, FFTRadix(kFFTRadix2)) else {
-            return (Array(repeating: -100.0, count: safeBins), maxHz, nyquist)
-        }
-        defer { vDSP_destroy_fftsetup(setup) }
-
-        var real = Array(repeating: Float.zero, count: n / 2)
-        var imag = Array(repeating: Float.zero, count: n / 2)
-        var magnitudesSq = Array(repeating: Float.zero, count: n / 2)
-
-        real.withUnsafeMutableBufferPointer { realBP in
-            imag.withUnsafeMutableBufferPointer { imagBP in
-                var split = DSPSplitComplex(realp: realBP.baseAddress!, imagp: imagBP.baseAddress!)
-                windowed.withUnsafeBufferPointer { src in
-                    src.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: n / 2) {
-                        complexSrc in
-                        vDSP_ctoz(complexSrc, 2, &split, 1, vDSP_Length(n / 2))
-                    }
-                }
-                vDSP_fft_zrip(setup, &split, 1, fftLog2, FFTDirection(FFT_FORWARD))
-                vDSP_zvmags(&split, 1, &magnitudesSq, 1, vDSP_Length(n / 2))
-            }
-        }
-
-        var spectrumDB = Array(repeating: Float(-100.0), count: n / 2)
-        let invN = 1.0 / Float(n)
-        if !magnitudesSq.isEmpty {
-            let dcAmp = sqrtf(max(0.0, magnitudesSq[0])) * invN
-            spectrumDB[0] = max(-100.0, min(0.0, 20.0 * log10f(max(1e-9, dcAmp))))
-        }
-        if magnitudesSq.count > 1 {
-            for k in 1..<magnitudesSq.count {
-                let amp = (2.0 * sqrtf(max(0.0, magnitudesSq[k]))) * invN
-                spectrumDB[k] = max(-100.0, min(0.0, 20.0 * log10f(max(1e-9, amp))))
-            }
-        }
-
-        let sourceCount = max(1, spectrumDB.count)
-        var mapped = Array(repeating: Float(-100.0), count: safeBins)
-        for i in 0..<safeBins {
-            let ratio = safeBins > 1 ? (Double(i) / Double(safeBins - 1)) : 0.0
-            let freq = ratio * maxHz
-            if freq > nyquist {
-                mapped[i] = -100.0
-                continue
-            }
-            let srcPos = (freq / nyquist) * Double(sourceCount - 1)
-            let i0 = max(0, min(sourceCount - 1, Int(srcPos.rounded(.down))))
-            let i1 = max(0, min(sourceCount - 1, i0 + 1))
-            let frac = Float(srcPos - Double(i0))
-            let a = spectrumDB[i0]
-            let b = spectrumDB[i1]
-            mapped[i] = a + ((b - a) * frac)
-        }
-        return (mapped, maxHz, nyquist)
     }
 
     private func smoothedScopeSamples(
@@ -2045,6 +2091,12 @@ final class StereoFoolViewModel: ObservableObject {
                 statusText = "Config updated. Press Apply in Monitoring to hear changes."
             }
             pendingRuntimeApply = true
+        }
+    }
+
+    private func publishConfigChange() {
+        DispatchQueue.main.async { [weak self] in
+            self?.objectWillChange.send()
         }
     }
 
