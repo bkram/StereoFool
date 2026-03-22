@@ -966,6 +966,7 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var rdsAID: String = "AID: OFF"
     @Published var rdsLongPS: String = "-"
     @Published var rdsRadiotext: String = "-"
+    @Published var rdsNowPlayingStatus: String = "Now Playing: off"
 
     @Published var inputScope: [Float] = Array(repeating: 0.0, count: 128)
     @Published var outputScope: [Float] = Array(repeating: 0.0, count: 128)
@@ -977,6 +978,8 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var spectrumWindowVisible: Bool = false
 
     private let configPath: String
+    private let nowPlayingState: NowPlayingState
+    private let nowPlayingRunner: NowPlayingScriptRunner
     var config: AppConfig
     private var runningEngine: AudioOutputEngine?
     private var monitorTimer: Timer?
@@ -1021,8 +1024,18 @@ final class StereoFoolViewModel: ObservableObject {
         self.monitorEnabled = loadedConfig.monitorEnabled
         self.processingBypass = loadedConfig.processingBypass
         self.inputGainDB = loadedConfig.inputGainDB
+        self.nowPlayingState = NowPlayingState()
+        self.nowPlayingRunner = NowPlayingScriptRunner(state: self.nowPlayingState)
+        self.nowPlayingRunner.setStatusHandler { [weak self] status in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.rdsNowPlayingStatus = status
+                self.refreshMonitoringSnapshot()
+            }
+        }
 
         refreshDevices()
+        nowPlayingRunner.updateConfig(loadedConfig)
         refreshMonitoringSnapshot()
     }
 
@@ -1055,6 +1068,7 @@ final class StereoFoolViewModel: ObservableObject {
             ("AID", rdsAID),
             ("Long PS", rdsLongPS),
             ("Radiotext", rdsRadiotext),
+            ("Now Playing", rdsNowPlayingStatus.replacingOccurrences(of: "Now Playing: ", with: "")),
         ]
     }
 
@@ -1074,6 +1088,7 @@ final class StereoFoolViewModel: ObservableObject {
         monitorTimer?.invalidate()
         monitorTimer = nil
         lastMonitorRefreshTime = nil
+        nowPlayingRunner.stop()
         stopEngineIfNeeded()
     }
 
@@ -1124,6 +1139,7 @@ final class StereoFoolViewModel: ObservableObject {
         publishConfigChange()
         config[keyPath: keyPath] = value
         saveConfig(restartRequired: restartRequired)
+        updateNowPlayingRunner()
     }
 
     func configBinding<T>(
@@ -1282,6 +1298,7 @@ final class StereoFoolViewModel: ObservableObject {
             inputGainDB = config.inputGainDB
             pendingRuntimeApply = false
             refreshDevices()
+            updateNowPlayingRunner()
             statusText = "Config reloaded"
         } catch {
             statusText = "Config reload failed: \(error)"
@@ -1302,6 +1319,7 @@ final class StereoFoolViewModel: ObservableObject {
             sourceMode = config.sourceMode
             processingBypass = config.processingBypass
             inputGainDB = config.inputGainDB
+            updateNowPlayingRunner()
             applyPendingRuntimeChanges()
             statusText = "Reset to defaults"
         } catch {
@@ -1331,6 +1349,7 @@ final class StereoFoolViewModel: ObservableObject {
             config = defaults
             processingBypass = config.processingBypass
             inputGainDB = config.inputGainDB
+            updateNowPlayingRunner()
             applyPendingRuntimeChanges()
             statusText = "Reset processing to defaults"
         } catch {
@@ -1360,6 +1379,7 @@ final class StereoFoolViewModel: ObservableObject {
             defaults.diffLevel = config.diffLevel
             try defaults.save(toINI: configPath)
             config = defaults
+            updateNowPlayingRunner()
             applyPendingRuntimeChanges()
             statusText = "Reset RDS to defaults"
         } catch {
@@ -1376,6 +1396,7 @@ final class StereoFoolViewModel: ObservableObject {
             inputGainDB = config.inputGainDB
             pendingRuntimeApply = false
             refreshDevices()
+            updateNowPlayingRunner()
             statusText = "Config loaded: \(URL(fileURLWithPath: path).lastPathComponent)"
         } catch {
             statusText = "Config load failed: \(error)"
@@ -1393,6 +1414,27 @@ final class StereoFoolViewModel: ObservableObject {
             statusText = "Config saved: \(URL(fileURLWithPath: path).lastPathComponent)"
         } catch {
             statusText = "Config save failed: \(error)"
+        }
+    }
+
+    func chooseNowPlayingScript() {
+        let openPanel = NSOpenPanel()
+        openPanel.message = "Choose a script to use for now playing metadata"
+        openPanel.canChooseDirectories = false
+        openPanel.canChooseFiles = true
+        openPanel.allowsMultipleSelection = false
+        openPanel.prompt = "Choose Script"
+        if !config.rdsNowPlayingScript.isEmpty {
+            let currentPath = NowPlayingFormatter.normalizeScriptPath(config.rdsNowPlayingScript)
+            openPanel.directoryURL = URL(fileURLWithPath: (currentPath as NSString).deletingLastPathComponent)
+            openPanel.nameFieldStringValue = URL(fileURLWithPath: currentPath).lastPathComponent
+        }
+
+        openPanel.begin { [weak self] response in
+            guard response == .OK, let url = openPanel.url else { return }
+            Task { @MainActor in
+                self?.setConfigValue(\.rdsNowPlayingScript, url.path, restartRequired: false)
+            }
         }
     }
 
@@ -1452,7 +1494,11 @@ final class StereoFoolViewModel: ObservableObject {
         let outputID: AudioDeviceID? = outputDevices.first(where: { $0.uid == selectedOutUID })?.id
         let outputMode: AudioOutputMode = monitorEnabled ? .monitorAudio : .mpxComposite
 
-        let generator = MPXGenerator(config: runConfig, sampleRate: runConfig.sampleRate)
+        let generator = MPXGenerator(
+            config: runConfig,
+            sampleRate: runConfig.sampleRate,
+            nowPlayingState: nowPlayingState
+        )
         let engine = AudioOutputEngine(
             generator: generator,
             config: runConfig,
@@ -1802,17 +1848,21 @@ final class StereoFoolViewModel: ObservableObject {
     }
 
     private func currentRTText(elapsed: Double) -> String {
+        let nowPlayingSnapshot = nowPlayingState.currentSnapshot()
         let text: String
         if config.rdsRTManualBuffers {
             if config.rdsRTCycle {
                 let cycle = max(1.0, config.rdsRTCycleTime)
                 let idx = Int(elapsed / cycle) % 2
-                text = idx == 0 ? config.rdsRTA : config.rdsRTB
+                let raw = idx == 0 ? config.rdsRTA : config.rdsRTB
+                text = NowPlayingFormatter.expandTemplate(raw, snapshot: nowPlayingSnapshot)
             } else {
-                text = config.rdsRTActiveBuffer == 0 ? config.rdsRTA : config.rdsRTB
+                let raw = config.rdsRTActiveBuffer == 0 ? config.rdsRTA : config.rdsRTB
+                text = NowPlayingFormatter.expandTemplate(raw, snapshot: nowPlayingSnapshot)
             }
         } else {
-            text = Self.currentTimedDisplayText(config.rdsRTText, elapsed: elapsed)
+            let expanded = NowPlayingFormatter.expandTemplate(config.rdsRTText, snapshot: nowPlayingSnapshot)
+            text = Self.currentTimedDisplayText(expanded, elapsed: elapsed)
         }
         let width = config.rdsRTMode.uppercased() == "2B" ? 32 : 64
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2092,6 +2142,10 @@ final class StereoFoolViewModel: ObservableObject {
             }
             pendingRuntimeApply = true
         }
+    }
+
+    private func updateNowPlayingRunner() {
+        nowPlayingRunner.updateConfig(config)
     }
 
     private func publishConfigChange() {
@@ -3802,6 +3856,40 @@ private struct RDSRadiotextTab: View {
             Toggle("Enable RT+", isOn: model.configBinding(\.rdsEnableRTPlus))
             TextField("RT+ Format A", text: model.configBinding(\.rdsRTPlusFormatA))
             TextField("RT+ Format B", text: model.configBinding(\.rdsRTPlusFormatB))
+            Divider()
+            Toggle(
+                "Enable Now Playing Script",
+                isOn: model.configBinding(\.rdsNowPlayingEnabled, restartRequired: false))
+            LabeledContent("Script Path") {
+                HStack(spacing: 8) {
+                    TextField(
+                        "",
+                        text: model.configBinding(\.rdsNowPlayingScript, restartRequired: false)
+                    )
+                    Button("Browse") {
+                        model.chooseNowPlayingScript()
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            DoubleSliderRow(
+                title: "Poll Interval",
+                value: model.configBinding(\.rdsNowPlayingPollSeconds, restartRequired: false),
+                range: 1...60,
+                format: "%.1f s"
+            )
+            DoubleSliderRow(
+                title: "Script Timeout",
+                value: model.configBinding(\.rdsNowPlayingTimeoutSeconds, restartRequired: false),
+                range: 0.2...10,
+                format: "%.1f s"
+            )
+            Text("Macros: {now_playing}, {artist}, {title}, {display}")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(model.rdsNowPlayingStatus)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -4095,6 +4183,16 @@ private struct HelpRDSTextView: View {
 5s:StereoFool - 5s:FM Coder
 20s:Station Name/10s:Now Playing
 8s:Tune to 88.5/8s:My Frequency
+""")
+
+            Text("Now Playing macros")
+                .font(.headline)
+                .padding(.top, 8)
+
+            CodeBlock("""
+Now: {now_playing}
+{artist} - {title}
+{title}
 """)
 
             Spacer(minLength: 0)

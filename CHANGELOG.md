@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.85
+
+### Added
+- Configurable now-playing script support in the RDS Radiotext section with native file picker, poll interval, timeout, and runtime status display
+- Radiotext macro expansion for now-playing metadata: `{now_playing}`, `{display}`, `{artist}`, and `{title}`
+- README documentation for the expected now-playing script output format and RT/RT+ configuration
+
+### Fixed
+- RT+ tagging now uses structured now-playing metadata more reliably for artist/title extraction
+- RT+ tag ordering now follows the field positions in transmitted radiotext
+
 ## 0.8
 
 ### Added

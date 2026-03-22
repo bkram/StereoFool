@@ -79,6 +79,47 @@ Relevant config sections:
 - `MPX`: processing, levels, stereo coding, limiter behavior
 - `RDS`: program service, radiotext, flags, carrier settings
 
+### Now Playing script output
+
+The RDS Radiotext section can poll an external script for now-playing metadata.
+
+Expected script behavior:
+
+- Exit with status `0` when metadata is available
+- Write metadata to `stdout`
+- Plain single-line output is accepted and treated as the display text
+- Structured `key=value` lines are preferred for correct RT+ tagging
+
+Supported keys:
+
+- `display`: full on-air text, for example `The Dizzy DJ - I Venti Megamix`
+- `artist`: artist field for RT+
+- `title`: title field for RT+
+- `now_playing`: alias for `display`
+
+Example script output:
+
+```text
+display=The Dizzy DJ - I Venti Megamix
+artist=The Dizzy DJ
+title=I Venti Megamix
+```
+
+Example Radiotext / RT+ settings:
+
+```text
+Radiotext: 10s:Now: {artist} - {title}
+RT+ Format A: Now: {artist} - {title}
+RT+ Format B: Now: {artist} - {title}
+```
+
+Available Radiotext macros:
+
+- `{now_playing}`
+- `{display}`
+- `{artist}`
+- `{title}`
+
 Important defaults:
 
 - Input HPF default: `30 Hz`

@@ -132,6 +132,10 @@ struct AppConfig {
     var rdsEnableRTPlus: Bool = false
     var rdsRTPlusFormatA: String = "{artist} - {title}"
     var rdsRTPlusFormatB: String = "{artist} - {title}"
+    var rdsNowPlayingEnabled: Bool = false
+    var rdsNowPlayingScript: String = ""
+    var rdsNowPlayingPollSeconds: Double = 5.0
+    var rdsNowPlayingTimeoutSeconds: Double = 1.0
     var rdsECC: String = "E3"
     var rdsLIC: String = "1D"
     var rdsTZOffset: Double = 1.0
@@ -299,6 +303,14 @@ struct AppConfig {
         cfg.rdsEnableRTPlus = rds.bool("en_rt_plus", defaultValue: cfg.rdsEnableRTPlus)
         cfg.rdsRTPlusFormatA = rds.string("rt_plus_format_a", defaultValue: cfg.rdsRTPlusFormatA)
         cfg.rdsRTPlusFormatB = rds.string("rt_plus_format_b", defaultValue: cfg.rdsRTPlusFormatB)
+        cfg.rdsNowPlayingEnabled = rds.bool(
+            "now_playing_enabled", defaultValue: cfg.rdsNowPlayingEnabled)
+        cfg.rdsNowPlayingScript = rds.string(
+            "now_playing_script", defaultValue: cfg.rdsNowPlayingScript)
+        cfg.rdsNowPlayingPollSeconds = rds.double(
+            "now_playing_poll_seconds", defaultValue: cfg.rdsNowPlayingPollSeconds)
+        cfg.rdsNowPlayingTimeoutSeconds = rds.double(
+            "now_playing_timeout_seconds", defaultValue: cfg.rdsNowPlayingTimeoutSeconds)
         cfg.rdsECC = rds.string("ecc", defaultValue: cfg.rdsECC)
         cfg.rdsLIC = rds.string("lic", defaultValue: cfg.rdsLIC)
         cfg.rdsTZOffset = rds.double("tz_offset", defaultValue: cfg.rdsTZOffset)
@@ -450,6 +462,10 @@ struct AppConfig {
             "en_rt_plus = \(Self.boolString(rdsEnableRTPlus))",
             "rt_plus_format_a = \(rdsRTPlusFormatA)",
             "rt_plus_format_b = \(rdsRTPlusFormatB)",
+            "now_playing_enabled = \(Self.boolString(rdsNowPlayingEnabled))",
+            "now_playing_script = \(rdsNowPlayingScript)",
+            "now_playing_poll_seconds = \(Self.formatFloat(max(1.0, min(300.0, rdsNowPlayingPollSeconds))))",
+            "now_playing_timeout_seconds = \(Self.formatFloat(max(0.2, min(30.0, rdsNowPlayingTimeoutSeconds))))",
             "ecc = \(Self.sanitizedHexByte(rdsECC))",
             "lic = \(Self.sanitizedHexByte(rdsLIC))",
             "tz_offset = \(Self.formatFloat(max(-12.0, min(14.0, rdsTZOffset))))",

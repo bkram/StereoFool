@@ -123,7 +123,16 @@ do {
         app.run()
     }
     let config = try AppConfig.load(fromINI: configPath)
-    let generator = MPXGenerator(config: config, sampleRate: config.sampleRate)
+    let nowPlayingState = NowPlayingState()
+    let nowPlayingRunner = NowPlayingScriptRunner(state: nowPlayingState) { status in
+        fputs("[NowPlaying] \(status)\n", stderr)
+    }
+    nowPlayingRunner.updateConfig(config)
+    let generator = MPXGenerator(
+        config: config,
+        sampleRate: config.sampleRate,
+        nowPlayingState: nowPlayingState
+    )
 
     // Minimize blocking before audio engine start: do device lookup with minimal I/O and NO logging
     var allDevices: [AudioDevice] = []
@@ -170,6 +179,7 @@ do {
     let signalSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
     signalSource.setEventHandler(
         handler: DispatchWorkItem {
+            nowPlayingRunner.stop()
             audioEngine.stop()
             exit(0)
         })
@@ -179,6 +189,7 @@ do {
         DispatchQueue.main.asyncAfter(
             deadline: .now() + secs,
             execute: DispatchWorkItem {
+                nowPlayingRunner.stop()
                 audioEngine.stop()
                 exit(0)
             })

@@ -761,6 +761,9 @@ private final class BasicRDSCoder {
     private let psCentered: Bool
     private let rtManualBuffers: Bool
     private let rtCycleAB: Bool
+    private let rtRawText: String
+    private let rtRawBufferA: String
+    private let rtRawBufferB: String
     private let rtBufferA: String
     private let rtBufferB: String
     private let rtCR: Bool
@@ -797,6 +800,8 @@ private final class BasicRDSCoder {
     private let rtPlusEnabled: Bool
     private let rtPlusFormatA: String
     private let rtPlusFormatB: String
+    private let nowPlayingEnabled: Bool
+    private let nowPlayingState: NowPlayingState?
     private let enCT: Bool
     private let enID: Bool
     private let eccCode: Int
@@ -843,6 +848,7 @@ private final class BasicRDSCoder {
     private var rtPlusToggle: Int = 0
     private var rtPlusTags: [RTPlusTag] = []
     private var rtPlusSignature: String = ""
+    private var rtDynamicSignature: String = ""
 
     private var biphaseKernel: [Float] = []
     private var gaussianKernel: [Float] = []
@@ -851,7 +857,7 @@ private final class BasicRDSCoder {
     private var biphaseOverlapIndex: Int = 0
     private var shapingPeak: Float = 1.0
 
-    init(config: AppConfig, sampleRate: Float) {
+    init(config: AppConfig, sampleRate: Float, nowPlayingState: NowPlayingState? = nil) {
         self.enabled = config.enRDS && (config.rdsLevel > 0.0)
         self.levelScale = clampf(Float(config.rdsLevel) / 75.0, 0.0, 0.25)
         self.piCode = Self.parseHexWord(config.rdsPI)
@@ -869,6 +875,9 @@ private final class BasicRDSCoder {
         self.psCentered = config.rdsPSCentered
         self.rtManualBuffers = config.rdsRTManualBuffers
         self.rtCycleAB = config.rdsRTCycleAB
+        self.rtRawText = config.rdsRTText
+        self.rtRawBufferA = config.rdsRTA
+        self.rtRawBufferB = config.rdsRTB
         self.rtBufferA = Self.sanitizeText(config.rdsRTA, uppercase: false)
         self.rtBufferB = Self.sanitizeText(config.rdsRTB, uppercase: false)
         self.rtCR = config.rdsRTCR
@@ -923,6 +932,8 @@ private final class BasicRDSCoder {
         self.rtPlusEnabled = config.rdsEnableRTPlus
         self.rtPlusFormatA = config.rdsRTPlusFormatA
         self.rtPlusFormatB = config.rdsRTPlusFormatB
+        self.nowPlayingEnabled = config.rdsNowPlayingEnabled
+        self.nowPlayingState = nowPlayingState
         self.enCT = config.rdsEnableCT
         self.enID = config.rdsEnableID
         self.eccCode = Self.parseHexByte(config.rdsECC)
@@ -1302,7 +1313,11 @@ private final class BasicRDSCoder {
         let b2Tail = ((abFlag & 1) << 4) | segment
         if rtPlusEnabled {
             let selectedFormat = (abFlag == 0) ? rtPlusFormatA : rtPlusFormatB
-            refreshRTPlusTagsIfNeeded(text: frame, format: selectedFormat)
+            refreshRTPlusTagsIfNeeded(
+                text: frame,
+                format: selectedFormat,
+                snapshot: currentNowPlayingSnapshot()
+            )
         }
         if useVersionB {
             let idx = segment * 2
@@ -1646,16 +1661,73 @@ private final class BasicRDSCoder {
     }
 
     private func currentRTFrame(limit: Int) -> (text: String, bytes: [UInt8]) {
+        let nowPlayingSnapshot = currentNowPlayingSnapshot()
         if rtManualBuffers {
             let buf = currentManualRTBuffer()
             if buf != lastManualRTBuffer {
                 rtSegment = 0
                 lastManualRTBuffer = buf
             }
+            if nowPlayingEnabled {
+                let template = (buf == 0) ? rtRawBufferA : rtRawBufferB
+                let prepared = Self.prepareRTFrame(
+                    Self.expandNowPlayingMacros(template, snapshot: nowPlayingSnapshot),
+                    width: limit,
+                    centered: rtCentered,
+                    appendCR: rtCR
+                )
+                return (prepared, Self.utf8Bytes(prepared))
+            }
             if buf == 0 {
                 return (rtManualPreparedA, rtManualPreparedABytes)
             }
             return (rtManualPreparedB, rtManualPreparedBBytes)
+        }
+
+        if nowPlayingEnabled {
+            let resolvedRaw = Self.expandNowPlayingMacros(rtRawText, snapshot: nowPlayingSnapshot)
+            let signature = "\(resolvedRaw)|\(nowPlayingSnapshot.revision)"
+            if signature != rtDynamicSignature {
+                rtDynamicSignature = signature
+                rtSegment = 0
+                if !rtCycleAB {
+                    rtABFlag ^= 1
+                }
+            }
+            let dynamicSequence = Self.parseTimedSequence(
+                resolvedRaw,
+                width: limit,
+                uppercase: false,
+                center: rtCentered
+            )
+            guard !dynamicSequence.isEmpty else {
+                let frame = Self.prepareRTFrame("", width: limit, centered: rtCentered, appendCR: rtCR)
+                return (frame, Self.utf8Bytes(frame))
+            }
+
+            let now = Date().timeIntervalSinceReferenceDate
+            let current = dynamicSequence[min(rtSeqIndex, dynamicSequence.count - 1)]
+            if now - rtSeqStart >= current.duration {
+                let prev = rtSeqIndex
+                rtSeqIndex = (rtSeqIndex + 1) % dynamicSequence.count
+                rtSeqStart = now
+                rtSegment = 0
+                if !rtCycleAB && rtSeqIndex != prev {
+                    rtABFlag ^= 1
+                }
+            }
+
+            if rtCycleAB, rtSegment > 0, (rtSegment % 16) == 0 {
+                rtABCycles += 1
+                if rtABCycles >= rtABCycleCount {
+                    rtABFlag ^= 1
+                    rtABCycles = 0
+                }
+            }
+
+            let frame = dynamicSequence[min(rtSeqIndex, dynamicSequence.count - 1)].text
+            let prepared = Self.prepareRTFrame(frame, width: limit, centered: rtCentered, appendCR: rtCR)
+            return (prepared, Self.utf8Bytes(prepared))
         }
 
         guard !rtSequence.isEmpty else {
@@ -1687,6 +1759,11 @@ private final class BasicRDSCoder {
         let frame = rtSequence[min(rtSeqIndex, rtSequence.count - 1)].text
         let prepared = Self.prepareRTFrame(frame, width: limit, centered: rtCentered, appendCR: rtCR)
         return (prepared, Self.utf8Bytes(prepared))
+    }
+
+    private func currentNowPlayingSnapshot() -> NowPlayingSnapshot {
+        guard nowPlayingEnabled, let nowPlayingState else { return .empty }
+        return nowPlayingState.currentSnapshot()
     }
 
     private static func utf8Bytes(_ text: String) -> [UInt8] {
@@ -1797,14 +1874,19 @@ private final class BasicRDSCoder {
         return out
     }
 
-    private func refreshRTPlusTagsIfNeeded(text: String, format: String) {
-        let signature = text + "|" + format
+    private func refreshRTPlusTagsIfNeeded(
+        text: String,
+        format: String,
+        snapshot: NowPlayingSnapshot
+    ) {
+        let signature =
+            text + "|" + format + "|" + snapshot.display + "|" + snapshot.artist + "|" + snapshot.title
         if signature == rtPlusSignature {
             return
         }
         rtPlusSignature = signature
         rtPlusToggle ^= 1
-        rtPlusTags = Self.parseRTPlusTags(text: text, format: format)
+        rtPlusTags = Self.parseRTPlusTags(text: text, format: format, snapshot: snapshot)
     }
 
     private static func parseTimedFrames(_ raw: String, width: Int, uppercase: Bool, center: Bool)
@@ -2212,14 +2294,37 @@ private final class BasicRDSCoder {
         return jd - 2_400_001
     }
 
-    private static func parseRTPlusTags(text: String, format: String) -> [RTPlusTag] {
+    private static func parseRTPlusTags(
+        text: String,
+        format: String,
+        snapshot: NowPlayingSnapshot? = nil
+    ) -> [RTPlusTag] {
         if text.isEmpty || format.isEmpty {
             return []
         }
 
         var escaped = NSRegularExpression.escapedPattern(for: format)
-        escaped = escaped.replacingOccurrences(of: "\\{artist\\}", with: "(?<artist>.+?)")
-        escaped = escaped.replacingOccurrences(of: "\\{title\\}", with: "(?<title>.+?)")
+        let nowPlayingPattern = capturePattern(
+            name: "now_playing",
+            exactValue: snapshot?.display
+        )
+        let displayPattern = capturePattern(
+            name: "display",
+            exactValue: snapshot?.display
+        )
+        let artistPattern = capturePattern(
+            name: "artist",
+            exactValue: snapshot?.artist
+        )
+        let titlePattern = capturePattern(
+            name: "title",
+            exactValue: snapshot?.title
+        )
+        escaped = escaped.replacingOccurrences(
+            of: "\\{now_playing\\}", with: nowPlayingPattern)
+        escaped = escaped.replacingOccurrences(of: "\\{display\\}", with: displayPattern)
+        escaped = escaped.replacingOccurrences(of: "\\{artist\\}", with: artistPattern)
+        escaped = escaped.replacingOccurrences(of: "\\{title\\}", with: titlePattern)
         guard let regex = try? NSRegularExpression(pattern: escaped, options: []) else {
             return []
         }
@@ -2242,10 +2347,34 @@ private final class BasicRDSCoder {
         if let titleTag = makeTag(name: "title", contentType: 1) {
             tags.append(titleTag)
         }
+        if tags.isEmpty, let nowPlayingTag = makeTag(name: "now_playing", contentType: 1) {
+            tags.append(nowPlayingTag)
+        }
+        if tags.isEmpty, let displayTag = makeTag(name: "display", contentType: 1) {
+            tags.append(displayTag)
+        }
         if let artistTag = makeTag(name: "artist", contentType: 4) {
             tags.append(artistTag)
         }
-        return tags
+        return tags.sorted {
+            if $0.start == $1.start {
+                return $0.contentType < $1.contentType
+            }
+            return $0.start < $1.start
+        }
+    }
+
+    private static func expandNowPlayingMacros(_ text: String, snapshot: NowPlayingSnapshot) -> String {
+        NowPlayingFormatter.expandTemplate(text, snapshot: snapshot)
+    }
+
+    private static func capturePattern(name: String, exactValue: String?) -> String {
+        let trimmed = exactValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty {
+            return "(?<\(name)>.+?)"
+        }
+        let escapedValue = NSRegularExpression.escapedPattern(for: trimmed)
+        return "(?<\(name)>\(escapedValue))"
     }
 }
 
@@ -2406,7 +2535,7 @@ final class MPXGenerator {
     private var monitorCollapseHoldSamples: Int = 0
     private var monitorCollapseCooldownSamples: Int = 0
 
-    init(config: AppConfig, sampleRate: Double) {
+    init(config: AppConfig, sampleRate: Double, nowPlayingState: NowPlayingState? = nil) {
         self.sampleRate = Float(max(8_000.0, sampleRate))
         self.preemphasisUS = config.preemphasisUS
         self.toneFreq = Float(config.testToneFreq)
@@ -2481,7 +2610,11 @@ final class MPXGenerator {
         self.widenWidth = clampf(Float(config.stereoWidenWidth), 0.0, 1.0)
         self.widenCenter = clampf(Float(config.stereoWidenCenter), 0.0, 1.0)
         self.widenMix = clampf(Float(config.stereoWidenMix), 0.0, 1.0)
-        self.rdsCoder = BasicRDSCoder(config: config, sampleRate: self.sampleRate)
+        self.rdsCoder = BasicRDSCoder(
+            config: config,
+            sampleRate: self.sampleRate,
+            nowPlayingState: nowPlayingState
+        )
 
         self.toneStep = 0.0
 
