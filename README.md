@@ -119,6 +119,8 @@ Available Radiotext macros:
 - `{display}`
 - `{artist}`
 - `{title}`
+- `{date}` as local date in `YYYY-MM-DD`
+- `{time}` as local time in `HH:mm`
 
 Important defaults:
 

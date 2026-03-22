@@ -1312,11 +1312,15 @@ private final class BasicRDSCoder {
         }
         let b2Tail = ((abFlag & 1) << 4) | segment
         if rtPlusEnabled {
-            let selectedFormat = (abFlag == 0) ? rtPlusFormatA : rtPlusFormatB
+            let snapshot = currentNowPlayingSnapshot()
+            let selectedFormat =
+                (nowPlayingEnabled && snapshot.hasContent)
+                ? ""
+                : ((abFlag == 0) ? rtPlusFormatA : rtPlusFormatB)
             refreshRTPlusTagsIfNeeded(
                 text: frame,
                 format: selectedFormat,
-                snapshot: currentNowPlayingSnapshot()
+                snapshot: snapshot
             )
         }
         if useVersionB {
@@ -2299,7 +2303,13 @@ private final class BasicRDSCoder {
         format: String,
         snapshot: NowPlayingSnapshot? = nil
     ) -> [RTPlusTag] {
-        if text.isEmpty || format.isEmpty {
+        if text.isEmpty {
+            return []
+        }
+        if let snapshot, snapshot.hasContent, format.isEmpty {
+            return parseRTPlusTagsFromSnapshot(text: text, snapshot: snapshot)
+        }
+        if format.isEmpty {
             return []
         }
 
@@ -2375,6 +2385,40 @@ private final class BasicRDSCoder {
         }
         let escapedValue = NSRegularExpression.escapedPattern(for: trimmed)
         return "(?<\(name)>\(escapedValue))"
+    }
+
+    private static func parseRTPlusTagsFromSnapshot(
+        text: String,
+        snapshot: NowPlayingSnapshot
+    ) -> [RTPlusTag] {
+        let nsText = text as NSString
+
+        func firstTag(for value: String, contentType: Int) -> RTPlusTag? {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            let range = nsText.range(of: trimmed)
+            guard range.location != NSNotFound, range.length > 0 else { return nil }
+            let start = max(0, min(63, range.location))
+            let length = max(1, min(64 - start, range.length))
+            return RTPlusTag(contentType: contentType, start: start, length: length)
+        }
+
+        var tags: [RTPlusTag] = []
+        if let artistTag = firstTag(for: snapshot.artist, contentType: 4) {
+            tags.append(artistTag)
+        }
+        if let titleTag = firstTag(for: snapshot.title, contentType: 1) {
+            tags.append(titleTag)
+        } else if let displayTag = firstTag(for: snapshot.display, contentType: 1) {
+            tags.append(displayTag)
+        }
+
+        return tags.sorted {
+            if $0.start == $1.start {
+                return $0.contentType < $1.contentType
+            }
+            return $0.start < $1.start
+        }
     }
 }
 

@@ -44,11 +44,14 @@ final class NowPlayingState: @unchecked Sendable {
 
 enum NowPlayingFormatter {
     static func expandTemplate(_ template: String, snapshot: NowPlayingSnapshot) -> String {
-        template
+        let now = Date()
+        return template
             .replacingOccurrences(of: "{now_playing}", with: snapshot.display)
             .replacingOccurrences(of: "{display}", with: snapshot.display)
             .replacingOccurrences(of: "{artist}", with: snapshot.artist)
             .replacingOccurrences(of: "{title}", with: snapshot.title)
+            .replacingOccurrences(of: "{date}", with: dateFormatter.string(from: now))
+            .replacingOccurrences(of: "{time}", with: timeFormatter.string(from: now))
     }
 
     static func normalizeScriptPath(_ rawPath: String) -> String {
@@ -62,6 +65,22 @@ enum NowPlayingFormatter {
         let combined = (launchDirectory as NSString).appendingPathComponent(expanded)
         return (combined as NSString).standardizingPath
     }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.timeZone = TimeZone.current
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
 }
 
 final class NowPlayingScriptRunner: @unchecked Sendable {

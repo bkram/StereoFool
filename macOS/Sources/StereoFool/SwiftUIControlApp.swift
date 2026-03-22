@@ -2,6 +2,7 @@ import Accelerate
 import AppKit
 import Combine
 import CoreAudio
+import Darwin
 import Foundation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -161,6 +162,40 @@ enum ProcessingTab: String, CaseIterable, Identifiable {
     case limiter = "Limiter"
 
     var id: String { rawValue }
+
+    var resetButtonTitle: String {
+        switch self {
+        case .core:
+            return "Reset Core Tab"
+        case .agc:
+            return "Reset AGC Tab"
+        case .orbass:
+            return "Reset Orbass Tab"
+        case .multiband:
+            return "Reset Multiband Tab"
+        case .widener:
+            return "Reset Widener Tab"
+        case .limiter:
+            return "Reset Limiter Tab"
+        }
+    }
+
+    var resetStatusText: String {
+        switch self {
+        case .core:
+            return "Reset processing core tab to defaults"
+        case .agc:
+            return "Reset AGC tab to defaults"
+        case .orbass:
+            return "Reset Orbass tab to defaults"
+        case .multiband:
+            return "Reset Multiband tab to defaults"
+        case .widener:
+            return "Reset Widener tab to defaults"
+        case .limiter:
+            return "Reset Limiter tab to defaults"
+        }
+    }
 }
 
 enum RDSTab: String, CaseIterable, Identifiable {
@@ -171,6 +206,36 @@ enum RDSTab: String, CaseIterable, Identifiable {
     case carrier = "Carrier"
 
     var id: String { rawValue }
+
+    var resetButtonTitle: String {
+        switch self {
+        case .program:
+            return "Reset Program Tab"
+        case .radiotext:
+            return "Reset Radiotext Tab"
+        case .longPS:
+            return "Reset Long PS Tab"
+        case .flags:
+            return "Reset Flags Tab"
+        case .carrier:
+            return "Reset Carrier Tab"
+        }
+    }
+
+    var resetStatusText: String {
+        switch self {
+        case .program:
+            return "Reset RDS program tab to defaults"
+        case .radiotext:
+            return "Reset RDS radiotext tab to defaults"
+        case .longPS:
+            return "Reset RDS long PS tab to defaults"
+        case .flags:
+            return "Reset RDS flags tab to defaults"
+        case .carrier:
+            return "Reset RDS carrier tab to defaults"
+        }
+    }
 }
 
 struct PresetChoice: Identifiable {
@@ -1004,6 +1069,10 @@ final class StereoFoolViewModel: ObservableObject {
     private var lastUnderflowTotal: UInt64 = 0
     private var pendingConfigSnapshot: AppConfig?
     private var configSaveInFlight: Bool = false
+    private var configWatchFD: Int32 = -1
+    private var configWatchSource: DispatchSourceFileSystemObject?
+    private var configReloadWorkItem: DispatchWorkItem?
+    private var ignoreConfigReloadUntil: TimeInterval = 0.0
     private var lastSpectrumRefreshTime: TimeInterval?
     private var spectrumUpdateInFlight: Bool = false
     private let spectrumQueue = DispatchQueue(label: "StereoFool.MPXSpectrum", qos: .userInitiated)
@@ -1036,6 +1105,7 @@ final class StereoFoolViewModel: ObservableObject {
 
         refreshDevices()
         nowPlayingRunner.updateConfig(loadedConfig)
+        startConfigWatcher()
         refreshMonitoringSnapshot()
     }
 
@@ -1089,6 +1159,7 @@ final class StereoFoolViewModel: ObservableObject {
         monitorTimer = nil
         lastMonitorRefreshTime = nil
         nowPlayingRunner.stop()
+        stopConfigWatcher()
         stopEngineIfNeeded()
     }
 
@@ -1291,15 +1362,7 @@ final class StereoFoolViewModel: ObservableObject {
 
     func reloadConfigFromDisk() {
         do {
-            config = try AppConfig.load(fromINI: configPath)
-            sourceMode = config.sourceMode
-            monitorEnabled = config.monitorEnabled
-            processingBypass = config.processingBypass
-            inputGainDB = config.inputGainDB
-            pendingRuntimeApply = false
-            refreshDevices()
-            updateNowPlayingRunner()
-            statusText = "Config reloaded"
+            applyLoadedConfig(try AppConfig.load(fromINI: configPath), origin: .manual)
         } catch {
             statusText = "Config reload failed: \(error)"
         }
@@ -1327,64 +1390,146 @@ final class StereoFoolViewModel: ObservableObject {
         }
     }
 
-    func resetProcessingToDefaults() {
-        do {
-            var defaults = AppConfig()
-            defaults.sourceMode = sourceMode
-            defaults.inputDeviceUID = selectedInputUID.isEmpty ? nil : selectedInputUID
-            defaults.outputDeviceUID = selectedOutputUID.isEmpty ? nil : selectedOutputUID
-            defaults.monitorEnabled = monitorEnabled
-            defaults.monitorDeviceUID = selectedMonitorUID.isEmpty ? nil : selectedMonitorUID
-            defaults.rdsAutoStart = config.rdsAutoStart
-            defaults.enRDS = config.enRDS
-            defaults.rdsPI = config.rdsPI
-            defaults.rdsPSDynamic = config.rdsPSDynamic
-            defaults.rdsPSCentered = config.rdsPSCentered
-            defaults.rdsRTText = config.rdsRTText
-            defaults.rdsRTA = config.rdsRTA
-            defaults.rdsRTB = config.rdsRTB
-            defaults.rdsPTYN = config.rdsPTYN
-            defaults.rdsPTYNCentered = config.rdsPTYNCentered
-            try defaults.save(toINI: configPath)
-            config = defaults
-            processingBypass = config.processingBypass
-            inputGainDB = config.inputGainDB
-            updateNowPlayingRunner()
-            applyPendingRuntimeChanges()
-            statusText = "Reset processing to defaults"
-        } catch {
-            statusText = "Reset failed: \(error)"
+    func resetCurrentProcessingTabToDefaults() {
+        publishConfigChange()
+        let defaults = AppConfig()
+
+        switch selectedProcessingTab {
+        case .core:
+            processingBypass = defaults.processingBypass
+            inputGainDB = defaults.inputGainDB
+            config.processingBypass = defaults.processingBypass
+            config.inputGainDB = defaults.inputGainDB
+            config.monoMode = defaults.monoMode
+            config.preemphasisUS = defaults.preemphasisUS
+            config.hpfHz = defaults.hpfHz
+            config.hfTrimDB = defaults.hfTrimDB
+            config.hfTrimHz = defaults.hfTrimHz
+            config.programLowpassHz = defaults.programLowpassHz
+        case .agc:
+            config.widebandAGCEnabled = defaults.widebandAGCEnabled
+            config.widebandAGCTargetDB = defaults.widebandAGCTargetDB
+            config.widebandAGCAttackMS = defaults.widebandAGCAttackMS
+            config.widebandAGCReleaseMS = defaults.widebandAGCReleaseMS
+            config.widebandAGCMaxGainDB = defaults.widebandAGCMaxGainDB
+            config.widebandAGCMinGainDB = defaults.widebandAGCMinGainDB
+        case .orbass:
+            config.orbassEnabled = defaults.orbassEnabled
+            config.orbassAmount = defaults.orbassAmount
+            config.orbassFreqHz = defaults.orbassFreqHz
+            config.orbassHarmonics = defaults.orbassHarmonics
+            config.orbassDrive = defaults.orbassDrive
+        case .multiband:
+            config.multibandEnabled = defaults.multibandEnabled
+            config.multibandMode = defaults.multibandMode
+            config.multibandPresetID = defaults.multibandPresetID
+            config.multibandIntensity = defaults.multibandIntensity
+            config.multibandX1Hz = defaults.multibandX1Hz
+            config.multibandX2Hz = defaults.multibandX2Hz
+            config.multibandX3Hz = defaults.multibandX3Hz
+            config.multibandX4Hz = defaults.multibandX4Hz
+            config.multibandLowThresholdDB = defaults.multibandLowThresholdDB
+            config.multibandMidThresholdDB = defaults.multibandMidThresholdDB
+            config.multibandHighThresholdDB = defaults.multibandHighThresholdDB
+            config.multibandLowRatio = defaults.multibandLowRatio
+            config.multibandMidRatio = defaults.multibandMidRatio
+            config.multibandHighRatio = defaults.multibandHighRatio
+            config.multibandLowAttackMS = defaults.multibandLowAttackMS
+            config.multibandMidAttackMS = defaults.multibandMidAttackMS
+            config.multibandHighAttackMS = defaults.multibandHighAttackMS
+            config.multibandLowReleaseMS = defaults.multibandLowReleaseMS
+            config.multibandMidReleaseMS = defaults.multibandMidReleaseMS
+            config.multibandHighReleaseMS = defaults.multibandHighReleaseMS
+            config.multibandKneeDB = defaults.multibandKneeDB
+            config.multibandLinkStrength = defaults.multibandLinkStrength
+            config.multibandReleaseProgramDependent = defaults.multibandReleaseProgramDependent
+            config.multibandMakeupDB = defaults.multibandMakeupDB
+        case .widener:
+            config.stereoWidenEnabled = defaults.stereoWidenEnabled
+            config.stereoWidenWidth = defaults.stereoWidenWidth
+            config.stereoWidenCenter = defaults.stereoWidenCenter
+            config.stereoWidenMix = defaults.stereoWidenMix
+        case .limiter:
+            config.compositeLimiterEnabled = defaults.compositeLimiterEnabled
+            config.mpxDeviationKHz = defaults.mpxDeviationKHz
         }
+
+        saveConfig(restartRequired: true)
+        applyPendingRuntimeChanges()
+        statusText = selectedProcessingTab.resetStatusText
     }
 
-    func resetRDSToDefaults() {
-        do {
-            var defaults = AppConfig()
-            defaults.sourceMode = sourceMode
-            defaults.inputDeviceUID = selectedInputUID.isEmpty ? nil : selectedInputUID
-            defaults.outputDeviceUID = selectedOutputUID.isEmpty ? nil : selectedOutputUID
-            defaults.monitorEnabled = monitorEnabled
-            defaults.monitorDeviceUID = selectedMonitorUID.isEmpty ? nil : selectedMonitorUID
-            defaults.processingBypass = config.processingBypass
-            defaults.inputGainDB = config.inputGainDB
-            defaults.outputGainDB = config.outputGainDB
-            defaults.preemphasisUS = config.preemphasisUS
-            defaults.monoMode = config.monoMode
-            defaults.widebandAGCEnabled = config.widebandAGCEnabled
-            defaults.orbassEnabled = config.orbassEnabled
-            defaults.multibandEnabled = config.multibandEnabled
-            defaults.stereoWidenEnabled = config.stereoWidenEnabled
-            defaults.limitMPX = config.limitMPX
-            defaults.programLowpassHz = config.programLowpassHz
-            defaults.diffLevel = config.diffLevel
-            try defaults.save(toINI: configPath)
-            config = defaults
-            updateNowPlayingRunner()
-            applyPendingRuntimeChanges()
-            statusText = "Reset RDS to defaults"
-        } catch {
-            statusText = "Reset failed: \(error)"
+    func resetCurrentRDSTabToDefaults() {
+        publishConfigChange()
+        let defaults = AppConfig()
+
+        switch selectedRDSTab {
+        case .program:
+            config.enRDS = defaults.enRDS
+            config.rdsPI = defaults.rdsPI
+            config.rdsECC = defaults.rdsECC
+            config.rdsPTY = defaults.rdsPTY
+            config.rdsPSDynamic = defaults.rdsPSDynamic
+            config.rdsPSCentered = defaults.rdsPSCentered
+            config.rdsEnablePTYN = defaults.rdsEnablePTYN
+            config.rdsPTYN = defaults.rdsPTYN
+            config.rdsPTYNCentered = defaults.rdsPTYNCentered
+        case .radiotext:
+            config.rdsRTText = defaults.rdsRTText
+            config.rdsRTManualBuffers = defaults.rdsRTManualBuffers
+            config.rdsRTCycleAB = defaults.rdsRTCycleAB
+            config.rdsRTA = defaults.rdsRTA
+            config.rdsRTB = defaults.rdsRTB
+            config.rdsRTCR = defaults.rdsRTCR
+            config.rdsRTCentered = defaults.rdsRTCentered
+            config.rdsRTMode = defaults.rdsRTMode
+            config.rdsRTCycle = defaults.rdsRTCycle
+            config.rdsRTCycleTime = defaults.rdsRTCycleTime
+            config.rdsRTActiveBuffer = defaults.rdsRTActiveBuffer
+            config.rdsRTABCycleCount = defaults.rdsRTABCycleCount
+            config.rdsEnableRTPlus = defaults.rdsEnableRTPlus
+            config.rdsRTPlusFormatA = defaults.rdsRTPlusFormatA
+            config.rdsRTPlusFormatB = defaults.rdsRTPlusFormatB
+            config.rdsNowPlayingEnabled = defaults.rdsNowPlayingEnabled
+            config.rdsNowPlayingScript = defaults.rdsNowPlayingScript
+            config.rdsNowPlayingPollSeconds = defaults.rdsNowPlayingPollSeconds
+            config.rdsNowPlayingTimeoutSeconds = defaults.rdsNowPlayingTimeoutSeconds
+        case .longPS:
+            config.rdsLongPS32 = defaults.rdsLongPS32
+            config.rdsEnableLPS = defaults.rdsEnableLPS
+            config.rdsLPSCentered = defaults.rdsLPSCentered
+            config.rdsLPSCR = defaults.rdsLPSCR
+        case .flags:
+            config.rdsTP = defaults.rdsTP
+            config.rdsTA = defaults.rdsTA
+            config.rdsMS = defaults.rdsMS
+            config.rdsDI_STEREO = defaults.rdsDI_STEREO
+            config.rdsDI_HEAD = defaults.rdsDI_HEAD
+            config.rdsDI_COMP = defaults.rdsDI_COMP
+            config.rdsDI_DYN = defaults.rdsDI_DYN
+            config.rdsEnableAF = defaults.rdsEnableAF
+            config.rdsAFList = defaults.rdsAFList
+            config.rdsAFMethod = defaults.rdsAFMethod
+            config.rdsLIC = defaults.rdsLIC
+        case .carrier:
+            config.rdsLevel = defaults.rdsLevel
+            config.rdsGroupSequence = defaults.rdsGroupSequence
+            config.rdsSchedulerAuto = defaults.rdsSchedulerAuto
+            config.rdsSchedulerStandard = defaults.rdsSchedulerStandard
+            config.rdsSchedulerStandardLPS = defaults.rdsSchedulerStandardLPS
+            config.rdsEnableCT = defaults.rdsEnableCT
+            config.rdsEnableID = defaults.rdsEnableID
+            config.rdsTZOffset = defaults.rdsTZOffset
+            config.rdsFreq = defaults.rdsFreq
+            config.rdsGaussianEnabled = defaults.rdsGaussianEnabled
+            config.rdsGaussianBWHZ = defaults.rdsGaussianBWHZ
+            config.rdsGaussianTaps = defaults.rdsGaussianTaps
         }
+
+        updateNowPlayingRunner()
+        saveConfig(restartRequired: true)
+        applyPendingRuntimeChanges()
+        statusText = selectedRDSTab.resetStatusText
     }
 
     func loadConfigFromFile(_ path: String) {
@@ -2148,6 +2293,96 @@ final class StereoFoolViewModel: ObservableObject {
         nowPlayingRunner.updateConfig(config)
     }
 
+    private enum ConfigReloadOrigin {
+        case manual
+        case external
+    }
+
+    private func applyLoadedConfig(_ loadedConfig: AppConfig, origin: ConfigReloadOrigin) {
+        config = loadedConfig
+        sourceMode = config.sourceMode
+        monitorEnabled = config.monitorEnabled
+        processingBypass = config.processingBypass
+        inputGainDB = config.inputGainDB
+        refreshDevices()
+        updateNowPlayingRunner()
+
+        if isRunning {
+            pendingRuntimeApply = true
+            statusText =
+                origin == .external
+                ? "Config changed on disk. Press Apply in Monitoring to hear changes."
+                : "Config reloaded. Press Apply in Monitoring to hear changes."
+        } else {
+            pendingRuntimeApply = false
+            statusText = origin == .external ? "Config reloaded from disk" : "Config reloaded"
+        }
+    }
+
+    private func startConfigWatcher() {
+        stopConfigWatcher()
+        let directory = (configPath as NSString).deletingLastPathComponent
+        let fd = open(directory, O_EVTONLY)
+        guard fd >= 0 else { return }
+        configWatchFD = fd
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .rename, .delete],
+            queue: DispatchQueue.main
+        )
+        source.setEventHandler { [weak self] in
+            self?.scheduleExternalConfigReloadIfNeeded()
+        }
+        source.setCancelHandler { [weak self] in
+            guard let self else { return }
+            if self.configWatchFD >= 0 {
+                close(self.configWatchFD)
+                self.configWatchFD = -1
+            }
+        }
+        configWatchSource = source
+        source.resume()
+    }
+
+    private func stopConfigWatcher() {
+        configReloadWorkItem?.cancel()
+        configReloadWorkItem = nil
+        configWatchSource?.cancel()
+        configWatchSource = nil
+        if configWatchFD >= 0 {
+            close(configWatchFD)
+            configWatchFD = -1
+        }
+    }
+
+    private func scheduleExternalConfigReloadIfNeeded() {
+        let now = Date().timeIntervalSinceReferenceDate
+        if now < ignoreConfigReloadUntil {
+            return
+        }
+        configReloadWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            let now = Date().timeIntervalSinceReferenceDate
+            if now < self.ignoreConfigReloadUntil {
+                return
+            }
+            do {
+                try self.applyExternalConfigReloadIfChanged()
+            } catch {
+                self.statusText = "Config reload failed: \(error)"
+            }
+        }
+        configReloadWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: workItem)
+    }
+
+    private func applyExternalConfigReloadIfChanged() throws {
+        let loaded = try AppConfig.load(fromINI: configPath)
+        applyLoadedConfig(loaded, origin: .external)
+    }
+
     private func publishConfigChange() {
         DispatchQueue.main.async { [weak self] in
             self?.objectWillChange.send()
@@ -2181,6 +2416,8 @@ final class StereoFoolViewModel: ObservableObject {
                 guard let self else { return }
                 if let saveError {
                     self.statusText = "Config save failed: \(saveError)"
+                } else {
+                    self.ignoreConfigReloadUntil = Date().timeIntervalSinceReferenceDate + 0.75
                 }
                 self.processPendingConfigSave()
             }
@@ -3450,8 +3687,8 @@ private struct ProcessingSectionView: View {
 
                     HStack {
                         Spacer()
-                        Button("Reset Processing to Defaults") {
-                            model.resetProcessingToDefaults()
+                        Button(model.selectedProcessingTab.resetButtonTitle) {
+                            model.resetCurrentProcessingTabToDefaults()
                         }
                         .buttonStyle(.bordered)
                     }
@@ -3774,8 +4011,8 @@ private struct RDSSectionView: View {
 
                     HStack {
                         Spacer()
-                        Button("Reset RDS to Defaults") {
-                            model.resetRDSToDefaults()
+                        Button(model.selectedRDSTab.resetButtonTitle) {
+                            model.resetCurrentRDSTabToDefaults()
                         }
                         .buttonStyle(.bordered)
                     }
@@ -3854,8 +4091,6 @@ private struct RDSRadiotextTab: View {
             Toggle("Center RT", isOn: model.configBinding(\.rdsRTCentered))
             Toggle("Append CR", isOn: model.configBinding(\.rdsRTCR))
             Toggle("Enable RT+", isOn: model.configBinding(\.rdsEnableRTPlus))
-            TextField("RT+ Format A", text: model.configBinding(\.rdsRTPlusFormatA))
-            TextField("RT+ Format B", text: model.configBinding(\.rdsRTPlusFormatB))
             Divider()
             Toggle(
                 "Enable Now Playing Script",
@@ -3884,9 +4119,17 @@ private struct RDSRadiotextTab: View {
                 range: 0.2...10,
                 format: "%.1f s"
             )
-            Text("Macros: {now_playing}, {artist}, {title}, {display}")
+            Text("Macros: {now_playing}, {artist}, {title}, {display}, {date}, {time}")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if model.value(for: \.rdsNowPlayingEnabled) {
+                Text("RT+ tags are derived from the structured script output when now playing is enabled.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                TextField("RT+ Format A", text: model.configBinding(\.rdsRTPlusFormatA))
+                TextField("RT+ Format B", text: model.configBinding(\.rdsRTPlusFormatB))
+            }
             Text(model.rdsNowPlayingStatus)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -4193,6 +4436,7 @@ private struct HelpRDSTextView: View {
 Now: {now_playing}
 {artist} - {title}
 {title}
+{date} {time}
 """)
 
             Spacer(minLength: 0)
