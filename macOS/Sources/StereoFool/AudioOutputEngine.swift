@@ -30,6 +30,17 @@ final class AudioOutputEngine {
         var outputRMS: Float
         var outputPeak: Float
         var deviationKHzPeak: Float
+        var agcDetectorDB: Float
+        var agcGainDB: Float
+        var agcGateActive: Bool
+        var compositeLimiterGainReductionDB: Float
+        var mpxSafetyLimiterGainReductionDB: Float
+        var pilotInjectionPercent: Float
+        var rdsInjectionPercent: Float
+        var audioCompositePeak: Float
+        var compositeBudgetMarginDB: Float
+        var outputStereoCorrelation: Float
+        var outputSideToMidRatio: Float
     }
 
     private let engine = AVAudioEngine()
@@ -66,7 +77,18 @@ final class AudioOutputEngine {
         inputRightPeak: 0.0,
         outputRMS: 0.0,
         outputPeak: 0.0,
-        deviationKHzPeak: 0.0
+        deviationKHzPeak: 0.0,
+        agcDetectorDB: -120.0,
+        agcGainDB: 0.0,
+        agcGateActive: false,
+        compositeLimiterGainReductionDB: 0.0,
+        mpxSafetyLimiterGainReductionDB: 0.0,
+        pilotInjectionPercent: 0.0,
+        rdsInjectionPercent: 0.0,
+        audioCompositePeak: 0.0,
+        compositeBudgetMarginDB: 0.0,
+        outputStereoCorrelation: 1.0,
+        outputSideToMidRatio: 0.0
     )
     private var pendingInputPeak: Float = 0.0
     private var pendingInputLeftPeak: Float = 0.0
@@ -194,6 +216,10 @@ final class AudioOutputEngine {
                             if throttled {
                                 self.updateOutputMeters(
                                     outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                self.updateOutputImageMetrics(
+                                    correlation: outMeter.correlation,
+                                    sideToMidRatio: outMeter.sideToMidRatio
+                                )
                                 self.updateOutputScopeSnapshot(
                                     left: leftData, right: rightData, frameCount: frames)
                             }
@@ -216,6 +242,10 @@ final class AudioOutputEngine {
                                     if throttled {
                                         self.updateOutputMeters(
                                             outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                        self.updateOutputImageMetrics(
+                                            correlation: outMeter.correlation,
+                                            sideToMidRatio: outMeter.sideToMidRatio
+                                        )
                                         self.updateOutputScopeSnapshot(
                                             left: mpxLeft, right: mpxRight, frameCount: frames)
                                     }
@@ -232,6 +262,10 @@ final class AudioOutputEngine {
                             left: leftData, right: rightData, frameCount: frames)
                         if throttled {
                             self.updateOutputMeters(outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                            self.updateOutputImageMetrics(
+                                correlation: outMeter.correlation,
+                                sideToMidRatio: outMeter.sideToMidRatio
+                            )
                             self.updateOutputScopeSnapshot(
                                 left: leftData, right: rightData, frameCount: frames)
                         }
@@ -253,6 +287,10 @@ final class AudioOutputEngine {
                             if throttled {
                                 self.updateOutputMeters(
                                     outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                self.updateOutputImageMetrics(
+                                    correlation: outMeter.correlation,
+                                    sideToMidRatio: outMeter.sideToMidRatio
+                                )
                                 self.updateOutputScopeSnapshot(
                                     left: leftData, right: rightData, frameCount: frames)
                             }
@@ -275,6 +313,10 @@ final class AudioOutputEngine {
                                     if throttled {
                                         self.updateOutputMeters(
                                             outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                        self.updateOutputImageMetrics(
+                                            correlation: outMeter.correlation,
+                                            sideToMidRatio: outMeter.sideToMidRatio
+                                        )
                                         self.updateOutputScopeSnapshot(
                                             left: mpxLeft, right: mpxRight, frameCount: frames)
                                     }
@@ -291,6 +333,10 @@ final class AudioOutputEngine {
                             left: leftData, right: rightData, frameCount: frames)
                         if throttled {
                             self.updateOutputMeters(outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                            self.updateOutputImageMetrics(
+                                correlation: outMeter.correlation,
+                                sideToMidRatio: outMeter.sideToMidRatio
+                            )
                             self.updateOutputScopeSnapshot(
                                 left: leftData, right: rightData, frameCount: frames)
                         }
@@ -362,6 +408,17 @@ final class AudioOutputEngine {
         meterSnapshot.outputRMS = 0.0
         meterSnapshot.outputPeak = 0.0
         meterSnapshot.deviationKHzPeak = 0.0
+        meterSnapshot.agcDetectorDB = -120.0
+        meterSnapshot.agcGainDB = 0.0
+        meterSnapshot.agcGateActive = false
+        meterSnapshot.compositeLimiterGainReductionDB = 0.0
+        meterSnapshot.mpxSafetyLimiterGainReductionDB = 0.0
+        meterSnapshot.pilotInjectionPercent = 0.0
+        meterSnapshot.rdsInjectionPercent = 0.0
+        meterSnapshot.audioCompositePeak = 0.0
+        meterSnapshot.compositeBudgetMarginDB = 0.0
+        meterSnapshot.outputStereoCorrelation = 1.0
+        meterSnapshot.outputSideToMidRatio = 0.0
         inputScopeHistory = []
         outputScopeHistory = []
         inputScopeWriteIndex = 0
@@ -823,6 +880,9 @@ final class AudioOutputEngine {
     private func updateMeters(
         inputRMS: Float, inputPeak: Float, outputRMS: Float, outputPeak: Float
     ) {
+        let agc = generator.agcStatus
+        let limiter = generator.finalLimiterStatus
+        let calibration = generator.compositeCalibrationStatus
         meterSnapshot = MeterSnapshot(
             inputRMS: inputRMS,
             inputPeak: inputPeak,
@@ -832,7 +892,18 @@ final class AudioOutputEngine {
             inputRightPeak: inputPeak,
             outputRMS: outputRMS,
             outputPeak: outputPeak,
-            deviationKHzPeak: outputPeak * targetDeviationKHz
+            deviationKHzPeak: outputPeak * targetDeviationKHz,
+            agcDetectorDB: agc.detectorDB,
+            agcGainDB: agc.gainDB,
+            agcGateActive: agc.gateActive,
+            compositeLimiterGainReductionDB: limiter.gainReductionDB,
+            mpxSafetyLimiterGainReductionDB: limiter.safetyGainReductionDB,
+            pilotInjectionPercent: calibration.pilotPercent,
+            rdsInjectionPercent: calibration.rdsPercent,
+            audioCompositePeak: calibration.audioPeak,
+            compositeBudgetMarginDB: calibration.budgetMarginDB,
+            outputStereoCorrelation: 1.0,
+            outputSideToMidRatio: 0.0
         )
     }
 
@@ -863,9 +934,27 @@ final class AudioOutputEngine {
 
     private func updateOutputMeters(outputRMS: Float, outputPeak: Float) {
         meterSnapshot.outputRMS = outputRMS
+        let agc = generator.agcStatus
+        let limiter = generator.finalLimiterStatus
+        let calibration = generator.compositeCalibrationStatus
+        meterSnapshot.agcDetectorDB = agc.detectorDB
+        meterSnapshot.agcGainDB = agc.gainDB
+        meterSnapshot.agcGateActive = agc.gateActive
+        meterSnapshot.compositeLimiterGainReductionDB = limiter.gainReductionDB
+        meterSnapshot.mpxSafetyLimiterGainReductionDB = limiter.safetyGainReductionDB
+        meterSnapshot.pilotInjectionPercent = calibration.pilotPercent
+        meterSnapshot.rdsInjectionPercent = calibration.rdsPercent
+        meterSnapshot.audioCompositePeak = calibration.audioPeak
+        meterSnapshot.compositeBudgetMarginDB = calibration.budgetMarginDB
         if outputPeak > pendingOutputPeak {
             pendingOutputPeak = outputPeak
         }
+    }
+
+    private func updateOutputImageMetrics(correlation: Float, sideToMidRatio: Float) {
+        meterSnapshot.outputStereoCorrelation =
+            correlation.isFinite ? Self.clamp(correlation, -1.0, 1.0) : 0.0
+        meterSnapshot.outputSideToMidRatio = sideToMidRatio.isFinite ? max(0.0, sideToMidRatio) : 0.0
     }
 
     private func updateInputScopeSnapshot(
@@ -1032,25 +1121,57 @@ final class AudioOutputEngine {
         right: UnsafePointer<Float>,
         frameCount: Int
     ) -> (
-        rms: Float, peak: Float, leftRMS: Float, rightRMS: Float, leftPeak: Float, rightPeak: Float
+        rms: Float,
+        peak: Float,
+        leftRMS: Float,
+        rightRMS: Float,
+        leftPeak: Float,
+        rightPeak: Float,
+        correlation: Float,
+        sideToMidRatio: Float
     ) {
-        guard frameCount > 0 else { return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0) }
+        guard frameCount > 0 else { return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) }
         
         var sumL: Float = 0.0
         var sumR: Float = 0.0
         var peakL: Float = 0.0
         var peakR: Float = 0.0
+        var dotLR: Float = 0.0
+        var midEnergy: Float = 0.0
+        var sideEnergy: Float = 0.0
         
         vDSP_svesq(left, 1, &sumL, vDSP_Length(frameCount))
         vDSP_svesq(right, 1, &sumR, vDSP_Length(frameCount))
         vDSP_maxmgv(left, 1, &peakL, vDSP_Length(frameCount))
         vDSP_maxmgv(right, 1, &peakR, vDSP_Length(frameCount))
+        vDSP_dotpr(left, 1, right, 1, &dotLR, vDSP_Length(frameCount))
+
+        for i in 0..<frameCount {
+            let mid = (left[i] + right[i]) * 0.5
+            let side = (left[i] - right[i]) * 0.5
+            midEnergy += mid * mid
+            sideEnergy += side * side
+        }
         
         let rmsL = sqrtf(sumL / Float(frameCount))
         let rmsR = sqrtf(sumR / Float(frameCount))
+        let correlation = dotLR / max(1e-9, sqrtf(sumL * sumR))
+        let sideToMidRatio = sqrtf(sideEnergy / max(1e-9, midEnergy))
         return (
-            sqrtf((rmsL * rmsL + rmsR * rmsR) * 0.5), max(peakL, peakR), rmsL, rmsR, peakL, peakR
+            sqrtf((rmsL * rmsL + rmsR * rmsR) * 0.5),
+            max(peakL, peakR),
+            rmsL,
+            rmsR,
+            peakL,
+            peakR,
+            correlation,
+            sideToMidRatio
         )
+    }
+
+    @inline(__always)
+    private static func clamp(_ x: Float, _ lo: Float, _ hi: Float) -> Float {
+        return max(lo, min(hi, x))
     }
 
     private static func computeMonoMeter(

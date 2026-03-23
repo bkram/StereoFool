@@ -1,7 +1,7 @@
 import Foundation
 
 struct AppConfig {
-    static let appVersion: String = "0.8"
+    static let appVersion: String = "0.85"
 
     static var defaultINIPath: String {
         let fileManager = FileManager.default
@@ -37,6 +37,8 @@ struct AppConfig {
     var monoMode: Bool = false
     var inputGainDB: Double = 0.0
     var outputGainDB: Double = 0.0
+    var finalDriveDB: Double = 6.0
+    var finalStagePresetID: String = "balanced"
     var preemphasisUS: Int = 50
     var hpfHz: Double = 30.0
     var hfTrimDB: Double = 0.0
@@ -46,16 +48,17 @@ struct AppConfig {
     var limitThreshold: Double = 0.98
     var limitLookaheadMS: Double = 5.0
     var limitLookaheadEnabled: Bool = true
-    var compositeLimiterEnabled: Bool = false
+    var compositeLimiterEnabled: Bool = true
     var mpxDeviationKHz: Double = 75.0
     var enRDS: Bool = true
     var widebandAGCEnabled: Bool = false
-    var widebandAGCTargetDB: Double = -18.0
-    var widebandAGCAttackMS: Double = 15.0
-    var widebandAGCReleaseMS: Double = 220.0
-    var widebandAGCMaxGainDB: Double = 10.0
-    var widebandAGCMinGainDB: Double = -8.0
+    var widebandAGCTargetDB: Double = -16.0
+    var widebandAGCAttackMS: Double = 80.0
+    var widebandAGCReleaseMS: Double = 1200.0
+    var widebandAGCMaxGainDB: Double = 12.0
+    var widebandAGCMinGainDB: Double = -12.0
     var orbassEnabled: Bool = false
+    var orbassPresetID: String = "ac"
     var orbassAmount: Double = 0.35
     var orbassFreqHz: Double = 95.0
     var orbassHarmonics: Double = 0.35
@@ -64,6 +67,8 @@ struct AppConfig {
     var orbassSubharmonicsEnabled: Bool = false
     var orbassSubharmonicsAmount: Double = 0.35
     var stereoWidenEnabled: Bool = false
+    var monoBassEnabled: Bool = true
+    var monoBassFreqHz: Double = 125.0
     var stereoWidenWidth: Double = 0.5
     var stereoWidenCenter: Double = 0.5
     var stereoWidenMix: Double = 1.0
@@ -177,6 +182,8 @@ struct AppConfig {
         cfg.monoMode = mpx.bool("mono_mode", defaultValue: cfg.monoMode)
         cfg.inputGainDB = mpx.double("input_gain_db", defaultValue: cfg.inputGainDB)
         cfg.outputGainDB = mpx.double("output_gain_db", defaultValue: cfg.outputGainDB)
+        cfg.finalDriveDB = mpx.double("final_drive_db", defaultValue: cfg.finalDriveDB)
+        cfg.finalStagePresetID = mpx.string("final_stage_preset_id", defaultValue: cfg.finalStagePresetID)
         cfg.preemphasisUS = mpx.int("preemphasis_us", defaultValue: cfg.preemphasisUS)
         cfg.hpfHz = mpx.double("hpf_hz", defaultValue: cfg.hpfHz)
         cfg.hfTrimDB = mpx.double("hf_trim_db", defaultValue: cfg.hfTrimDB)
@@ -204,6 +211,7 @@ struct AppConfig {
         cfg.widebandAGCMinGainDB = mpx.double(
             "wideband_agc_min_gain_db", defaultValue: cfg.widebandAGCMinGainDB)
         cfg.orbassEnabled = mpx.bool("orbass_enabled", defaultValue: cfg.orbassEnabled)
+        cfg.orbassPresetID = mpx.string("orbass_preset_id", defaultValue: cfg.orbassPresetID)
         cfg.orbassAmount = mpx.double("orbass_amount", defaultValue: cfg.orbassAmount)
         cfg.orbassFreqHz = mpx.double("orbass_freq_hz", defaultValue: cfg.orbassFreqHz)
         cfg.orbassHarmonics = mpx.double("orbass_harmonics", defaultValue: cfg.orbassHarmonics)
@@ -219,6 +227,8 @@ struct AppConfig {
         )
         cfg.stereoWidenEnabled = mpx.bool(
             "stereo_widen_enabled", defaultValue: cfg.stereoWidenEnabled)
+        cfg.monoBassEnabled = mpx.bool("mono_bass_enabled", defaultValue: cfg.monoBassEnabled)
+        cfg.monoBassFreqHz = mpx.double("mono_bass_freq_hz", defaultValue: cfg.monoBassFreqHz)
         cfg.stereoWidenWidth = mpx.double("stereo_widen_width", defaultValue: cfg.stereoWidenWidth)
         cfg.stereoWidenCenter = mpx.double(
             "stereo_widen_center", defaultValue: cfg.stereoWidenCenter)
@@ -365,6 +375,8 @@ struct AppConfig {
             "program_lowpass_hz = \(Self.formatFloat(programLowpassHz))",
             "input_gain_db = \(Self.formatFloat(inputGainDB))",
             "output_gain_db = \(Self.formatFloat(outputGainDB))",
+            "final_drive_db = \(Self.formatFloat(finalDriveDB))",
+            "final_stage_preset_id = \(finalStagePresetID)",
             "hpf_hz = \(Self.formatFloat(hpfHz))",
             "hf_trim_db = \(Self.formatFloat(hfTrimDB))",
             "hf_trim_hz = \(Self.formatFloat(hfTrimHz))",
@@ -382,6 +394,7 @@ struct AppConfig {
             "wideband_agc_max_gain_db = \(Self.formatFloat(widebandAGCMaxGainDB))",
             "wideband_agc_min_gain_db = \(Self.formatFloat(widebandAGCMinGainDB))",
             "orbass_enabled = \(Self.boolString(orbassEnabled))",
+            "orbass_preset_id = \(orbassPresetID)",
             "orbass_amount = \(Self.formatFloat(orbassAmount))",
             "orbass_freq_hz = \(Self.formatFloat(orbassFreqHz))",
             "orbass_harmonics = \(Self.formatFloat(orbassHarmonics))",
@@ -390,6 +403,8 @@ struct AppConfig {
             "orbass_subharmonics_enabled = \(Self.boolString(orbassSubharmonicsEnabled))",
             "orbass_subharmonics_amount = \(Self.formatFloat(orbassSubharmonicsAmount))",
             "stereo_widen_enabled = \(Self.boolString(stereoWidenEnabled))",
+            "mono_bass_enabled = \(Self.boolString(monoBassEnabled))",
+            "mono_bass_freq_hz = \(Self.formatFloat(monoBassFreqHz))",
             "stereo_widen_width = \(Self.formatFloat(stereoWidenWidth))",
             "stereo_widen_center = \(Self.formatFloat(stereoWidenCenter))",
             "stereo_widen_mix = \(Self.formatFloat(stereoWidenMix))",

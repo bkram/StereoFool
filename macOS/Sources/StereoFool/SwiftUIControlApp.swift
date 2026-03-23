@@ -473,6 +473,19 @@ private struct MultibandPreset {
     let releaseProgramDependent: Bool
 }
 
+private struct FinalStagePreset {
+    let id: String
+    let title: String
+    let agcEnabled: Bool
+    let agcTargetDB: Double
+    let agcAttackMS: Double
+    let agcReleaseMS: Double
+    let agcMaxGainDB: Double
+    let agcMinGainDB: Double
+    let finalDriveDB: Double
+    let compositeLimiterEnabled: Bool
+}
+
 enum MultibandPresetIntensity: String, CaseIterable, Identifiable {
     case light
     case normal
@@ -1020,6 +1033,12 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var modulationText: String = "0.0 kHz"
 
     @Published var limiterStateText: String = "Off"
+    @Published var limiterDetailText: String = "Drive 0.0 dB • GR 0.0 dB • Safe 0.0 dB • Peak -inf dBFS"
+    @Published var compositeBudgetStateText: String = "Off"
+    @Published var compositeCalibrationText: String = "Pilot 0.0% • RDS 0.0% • Audio -inf dBFS • Margin 0.0 dB"
+    @Published var stereoImageText: String = "Corr +1.00 • Side 0.00x"
+    @Published var agcStateText: String = "Off"
+    @Published var agcDetailText: String = "Detector -inf dB • Gain 0.0 dB"
     @Published var multibandStateText: String = "Off"
     @Published var orbassStateText: String = "Off"
     @Published var widenerStateText: String = "Off"
@@ -1059,6 +1078,8 @@ final class StereoFoolViewModel: ObservableObject {
     private var peakHoldInputR = PeakHoldState()
     private var peakHoldOutput = PeakHoldState()
     private var peakHoldModulation = PeakHoldState()
+    private var limiterGRPeakHoldDB: Float = 0.0
+    private var limiterGRPeakHoldRemaining: Double = 0.0
 
     private var smoothedInputScope: [Float] = Array(repeating: 0.0, count: 128)
     private var smoothedOutputScope: [Float] = Array(repeating: 0.0, count: 128)
@@ -1129,13 +1150,17 @@ final class StereoFoolViewModel: ObservableObject {
         Self.multibandPresets.map { PresetChoice(id: $0.id, title: $0.title) }
     }
 
+    var finalStagePresetChoices: [PresetChoice] {
+        Self.finalStagePresets.map { PresetChoice(id: $0.id, title: $0.title) }
+    }
+
     var rdsRows: [(String, String)] {
         [
             ("PS", rdsPS),
             ("PI", rdsPI),
             ("PTY", rdsPTY),
             ("PTYN", rdsPTYN),
-            ("AID", rdsAID),
+            ("RT+ App ID", rdsAID),
             ("Long PS", rdsLongPS),
             ("Radiotext", rdsRadiotext),
             ("Now Playing", rdsNowPlayingStatus.replacingOccurrences(of: "Now Playing: ", with: "")),
@@ -1264,6 +1289,7 @@ final class StereoFoolViewModel: ObservableObject {
         guard let preset = Self.orbassPresets.first(where: { $0.id == id }) else { return }
         publishConfigChange()
         config.orbassEnabled = preset.enabled
+        config.orbassPresetID = id
         config.orbassAmount = preset.amount
         config.orbassFreqHz = preset.freqHz
         config.orbassHarmonics = preset.harmonics
@@ -1356,6 +1382,25 @@ final class StereoFoolViewModel: ObservableObject {
             : "Loaded Multiband preset \(preset.title) (\(intensity.title))."
     }
 
+    func applyFinalStagePreset(id: String) {
+        guard let preset = Self.finalStagePresets.first(where: { $0.id == id }) else { return }
+        publishConfigChange()
+        config.finalStagePresetID = id
+        config.widebandAGCEnabled = preset.agcEnabled
+        config.widebandAGCTargetDB = preset.agcTargetDB
+        config.widebandAGCAttackMS = preset.agcAttackMS
+        config.widebandAGCReleaseMS = preset.agcReleaseMS
+        config.widebandAGCMaxGainDB = preset.agcMaxGainDB
+        config.widebandAGCMinGainDB = preset.agcMinGainDB
+        config.finalDriveDB = preset.finalDriveDB
+        config.compositeLimiterEnabled = preset.compositeLimiterEnabled
+        saveConfig(restartRequired: true)
+        statusText =
+            isRunning
+            ? "Loaded final-stage preset \(preset.title). Press Apply to hear changes."
+            : "Loaded final-stage preset \(preset.title)."
+    }
+
     func revealConfigInFinder() {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: configPath)])
     }
@@ -1400,6 +1445,7 @@ final class StereoFoolViewModel: ObservableObject {
             inputGainDB = defaults.inputGainDB
             config.processingBypass = defaults.processingBypass
             config.inputGainDB = defaults.inputGainDB
+            config.outputGainDB = defaults.outputGainDB
             config.monoMode = defaults.monoMode
             config.preemphasisUS = defaults.preemphasisUS
             config.hpfHz = defaults.hpfHz
@@ -1415,10 +1461,14 @@ final class StereoFoolViewModel: ObservableObject {
             config.widebandAGCMinGainDB = defaults.widebandAGCMinGainDB
         case .orbass:
             config.orbassEnabled = defaults.orbassEnabled
+            config.orbassPresetID = defaults.orbassPresetID
             config.orbassAmount = defaults.orbassAmount
             config.orbassFreqHz = defaults.orbassFreqHz
             config.orbassHarmonics = defaults.orbassHarmonics
             config.orbassDrive = defaults.orbassDrive
+            config.orbassDensity = defaults.orbassDensity
+            config.orbassSubharmonicsEnabled = defaults.orbassSubharmonicsEnabled
+            config.orbassSubharmonicsAmount = defaults.orbassSubharmonicsAmount
         case .multiband:
             config.multibandEnabled = defaults.multibandEnabled
             config.multibandMode = defaults.multibandMode
@@ -1446,11 +1496,15 @@ final class StereoFoolViewModel: ObservableObject {
             config.multibandMakeupDB = defaults.multibandMakeupDB
         case .widener:
             config.stereoWidenEnabled = defaults.stereoWidenEnabled
+            config.monoBassEnabled = defaults.monoBassEnabled
+            config.monoBassFreqHz = defaults.monoBassFreqHz
             config.stereoWidenWidth = defaults.stereoWidenWidth
             config.stereoWidenCenter = defaults.stereoWidenCenter
             config.stereoWidenMix = defaults.stereoWidenMix
         case .limiter:
+            config.finalStagePresetID = defaults.finalStagePresetID
             config.compositeLimiterEnabled = defaults.compositeLimiterEnabled
+            config.finalDriveDB = defaults.finalDriveDB
             config.mpxDeviationKHz = defaults.mpxDeviationKHz
         }
 
@@ -1711,11 +1765,24 @@ final class StereoFoolViewModel: ObservableObject {
         lastMonitorRefreshTime = now
 
         var inputPeak: Float = 0.0
+        var inputLeftPeak: Float = 0.0
+        var inputRightPeak: Float = 0.0
         var inputLeftRMS: Float = 0.0
         var inputRightRMS: Float = 0.0
         var outputRMS: Float = 0.0
         var outputPeak: Float = 0.0
         var deviationKHz: Float = 0.0
+        var agcDetectorDB: Float = -120.0
+        var agcGainDB: Float = 0.0
+        var agcGateActive: Bool = false
+        var compositeLimiterGainReductionDB: Float = 0.0
+        var mpxSafetyLimiterGainReductionDB: Float = 0.0
+        var pilotInjectionPercent: Float = 0.0
+        var rdsInjectionPercent: Float = 0.0
+        var audioCompositePeak: Float = 0.0
+        var compositeBudgetMarginDB: Float = 0.0
+        var outputStereoCorrelation: Float = 1.0
+        var outputSideToMidRatio: Float = 0.0
         var health = MonitoringStreamHealth.stopped
 
         if let engine = runningEngine {
@@ -1780,11 +1847,24 @@ final class StereoFoolViewModel: ObservableObject {
             let meters = engine.meters
             let hasCapture = cap.callbacks > 0
             inputPeak = hasCapture ? meters.inputPeak : meters.outputPeak
+            inputLeftPeak = hasCapture ? meters.inputLeftPeak : meters.outputPeak
+            inputRightPeak = hasCapture ? meters.inputRightPeak : meters.outputPeak
             inputLeftRMS = hasCapture ? meters.inputLeftRMS : meters.outputRMS
             inputRightRMS = hasCapture ? meters.inputRightRMS : meters.outputRMS
             outputRMS = meters.outputRMS
             outputPeak = meters.outputPeak
             deviationKHz = meters.deviationKHzPeak
+            agcDetectorDB = meters.agcDetectorDB
+            agcGainDB = meters.agcGainDB
+            agcGateActive = meters.agcGateActive
+            compositeLimiterGainReductionDB = meters.compositeLimiterGainReductionDB
+            mpxSafetyLimiterGainReductionDB = meters.mpxSafetyLimiterGainReductionDB
+            pilotInjectionPercent = meters.pilotInjectionPercent
+            rdsInjectionPercent = meters.rdsInjectionPercent
+            audioCompositePeak = meters.audioCompositePeak
+            compositeBudgetMarginDB = meters.compositeBudgetMarginDB
+            outputStereoCorrelation = meters.outputStereoCorrelation
+            outputSideToMidRatio = meters.outputSideToMidRatio
 
             if engineStartReference == nil {
                 engineStartReference = now
@@ -1819,18 +1899,26 @@ final class StereoFoolViewModel: ObservableObject {
             vuOutput = 0.0
             vuModulation = 0.0
             clearPeakHolds()
+            limiterDetailText = String(
+                format: "Drive %.1f dB • GR 0.0 dB • Max 0.0 dB • Safe 0.0 dB • Peak %@",
+                config.finalDriveDB,
+                Self.dbfsString(0.0)
+            )
+            compositeBudgetStateText = "Off"
+            compositeCalibrationText = "Pilot 0.0% • RDS 0.0% • Audio -inf dBFS • Margin 0.0 dB"
+            stereoImageText = "Corr +1.00 • Side 0.00x"
+            widenerStateText = "Off"
             overflowHistory.removeAll(keepingCapacity: true)
             lastOverflowTotal = 0
             lastUnderflowTotal = 0
         }
         streamHealth = health
 
-        let targetDeviation = Float(max(1.0, config.mpxDeviationKHz))
-        let modulationNorm = max(0.0, min(2.0, deviationKHz / targetDeviation))
+        let modulationNorm = max(0.0, min(1.0, deviationKHz / 100.0))
         let inputLTarget = Self.levelMeterScale(inputLeftRMS)
         let inputRTarget = Self.levelMeterScale(inputRightRMS)
         let outputTarget = Self.levelMeterScale(outputRMS)
-        let modulationTarget = max(0.0, min(1.0, modulationNorm))
+        let modulationTarget = modulationNorm
 
         vuInputL = smoothMeter(
             current: vuInputL, target: inputLTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
@@ -1847,16 +1935,36 @@ final class StereoFoolViewModel: ObservableObject {
         outputLevel = Double(max(0.0, min(1.0, vuOutput)))
         modulationLevel = Double(max(0.0, min(1.0, vuModulation)))
 
-        // Sticky marker follows the same visual meter scale as the bar fill (RMS/VU style),
-        // matching broadcast meter behavior and avoiding "marker above unreachable range".
+        // Bar fill remains RMS/VU oriented, but the white marker now follows the
+        // actual peak value mapped onto the same display scale.
         inputLPeakHoldLevel = Double(
-            updatePeakHold(livePeak: vuInputL, state: &peakHoldInputL, dt: dt))
+            updatePeakHold(
+                livePeak: Self.levelMeterScale(inputLeftPeak),
+                state: &peakHoldInputL,
+                dt: dt
+            ))
         inputRPeakHoldLevel = Double(
-            updatePeakHold(livePeak: vuInputR, state: &peakHoldInputR, dt: dt))
+            updatePeakHold(
+                livePeak: Self.levelMeterScale(inputRightPeak),
+                state: &peakHoldInputR,
+                dt: dt
+            ))
         outputPeakHoldLevel = Double(
-            updatePeakHold(livePeak: vuOutput, state: &peakHoldOutput, dt: dt))
+            updatePeakHold(
+                livePeak: Self.levelMeterScale(outputPeak),
+                state: &peakHoldOutput,
+                dt: dt
+            ))
         modulationPeakHoldLevel = Double(
-            updatePeakHold(livePeak: vuModulation, state: &peakHoldModulation, dt: dt))
+            updatePeakHold(
+                livePeak: max(0.0, min(1.0, deviationKHz / 100.0)),
+                state: &peakHoldModulation,
+                dt: dt
+            ))
+        let limiterGRPeakHold = updateLimiterGRPeakHold(
+            liveValueDB: compositeLimiterGainReductionDB,
+            dt: dt
+        )
 
         inputLText = Self.dbfsString(inputLeftRMS)
         inputRText = Self.dbfsString(inputRightRMS)
@@ -1865,11 +1973,59 @@ final class StereoFoolViewModel: ObservableObject {
 
         let limiterState =
             config.compositeLimiterEnabled
-            ? (outputPeak >= Float(config.limitThreshold) ? "Active" : "Idle") : "Off"
+            ? (compositeLimiterGainReductionDB >= 0.2 ? "Active" : "Idle") : "Off"
         limiterStateText = limiterState
+        limiterDetailText = String(
+            format: "Drive %.1f dB • GR %.1f dB • Max %.1f dB • Safe %.1f dB • Peak %@",
+            config.finalDriveDB,
+            compositeLimiterGainReductionDB,
+            limiterGRPeakHold,
+            mpxSafetyLimiterGainReductionDB,
+            Self.dbfsString(outputPeak)
+        )
+        if !isRunning {
+            compositeBudgetStateText = "Off"
+        } else if compositeBudgetMarginDB >= 3.0 {
+            compositeBudgetStateText = "Safe"
+        } else if compositeBudgetMarginDB >= 1.0 {
+            compositeBudgetStateText = "Tight"
+        } else {
+            compositeBudgetStateText = "Risk"
+        }
+        compositeCalibrationText = String(
+            format: "Pilot %.1f%% • RDS %.1f%% • Audio %@ • Margin %.1f dB",
+            pilotInjectionPercent,
+            rdsInjectionPercent,
+            Self.dbfsString(audioCompositePeak),
+            compositeBudgetMarginDB
+        )
+        stereoImageText = String(
+            format: "Corr %@%.2f • Side %.2fx",
+            outputStereoCorrelation >= 0 ? "+" : "",
+            outputStereoCorrelation,
+            outputSideToMidRatio
+        )
+        if config.widebandAGCEnabled && !processingBypass {
+            agcStateText = agcGateActive ? "Gate" : "On"
+        } else {
+            agcStateText = "Off"
+        }
+        agcDetailText = String(
+            format: "Detector %.1f dB • Gain %.1f dB",
+            agcDetectorDB,
+            agcGainDB
+        ) + (agcGateActive ? " • Gate" : "")
         multibandStateText = config.multibandEnabled ? "On" : "Off"
         orbassStateText = config.orbassEnabled ? "On" : "Off"
-        widenerStateText = config.stereoWidenEnabled ? "On" : "Off"
+        if !config.stereoWidenEnabled || config.monoMode {
+            widenerStateText = "Off"
+        } else if outputStereoCorrelation < 0.0 || outputSideToMidRatio > 0.85 {
+            widenerStateText = "Risk"
+        } else if outputStereoCorrelation < 0.30 || outputSideToMidRatio > 0.55 {
+            widenerStateText = "Wide"
+        } else {
+            widenerStateText = "Safe"
+        }
 
         let elapsed = max(0.0, now - (engineStartReference ?? now))
         updateRDSFields(elapsed: elapsed)
@@ -2110,20 +2266,20 @@ final class StereoFoolViewModel: ObservableObject {
 
     private static let orbassPresets: [OrbassPreset] = [
         .init(
-            id: "chr", title: "CHR/EDM", enabled: true, amount: 0.76, freqHz: 70, harmonics: 0.78,
-            drive: 1.45, density: 0.86, subharmonicsEnabled: true, subharmonicsAmount: 0.55),
+            id: "chr", title: "CHR/EDM", enabled: true, amount: 0.52, freqHz: 76, harmonics: 0.52,
+            drive: 1.10, density: 0.72, subharmonicsEnabled: true, subharmonicsAmount: 0.28),
         .init(
-            id: "urban", title: "Urban", enabled: true, amount: 0.72, freqHz: 68, harmonics: 0.74,
-            drive: 1.35, density: 0.82, subharmonicsEnabled: true, subharmonicsAmount: 0.52),
+            id: "urban", title: "Urban", enabled: true, amount: 0.50, freqHz: 72, harmonics: 0.48,
+            drive: 1.05, density: 0.70, subharmonicsEnabled: true, subharmonicsAmount: 0.24),
         .init(
-            id: "rock", title: "Rock", enabled: true, amount: 0.58, freqHz: 84, harmonics: 0.44,
-            drive: 1.18, density: 0.72, subharmonicsEnabled: true, subharmonicsAmount: 0.34),
+            id: "rock", title: "Rock", enabled: true, amount: 0.38, freqHz: 88, harmonics: 0.28,
+            drive: 0.92, density: 0.58, subharmonicsEnabled: false, subharmonicsAmount: 0.14),
         .init(
-            id: "ac", title: "AC/Pop", enabled: true, amount: 0.42, freqHz: 94, harmonics: 0.30,
-            drive: 1.00, density: 0.66, subharmonicsEnabled: false, subharmonicsAmount: 0.20),
+            id: "ac", title: "AC/Pop", enabled: true, amount: 0.26, freqHz: 98, harmonics: 0.16,
+            drive: 0.78, density: 0.48, subharmonicsEnabled: false, subharmonicsAmount: 0.10),
         .init(
-            id: "talk", title: "Talk", enabled: true, amount: 0.22, freqHz: 118, harmonics: 0.16,
-            drive: 0.72, density: 0.55, subharmonicsEnabled: false, subharmonicsAmount: 0.10),
+            id: "talk", title: "Talk", enabled: true, amount: 0.12, freqHz: 120, harmonics: 0.08,
+            drive: 0.55, density: 0.32, subharmonicsEnabled: false, subharmonicsAmount: 0.0),
     ]
 
     private static let multibandPresets: [MultibandPreset] = [
@@ -2247,6 +2403,57 @@ final class StereoFoolViewModel: ObservableObject {
             lowReleaseMS: 360, midThresholdDB: -18, midRatio: 1.7, midAttackMS: 18,
             midReleaseMS: 280, highThresholdDB: -17, highRatio: 1.45, highAttackMS: 11,
             highReleaseMS: 210, kneeDB: 3.0, linkStrength: 0.48, releaseProgramDependent: true),
+    ]
+
+    private static let finalStagePresets: [FinalStagePreset] = [
+        .init(
+            id: "balanced",
+            title: "Balanced Music",
+            agcEnabled: true,
+            agcTargetDB: -16.0,
+            agcAttackMS: 80.0,
+            agcReleaseMS: 1200.0,
+            agcMaxGainDB: 12.0,
+            agcMinGainDB: -12.0,
+            finalDriveDB: 6.0,
+            compositeLimiterEnabled: true
+        ),
+        .init(
+            id: "chr",
+            title: "CHR / Dance",
+            agcEnabled: true,
+            agcTargetDB: -15.0,
+            agcAttackMS: 55.0,
+            agcReleaseMS: 900.0,
+            agcMaxGainDB: 10.0,
+            agcMinGainDB: -9.0,
+            finalDriveDB: 8.0,
+            compositeLimiterEnabled: true
+        ),
+        .init(
+            id: "punchy",
+            title: "Punchy Music",
+            agcEnabled: true,
+            agcTargetDB: -15.0,
+            agcAttackMS: 60.0,
+            agcReleaseMS: 1000.0,
+            agcMaxGainDB: 11.0,
+            agcMinGainDB: -10.0,
+            finalDriveDB: 7.5,
+            compositeLimiterEnabled: true
+        ),
+        .init(
+            id: "speech",
+            title: "Speech / Talk",
+            agcEnabled: true,
+            agcTargetDB: -14.0,
+            agcAttackMS: 45.0,
+            agcReleaseMS: 750.0,
+            agcMaxGainDB: 10.0,
+            agcMinGainDB: -8.0,
+            finalDriveDB: 4.5,
+            compositeLimiterEnabled: true
+        ),
     ]
 
     private static func ptyName(for pty: Int) -> String {
@@ -2436,6 +2643,8 @@ final class StereoFoolViewModel: ObservableObject {
         peakHoldInputR = PeakHoldState()
         peakHoldOutput = PeakHoldState()
         peakHoldModulation = PeakHoldState()
+        limiterGRPeakHoldDB = 0.0
+        limiterGRPeakHoldRemaining = 0.0
         inputLPeakHoldLevel = 0.0
         inputRPeakHoldLevel = 0.0
         outputPeakHoldLevel = 0.0
@@ -2465,6 +2674,30 @@ final class StereoFoolViewModel: ObservableObject {
             state.value = 0.0
         }
         return state.value
+    }
+
+    private func updateLimiterGRPeakHold(liveValueDB: Float, dt: Double) -> Float {
+        let live = max(0.0, liveValueDB.isFinite ? liveValueDB : 0.0)
+        if !stickyPeaksEnabled {
+            limiterGRPeakHoldDB = live
+            limiterGRPeakHoldRemaining = 0.0
+            return live
+        }
+        if live >= limiterGRPeakHoldDB {
+            limiterGRPeakHoldDB = live
+            limiterGRPeakHoldRemaining = max(0.0, meterPeakHoldSeconds)
+            return limiterGRPeakHoldDB
+        }
+        if limiterGRPeakHoldRemaining > 0.0 {
+            limiterGRPeakHoldRemaining = max(0.0, limiterGRPeakHoldRemaining - dt)
+            return limiterGRPeakHoldDB
+        }
+        let fallRate = max(1.0, meterPeakFallDBPerSecond)
+        limiterGRPeakHoldDB = max(live, limiterGRPeakHoldDB - Float(fallRate * dt))
+        if limiterGRPeakHoldDB < 0.01 {
+            limiterGRPeakHoldDB = 0.0
+        }
+        return limiterGRPeakHoldDB
     }
 
     private func smoothMeter(
@@ -2623,14 +2856,12 @@ private struct MonitoringDashboardView: View {
                 }
 
                 Card(title: "Interfaces") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        LabeledContent("Input") {
-                            Text(inputName)
-                        }
-                        LabeledContent("Output") {
-                            Text(outputName)
-                        }
-                    }
+                    MonitoringInterfacesPanel(
+                        inputName: inputName,
+                        outputName: outputName,
+                        monitorEnabled: model.monitorEnabled,
+                        monitorName: monitorName
+                    )
                 }
 
                 Card(title: "DSP") {
@@ -2654,6 +2885,11 @@ private struct MonitoringDashboardView: View {
     private var outputName: String {
         guard !model.selectedOutputUID.isEmpty else { return "—" }
         return model.outputDevices.first(where: { $0.uid == model.selectedOutputUID })?.name ?? "—"
+    }
+
+    private var monitorName: String {
+        guard model.monitorEnabled, !model.selectedMonitorUID.isEmpty else { return "—" }
+        return model.outputDevices.first(where: { $0.uid == model.selectedMonitorUID })?.name ?? "—"
     }
 }
 
@@ -2694,43 +2930,57 @@ private struct MonitoringTransportHeader: View {
 
 private struct MonitoringHealthSummaryRow: View {
     let health: MonitoringStreamHealth
-    @State private var expanded: Bool = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            VStack(spacing: 6) {
-                LabeledContent("Ring") { Text(ringText).textSelection(.enabled) }
-                LabeledContent("Overflows (10s)") { Text("\(health.overflowsRecent)") }
-                LabeledContent("Underflows (10s)") { Text("\(health.underflowsRecent)") }
-                LabeledContent("Totals") { Text("O:\(health.overflowsTotal) U:\(health.underflowsTotal)") }
-                LabeledContent("Rates") { Text(rateText) }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.top, 6)
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: "circle.fill")
-                    .font(.system(size: 8))
-                    .foregroundStyle(indicatorColor)
+        VStack(alignment: .leading, spacing: 14) {
+            FlowStatusRow(items: [
+                ("Transport", health.isRunning ? "Running" : "Stopped", indicatorColor),
+                ("Buffer", health.bufferSummary, indicatorColor),
+                ("Source", health.inputName, .secondary.opacity(0.75)),
+            ])
 
-                Text(health.isRunning ? "Running" : "Stopped")
-                    .font(.body.weight(.medium))
-
-                Text("• Buffer \(health.bufferSummary)")
-                    .foregroundStyle(.secondary)
-
-                Spacer(minLength: 0)
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(minimum: 180), spacing: 12),
+                    GridItem(.flexible(minimum: 180), spacing: 12),
+                ],
+                alignment: .leading,
+                spacing: 12
+            ) {
+                DSPMetricGroupCard(
+                    title: "Stream",
+                    subtitle: "Current source and sample-rate path",
+                    rows: [
+                        ("Input", health.inputName),
+                        ("Rates", rateText),
+                    ]
+                )
+                DSPMetricGroupCard(
+                    title: "Buffer",
+                    subtitle: "Ring fill and health state",
+                    rows: [
+                        ("Ring", ringText),
+                        ("Health", health.bufferSummary),
+                    ]
+                )
+                DSPMetricGroupCard(
+                    title: "Recent Dropouts",
+                    subtitle: "Overflows and underflows over 10 seconds",
+                    rows: [
+                        ("Over", "\(health.overflowsRecent)"),
+                        ("Under", "\(health.underflowsRecent)"),
+                    ]
+                )
+                DSPMetricGroupCard(
+                    title: "Totals",
+                    subtitle: "Cumulative capture and render faults",
+                    rows: [
+                        ("Over", "\(health.overflowsTotal)"),
+                        ("Under", "\(health.underflowsTotal)"),
+                    ]
+                )
             }
         }
-        .disclosureGroupStyle(.automatic)
-        .padding(.vertical, 2)
-    }
-
-    private var summaryText: String {
-        let stateText = health.isRunning ? "Running" : "Stopped"
-        return
-            "\(stateText) • \(health.rateSummary) • Input: \(health.inputName) • Buffer: \(health.bufferSummary)"
     }
 
     private var ringText: String {
@@ -2754,7 +3004,7 @@ private struct MonitoringHealthSummaryRow: View {
         case .ok:
             return .green
         case .warn:
-            return .yellow
+            return .orange
         case .bad:
             return .red
         }
@@ -2885,10 +3135,113 @@ private struct MonitoringRDSSnapshotSectionView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Live view").font(.subheadline).foregroundStyle(.secondary)
-            KeyValueGrid(rows: model.rdsRows)
+        MonitoringRDSPanel(rows: model.rdsRows)
+    }
+}
+
+private struct MonitoringInterfacesPanel: View {
+    let inputName: String
+    let outputName: String
+    let monitorEnabled: Bool
+    let monitorName: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FlowStatusRow(items: [
+                ("Source", "Ready", .green),
+                ("Output", "Ready", .green),
+                ("Monitor", monitorEnabled ? "Enabled" : "Off", monitorEnabled ? .green : .secondary.opacity(0.45)),
+            ])
+
+            DashboardMetricGrid {
+                DSPMetricGroupCard(
+                    title: "Input Source",
+                    subtitle: "Active capture device",
+                    rows: [
+                        ("Device", inputName),
+                        ("Role", "Program input"),
+                    ]
+                )
+                DSPMetricGroupCard(
+                    title: "Main Output",
+                    subtitle: "Transmit and MPX routing",
+                    rows: [
+                        ("Device", outputName),
+                        ("Role", "MPX output"),
+                    ]
+                )
+                DSPMetricGroupCard(
+                    title: "Monitor Path",
+                    subtitle: "Decoded MPX monitor routing",
+                    rows: [
+                        ("State", monitorEnabled ? "Enabled" : "Off"),
+                        ("Device", monitorEnabled ? monitorName : "—"),
+                    ]
+                )
+            }
         }
+    }
+}
+
+private struct MonitoringRDSPanel: View {
+    let rows: [(String, String)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FlowStatusRow(items: summaryItems)
+
+            DashboardMetricGrid {
+                DSPMetricGroupCard(
+                    title: "Program Service",
+                    subtitle: "Station identity and classification",
+                    rows: rowsFor(["PS", "PI", "PTY", "PTYN"])
+                )
+                DSPMetricGroupCard(
+                    title: "Advanced Data",
+                    subtitle: "RT+ application data and long text",
+                    rows: rowsFor(["RT+ App ID", "Long PS"])
+                )
+                DSPMetricGroupCard(
+                    title: "Radiotext",
+                    subtitle: "Current transmitted text fields",
+                    rows: rowsFor(["Radiotext", "Now Playing"])
+                )
+            }
+        }
+    }
+
+    private var rowMap: [String: String] {
+        Dictionary(uniqueKeysWithValues: rows)
+    }
+
+    private var summaryItems: [(title: String, value: String, color: Color)] {
+        let ps = rowMap["PS"].flatMap { $0.isEmpty ? nil : $0 } ?? "—"
+        let pty = rowMap["PTY"].flatMap { $0.isEmpty ? nil : $0 } ?? "—"
+        let rt = rowMap["Radiotext"].flatMap { $0.isEmpty ? nil : $0 } ?? "—"
+        let aid = rowMap["RT+ App ID"].flatMap { $0.isEmpty ? nil : $0 } ?? "OFF"
+        return [
+            ("PS", ps, .secondary.opacity(0.75)),
+            ("PTY", pty, .secondary.opacity(0.75)),
+            ("RT", rt == "-" || rt == "—" ? "Idle" : "Live", rt == "-" || rt == "—" ? .secondary.opacity(0.45) : .green),
+            ("RT+", aid == "AID: OFF" || aid == "OFF" ? "Off" : "On", aid == "AID: OFF" || aid == "OFF" ? .secondary.opacity(0.45) : .green),
+        ]
+    }
+
+    private func rowsFor(_ keys: [String]) -> [(String, String)] {
+        keys.map { key in
+            let rawValue = rowMap[key] ?? "—"
+            if key == "RT+ App ID" {
+                return (key, formattedAIDValue(rawValue))
+            }
+            return (key, rawValue)
+        }
+    }
+
+    private func formattedAIDValue(_ rawValue: String) -> String {
+        if rawValue.hasPrefix("AID: ") {
+            return String(rawValue.dropFirst(5))
+        }
+        return rawValue
     }
 }
 
@@ -2900,23 +3253,6 @@ private struct MonitoringLevelsSectionView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Levels").font(.headline)
-
-            LabeledContent("Input Gain") {
-                HStack(spacing: 12) {
-                    Slider(
-                        value: Binding(
-                            get: { model.inputGainDB },
-                            set: {
-                                model.inputGainDB = $0
-                                model.persistBasicConfig()
-                            }
-                        ), in: -24...24)
-                    Text(String(format: "%.1f dB", model.inputGainDB))
-                        .font(.system(.caption, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 70, alignment: .trailing)
-                }
-            }
 
             HStack(spacing: 14) {
                 Toggle(
@@ -2972,7 +3308,8 @@ private struct MonitoringLevelsSectionView: View {
                 peakLevel: model.outputPeakHoldLevel, showsDBScale: true)
             MeterRow(
                 label: "Modulation", valueText: model.modulationText, level: model.modulationLevel,
-                peakLevel: model.modulationPeakHoldLevel, showsDBScale: false)
+                peakLevel: model.modulationPeakHoldLevel,
+                scaleStyle: .modulation100kHz(limitKHz: model.config.mpxDeviationKHz))
         }
     }
 }
@@ -2981,31 +3318,9 @@ private struct MonitoringDSPStatusSectionView: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             Text("DSP Status").font(.subheadline).foregroundStyle(.secondary)
-            HStack(spacing: 14) {
-                DSPStateIndicator(
-                    title: "Composite Limiter",
-                    dotColor: Self.compositeLimiterDotColor(for: model.limiterStateText)
-                )
-                DSPStateIndicator(
-                    title: "Multiband",
-                    dotColor: model.multibandStateText.caseInsensitiveCompare("On") == .orderedSame
-                        ? .green : .secondary.opacity(0.45)
-                )
-                DSPStateIndicator(
-                    title: "Orbass",
-                    dotColor: model.orbassStateText.caseInsensitiveCompare("On") == .orderedSame
-                        ? .green : .secondary.opacity(0.45)
-                )
-                DSPStateIndicator(
-                    title: "Widener",
-                    dotColor: model.widenerStateText.caseInsensitiveCompare("On") == .orderedSame
-                        ? .green : .secondary.opacity(0.45)
-                )
-                Spacer(minLength: 0)
-            }
-            .font(.callout)
+            DSPOverviewPanel(model: model)
         }
     }
 
@@ -3019,6 +3334,221 @@ private struct MonitoringDSPStatusSectionView: View {
             return .secondary.opacity(0.45)
         }
         return .red
+    }
+
+    static func stereoImageDotColor(for state: String) -> Color {
+        if state.caseInsensitiveCompare("Off") == .orderedSame {
+            return .secondary.opacity(0.45)
+        }
+        if state.caseInsensitiveCompare("Safe") == .orderedSame {
+            return .green
+        }
+        if state.caseInsensitiveCompare("Wide") == .orderedSame {
+            return .orange
+        }
+        return .red
+    }
+
+    static func compositeBudgetDotColor(for state: String) -> Color {
+        if state.caseInsensitiveCompare("Safe") == .orderedSame {
+            return .green
+        }
+        if state.caseInsensitiveCompare("Tight") == .orderedSame {
+            return .orange
+        }
+        if state.caseInsensitiveCompare("Off") == .orderedSame {
+            return .secondary.opacity(0.45)
+        }
+        return .red
+    }
+}
+
+private struct DSPOverviewPanel: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    private var limiterMetrics: [(String, String)] {
+        metrics(from: model.limiterDetailText)
+    }
+
+    private var compositeMetrics: [(String, String)] {
+        metrics(from: model.compositeCalibrationText)
+    }
+
+    private var stereoMetrics: [(String, String)] {
+        metrics(from: model.stereoImageText)
+    }
+
+    private var agcMetrics: [(String, String)] {
+        [
+            ("Detector", metricValue(in: model.agcDetailText, for: "Detector") ?? "—"),
+            ("Gain", metricValue(in: model.agcDetailText, for: "Gain") ?? "—"),
+            ("State", model.agcStateText),
+        ]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FlowStatusRow(items: [
+                ("Limiter", model.limiterStateText, MonitoringDSPStatusSectionView.compositeLimiterDotColor(for: model.limiterStateText)),
+                ("Budget", model.compositeBudgetStateText, MonitoringDSPStatusSectionView.compositeBudgetDotColor(for: model.compositeBudgetStateText)),
+                ("AGC", model.agcStateText, agcDotColor),
+                ("Multiband", model.multibandStateText, model.multibandStateText.caseInsensitiveCompare("On") == .orderedSame ? .green : .secondary.opacity(0.45)),
+                ("Orbass", model.orbassStateText, model.orbassStateText.caseInsensitiveCompare("On") == .orderedSame ? .green : .secondary.opacity(0.45)),
+                ("Image", model.widenerStateText, MonitoringDSPStatusSectionView.stereoImageDotColor(for: model.widenerStateText)),
+            ])
+
+            DashboardMetricGrid {
+                DSPMetricGroupCard(
+                    title: "Final Stage",
+                    subtitle: "Drive, gain reduction, safety, and peak",
+                    rows: limiterMetrics
+                )
+                DSPMetricGroupCard(
+                    title: "Composite Budget",
+                    subtitle: "Pilot, RDS, audio headroom, and margin",
+                    rows: compositeMetrics
+                )
+                DSPMetricGroupCard(
+                    title: "Stereo Image",
+                    subtitle: "Correlation and side-energy balance",
+                    rows: stereoMetrics
+                )
+                DSPMetricGroupCard(
+                    title: "AGC Rider",
+                    subtitle: "Detector level and active gain riding",
+                    rows: agcMetrics
+                )
+            }
+        }
+    }
+
+    private var agcDotColor: Color {
+        if model.agcStateText.caseInsensitiveCompare("Off") == .orderedSame {
+            return .secondary.opacity(0.45)
+        }
+        if model.agcStateText.caseInsensitiveCompare("Gate") == .orderedSame {
+            return .orange
+        }
+        return .green
+    }
+
+    private func metrics(from text: String) -> [(String, String)] {
+        text
+            .split(separator: "•")
+            .map { part in
+                let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+                let pieces = trimmed.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+                if pieces.count == 2 {
+                    return (String(pieces[0]), String(pieces[1]))
+                }
+                return ("Value", trimmed)
+            }
+    }
+
+    private func metricValue(in text: String, for key: String) -> String? {
+        for part in text.split(separator: "•") {
+            let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("\(key) ") else { continue }
+            return String(trimmed.dropFirst(key.count + 1))
+        }
+        return nil
+    }
+}
+
+private struct DashboardMetricGrid<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        LazyVGrid(
+            columns: [GridItem(.adaptive(minimum: 260, maximum: 420), spacing: 12)],
+            alignment: .leading,
+            spacing: 12
+        ) {
+            content
+        }
+    }
+}
+
+private struct FlowStatusRow: View {
+    let items: [(title: String, value: String, color: Color)]
+
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            HStack(spacing: 8) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    DSPStatusPill(title: item.title, value: item.value, color: item.color)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    DSPStatusPill(title: item.title, value: item.value, color: item.color)
+                }
+            }
+        }
+    }
+}
+
+private struct DSPStatusPill: View {
+    let title: String
+    let value: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 8, height: 8)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Text(value)
+                    .font(.caption.weight(.semibold))
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.5))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct DSPMetricGroupCard: View {
+    let title: String
+    let subtitle: String
+    let rows: [(String, String)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+                ForEach(rows.indices, id: \.self) { i in
+                    GridRow {
+                        Text(rows[i].0)
+                            .font(.caption.monospaced())
+                            .foregroundStyle(.secondary)
+                        Text(rows[i].1)
+                            .font(.caption.monospaced())
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.35))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 
@@ -3228,7 +3758,7 @@ private struct LevelsCardView: View {
                 MeterRow(
                     label: "Modulation", valueText: model.modulationText,
                     level: model.modulationLevel, peakLevel: model.modulationPeakHoldLevel,
-                    showsDBScale: false)
+                    scaleStyle: .modulation100kHz(limitKHz: model.config.mpxDeviationKHz))
             }
             .controlSize(.regular)
         }
@@ -3236,21 +3766,32 @@ private struct LevelsCardView: View {
 }
 
 private struct MeterRow: View {
+    enum ScaleStyle: Equatable {
+        case dbfs
+        case modulation100kHz(limitKHz: Double)
+        case none
+    }
+
     let label: String
     let valueText: String
     let level: Double
     let peakLevel: Double?
-    let showsDBScale: Bool
+    let scaleStyle: ScaleStyle
 
     init(
         label: String, valueText: String, level: Double, peakLevel: Double? = nil,
-        showsDBScale: Bool = false
+        showsDBScale: Bool = false,
+        scaleStyle: ScaleStyle? = nil
     ) {
         self.label = label
         self.valueText = valueText
         self.level = level
         self.peakLevel = peakLevel
-        self.showsDBScale = showsDBScale
+        if let scaleStyle {
+            self.scaleStyle = scaleStyle
+        } else {
+            self.scaleStyle = showsDBScale ? .dbfs : .none
+        }
     }
 
     var body: some View {
@@ -3262,7 +3803,7 @@ private struct MeterRow: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
             }
-            MeterBar(level: level, peakLevel: peakLevel, showsDBScale: showsDBScale)
+            MeterBar(level: level, peakLevel: peakLevel, scaleStyle: scaleStyle)
         }
         .font(.callout)
     }
@@ -3271,16 +3812,53 @@ private struct MeterRow: View {
 private struct MeterBar: View {
     let level: Double
     let peakLevel: Double?
-    let showsDBScale: Bool
+    let scaleStyle: MeterRow.ScaleStyle
 
-    private let scaleTicks: [Double] = [0.0, 0.33, 0.66, 0.83, 0.92, 1.0]
-    private let scaleLabels: [String] = ["-36", "-24", "-12", "-6", "-3", "0 dBFS"]
+    private var scaleTicks: [Double] {
+        switch scaleStyle {
+        case .dbfs:
+            return [0.0, 0.33, 0.66, 0.83, 0.92, 1.0]
+        case .modulation100kHz:
+            return [0.0, 0.25, 0.5, 0.75, 1.0]
+        case .none:
+            return [0.0, 0.5, 1.0]
+        }
+    }
+
+    private var scaleLabels: [String] {
+        switch scaleStyle {
+        case .dbfs:
+            return ["-36", "-24", "-12", "-6", "-3", "0 dBFS"]
+        case .modulation100kHz:
+            return ["0", "25", "50", "75", "100 kHz"]
+        case .none:
+            return []
+        }
+    }
 
     private var meterTint: Color {
-        if level >= 0.92 { return .red }
-        if level >= 0.83 { return .orange }
-        if level >= 0.66 { return .yellow }
-        return .green
+        switch scaleStyle {
+        case .modulation100kHz(let limitKHz):
+            let limitNorm = max(0.01, min(1.0, limitKHz / 100.0))
+            if level > limitNorm { return .red }
+            if level >= (limitNorm * 0.95) { return .orange }
+            if level >= (limitNorm * 0.80) { return .yellow }
+            return .green
+        case .dbfs, .none:
+            if level >= 0.92 { return .red }
+            if level >= 0.83 { return .orange }
+            if level >= 0.66 { return .yellow }
+            return .green
+        }
+    }
+
+    private var targetLevel: Double? {
+        switch scaleStyle {
+        case .modulation100kHz(let limitKHz):
+            return max(0.0, min(1.0, limitKHz / 100.0))
+        case .dbfs, .none:
+            return nil
+        }
     }
 
     var body: some View {
@@ -3288,6 +3866,7 @@ private struct MeterBar: View {
             GeometryReader { geo in
                 let width = max(0.0, min(1.0, level)) * geo.size.width
                 let peakX = (peakLevel.map { max(0.0, min(1.0, $0)) } ?? 0.0) * geo.size.width
+                let targetX = (targetLevel.map { max(0.0, min(1.0, $0)) } ?? 0.0) * geo.size.width
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
                         .fill(Color.secondary.opacity(0.18))
@@ -3300,6 +3879,17 @@ private struct MeterBar: View {
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
                         .fill(meterTint.opacity(0.75))
                         .frame(width: max(0.0, width))
+                    if targetLevel != nil {
+                        Rectangle()
+                            .fill(Color.accentColor.opacity(0.95))
+                            .frame(width: 2, height: 14)
+                            .offset(
+                                x: min(
+                                    max(0.0, targetX - 1.0),
+                                    max(0.0, geo.size.width - 2.0)
+                                )
+                            )
+                    }
                     if peakLevel != nil {
                         Rectangle()
                             .fill(Color.primary.opacity(0.98))
@@ -3309,7 +3899,7 @@ private struct MeterBar: View {
                 }
             }
             .frame(height: 14)
-            if showsDBScale {
+            if scaleStyle != .none {
                 HStack {
                     ForEach(Array(scaleLabels.enumerated()), id: \.offset) { idx, title in
                         Text(title)
@@ -3333,30 +3923,7 @@ private struct DSPStatusCardView: View {
 
     var body: some View {
         Card(title: "DSP Overview") {
-            VStack(alignment: .leading, spacing: 10) {
-                DSPStateIndicator(
-                    title: "Composite Limiter",
-                    dotColor: MonitoringDSPStatusSectionView.compositeLimiterDotColor(
-                        for: model.limiterStateText)
-                )
-                HStack(spacing: 10) {
-                    DSPStateIndicator(
-                        title: "Multiband",
-                        dotColor: model.multibandStateText.caseInsensitiveCompare("On")
-                            == .orderedSame ? .green : .secondary.opacity(0.45)
-                    )
-                    DSPStateIndicator(
-                        title: "Orbass",
-                        dotColor: model.orbassStateText.caseInsensitiveCompare("On") == .orderedSame
-                            ? .green : .secondary.opacity(0.45)
-                    )
-                    DSPStateIndicator(
-                        title: "Widener",
-                        dotColor: model.widenerStateText.caseInsensitiveCompare("On")
-                            == .orderedSame ? .green : .secondary.opacity(0.45)
-                    )
-                }
-            }
+            DSPOverviewPanel(model: model)
         }
     }
 }
@@ -3710,6 +4277,9 @@ private struct ProcessingCoreTab: View {
                 set: { _ in model.toggleBypass() }
             ))
             Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
+            Text("Mono Mode disables the stereo pilot, 38 kHz stereo subcarrier, and RDS so the transmitted composite is true mono.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             Picker("Pre-emphasis", selection: model.configBinding(\.preemphasisUS)) {
                 Text("Off").tag(0)
                 Text("50 us").tag(50)
@@ -3723,6 +4293,15 @@ private struct ProcessingCoreTab: View {
                     model.persistBasicConfig()
                 }
             ), range: -24...24, format: "%.1f dB")
+            DoubleSliderRow(
+                title: "MPX Output Level",
+                value: model.configBinding(\.outputGainDB),
+                range: -18...18,
+                format: "%.1f dB"
+            )
+            Text("Use MPX Output Level for final transmit/output calibration. Do not use AGC target as the main loudness knob.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             DoubleSliderRow(title: "HPF", value: model.configBinding(\.hpfHz), range: 10...180, format: "%.0f Hz")
             DoubleSliderRow(title: "HF Trim", value: model.configBinding(\.hfTrimDB), range: -12...12, format: "%.1f dB")
             DoubleSliderRow(title: "HF Trim Freq", value: model.configBinding(\.hfTrimHz), range: 1_000...12_000, format: "%.0f Hz")
@@ -3737,11 +4316,14 @@ private struct ProcessingAGCTab: View {
     var body: some View {
         Card(title: "Wideband AGC") {
             Toggle("Enable Wideband AGC", isOn: model.configBinding(\.widebandAGCEnabled))
-            DoubleSliderRow(title: "Target", value: model.configBinding(\.widebandAGCTargetDB), range: -36 ... -6, format: "%.1f dB")
+            DoubleSliderRow(title: "Platform Target", value: model.configBinding(\.widebandAGCTargetDB), range: -36 ... -6, format: "%.1f dB")
             DoubleSliderRow(title: "Attack", value: model.configBinding(\.widebandAGCAttackMS), range: 1...150, format: "%.1f ms")
             DoubleSliderRow(title: "Release", value: model.configBinding(\.widebandAGCReleaseMS), range: 40...1200, format: "%.1f ms")
             DoubleSliderRow(title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB), range: 0...24, format: "%.1f dB")
             DoubleSliderRow(title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB), range: -24...0, format: "%.1f dB")
+            Text("Wideband AGC should establish a stable average level platform. It is not the final loudness stage.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -3751,11 +4333,27 @@ private struct ProcessingOrbassTab: View {
 
     var body: some View {
         Card(title: "Orbass") {
+            Picker("Preset", selection: Binding(
+                get: { self.model.config.orbassPresetID },
+                set: { newValue in
+                    self.model.config.orbassPresetID = newValue
+                    self.model.applyOrbassPreset(id: newValue)
+                }
+            )) {
+                ForEach(model.orbassPresetChoices) { preset in
+                    Text(preset.title).tag(preset.id)
+                }
+            }
+            .pickerStyle(.menu)
             Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled))
             DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount), range: 0...1.2, format: "%.2f")
             DoubleSliderRow(title: "Frequency", value: model.configBinding(\.orbassFreqHz), range: 40...180, format: "%.1f Hz")
             DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics), range: 0...1.2, format: "%.2f")
             DoubleSliderRow(title: "Drive", value: model.configBinding(\.orbassDrive), range: 0.2...2.0, format: "%.2f")
+            DoubleSliderRow(title: "Density", value: model.configBinding(\.orbassDensity), range: 0...1.0, format: "%.2f")
+            Toggle("Enable Subharmonics", isOn: model.configBinding(\.orbassSubharmonicsEnabled))
+            DoubleSliderRow(title: "Subharmonics", value: model.configBinding(\.orbassSubharmonicsAmount), range: 0...1.0, format: "%.2f")
+                .disabled(!model.config.orbassSubharmonicsEnabled)
         }
     }
 }
@@ -3825,6 +4423,14 @@ private struct ProcessingWidenerTab: View {
     var body: some View {
         Card(title: "Stereo Widener") {
             Toggle("Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled))
+            Toggle("Mono Bass", isOn: model.configBinding(\.monoBassEnabled))
+            DoubleSliderRow(
+                title: "Bass Mono Freq",
+                value: model.configBinding(\.monoBassFreqHz),
+                range: 70...220,
+                format: "%.0f Hz"
+            )
+            .disabled(!model.config.monoBassEnabled)
             DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth), range: 0...1, format: "%.2f")
             DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter), range: 0...1, format: "%.2f")
             DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix), range: 0...1, format: "%.2f")
@@ -3837,7 +4443,28 @@ private struct ProcessingLimiterTab: View {
 
     var body: some View {
         Card(title: "Composite Limiter") {
+            Picker("Broadcast Preset", selection: Binding(
+                get: { self.model.config.finalStagePresetID },
+                set: { newValue in
+                    self.model.config.finalStagePresetID = newValue
+                    self.model.applyFinalStagePreset(id: newValue)
+                }
+            )) {
+                ForEach(model.finalStagePresetChoices) { preset in
+                    Text(preset.title).tag(preset.id)
+                }
+            }
+            .pickerStyle(.menu)
             Toggle("Enable Composite Limiter", isOn: model.configBinding(\.compositeLimiterEnabled))
+            DoubleSliderRow(
+                title: "Final Drive",
+                value: model.configBinding(\.finalDriveDB),
+                range: 0...12,
+                format: "%.1f dB"
+            )
+            Text("Broadcast Preset updates AGC platform and final-stage drive together. Final Drive feeds the final composite protection stage before MPX Output Level calibration.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz), range: 40...90, format: "%.1f kHz")
         }
     }
@@ -3884,16 +4511,21 @@ private struct SystemSettingsSectionContent: View {
                 isOn: model.configBinding(\.rdsAutoStart, restartRequired: false))
 
             Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
+            Text("Mono Mode transmits true mono composite only. Pilot and RDS are suppressed while it is enabled.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
 
             DoubleSliderRow(
                 title: "Pilot Level", value: model.configBinding(\.pilotLevel),
                 range: 0...0.2, format: "%.3f")
+            .disabled(model.config.monoMode)
             DoubleSliderRow(
                 title: "Sum Level", value: model.configBinding(\.sumLevel),
                 range: 0...1.5, format: "%.2f")
             DoubleSliderRow(
                 title: "Diff Level", value: model.configBinding(\.diffLevel),
                 range: 0...1.5, format: "%.2f")
+            .disabled(model.config.monoMode)
         }
     }
 }
@@ -4033,14 +4665,10 @@ private struct RDSProgramTab: View {
             TextField("PS Dynamic", text: model.configBinding(\.rdsPSDynamic))
             Toggle("Center PS", isOn: model.configBinding(\.rdsPSCentered))
             LabeledContent("PI Code") {
-                TextField("", text: model.piBinding())
-                    .font(.system(.body, design: .monospaced))
-                    .frame(width: 90)
+                HexCodeField(text: model.piBinding(), placeholder: "0000", width: 72)
             }
             LabeledContent("ECC") {
-                TextField("", text: model.hexByteBinding(\.rdsECC))
-                    .font(.system(.body, design: .monospaced))
-                    .frame(width: 80)
+                HexCodeField(text: model.hexByteBinding(\.rdsECC), placeholder: "E3", width: 54)
             }
             Picker("Program Type (PTY)", selection: model.ptyBinding()) {
                 ForEach(model.ptyChoices, id: \.0) { pty in
@@ -4055,6 +4683,21 @@ private struct RDSProgramTab: View {
         Card(title: "Snapshot") {
             KeyValueGrid(rows: model.rdsRows)
         }
+    }
+}
+
+private struct HexCodeField: View {
+    let text: Binding<String>
+    let placeholder: String
+    let width: CGFloat
+
+    var body: some View {
+        TextField("", text: text, prompt: Text(placeholder).foregroundStyle(.tertiary))
+            .textFieldStyle(.roundedBorder)
+            .font(.system(.body, design: .monospaced))
+            .multilineTextAlignment(.center)
+            .frame(width: width)
+            .textSelection(.enabled)
     }
 }
 
@@ -4315,17 +4958,19 @@ private struct HelpWindowView: View {
     @State private var selection: HelpTopic = .inputLevels
 
     var body: some View {
-        NavigationSplitView {
+        HSplitView {
             List(HelpTopic.allCases, selection: $selection) { topic in
                 Label(topic.rawValue, systemImage: topic.icon)
                     .symbolRenderingMode(.hierarchical)
                     .tag(topic)
             }
             .listStyle(.sidebar)
-            .navigationTitle("Help")
-        } detail: {
+            .frame(minWidth: 180, idealWidth: 200, maxWidth: 220)
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    Text(selection.rawValue)
+                        .font(.title3.weight(.semibold))
                     switch selection {
                     case .inputLevels:
                         HelpInputLevelsView()
@@ -4336,10 +4981,8 @@ private struct HelpWindowView: View {
                 .padding(20)
                 .frame(maxWidth: 640, alignment: .leading)
             }
-            .navigationTitle(selection.rawValue)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .navigationSplitViewStyle(.balanced)
-        .toolbarTitleDisplayMode(.inline)
     }
 }
 
@@ -4356,7 +4999,7 @@ private func CodeBlock(_ text: String) -> some View {
 private struct HelpInputLevelsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recommended targets for FM broadcast alignment.")
+            Text("Recommended operating targets for the current StereoFool FM chain.")
                 .foregroundStyle(.secondary)
                 .font(.callout)
 
@@ -4387,10 +5030,13 @@ private struct HelpInputLevelsView: View {
                 .padding(.top, 4)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("• US nominal: -20 dBFS")
-                Text("• Europe (EBU R68): -18 dBFS")
+                Text("• US nominal input alignment: around -20 dBFS")
+                Text("• Europe (EBU R68) style alignment: around -18 dBFS")
                 Text("• Very hot chains may peak near -6 dBFS")
-                Text("If you hit 0 dBFS, reduce input gain and re-check pre-emphasis behavior.")
+                Text("• Wideband AGC is a platform leveler, not the final loudness stage")
+                Text("• Final Drive is the main loudness control before the composite limiter")
+                Text("• MPX Output Level is for final exciter or interface calibration")
+                Text("If you hit 0 dBFS, reduce input gain or Final Drive and re-check pre-emphasis behavior.")
             }
             .foregroundStyle(.secondary)
             .font(.callout)
@@ -4404,7 +5050,7 @@ private struct HelpInputLevelsView: View {
 private struct HelpRDSTextView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Timed text sequences for PS and Radiotext.")
+            Text("Timed text sequences for PS and Radiotext, plus now-playing macro support.")
                 .foregroundStyle(.secondary)
                 .font(.callout)
 
@@ -4417,6 +5063,18 @@ private struct HelpRDSTextView: View {
             Text("Shows \"First\" for 10 seconds, then \"Second\" for 10 seconds, repeating.")
                 .foregroundStyle(.secondary)
                 .font(.callout)
+
+            Text("Current supported syntax")
+                .font(.headline)
+                .padding(.top, 8)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("• `Ns:Text` timed segments")
+                Text("• `/` to separate repeating segments")
+                Text("• Structured now-playing macros in Radiotext")
+            }
+            .foregroundStyle(.secondary)
+            .font(.callout)
 
             Text("Examples")
                 .font(.headline)
@@ -4438,6 +5096,19 @@ Now: {now_playing}
 {title}
 {date} {time}
 """)
+
+            Text("Notes")
+                .font(.headline)
+                .padding(.top, 8)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("• `{now_playing}` and `{display}` use the script display text")
+                Text("• `{artist}` and `{title}` are preferred for RT+ tagging")
+                Text("• When the now-playing script is enabled, RT+ tags are derived from structured script output automatically")
+                Text("• In Mono Mode, pilot and RDS are suppressed, so transmitted RDS text is disabled until Mono Mode is turned off")
+            }
+            .foregroundStyle(.secondary)
+            .font(.callout)
 
             Spacer(minLength: 0)
         }

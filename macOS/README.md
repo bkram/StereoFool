@@ -2,6 +2,8 @@
 
 StereoFool is a native macOS FM stereo / MPX / RDS app built with Swift, SwiftUI, and AppKit.
 
+Current release line: `0.85`
+
 ## Build
 
 ```bash
@@ -68,6 +70,7 @@ Separate windows:
 
 - `MPX Output Device` is the baseband output device
 - `Monitor Output Device (Decoded MPX Simulation)` is used when monitor output is enabled
+- `Mono Mode` transmits true mono composite only and suppresses pilot, stereo subcarrier, and RDS while enabled
 - closing the main window keeps the app running; reopen it from the Dock or Window menu
 
 ## DSP notes
@@ -75,12 +78,17 @@ Separate windows:
 - default input HPF: `30 Hz`
 - default program lowpass: `16.4 kHz`
 - default scope auto gain: enabled
+- default `Final Drive`: `6 dB`
+- default wideband AGC target: `-16 dB`
+- default `Mono Bass`: enabled at `125 Hz`
 - bypass keeps the FM encode path active and disables creative processing blocks only
+- the limiter tab contains the main loudness controls and telemetry
+- the widener tab now includes a dedicated mono-bass stage in addition to the stereo widener
 
 ## Build release app / DMG
 
 ```bash
-./build-release.sh 0.8
+./build-release.sh 0.85
 ```
 
 Artifacts are written to `macOS/dist/`.

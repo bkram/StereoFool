@@ -87,6 +87,14 @@ Each platform has its own audio I/O layer calling into the shared C++ DSP core.
 ## Current Status
 
 - ✅ macOS/SwiftUI version in active development
+- ✅ Current macOS chain now includes a dedicated final MPX loudness stage, limiter telemetry, mono bass, and improved stereo-image handling
 - ⏳ C++ core - not started
 - ⏳ JUCE GUI - not started
 - ⏳ Linux/Windows ports - not started
+
+## Near-Term Priorities Before Cross-Platform Work
+
+- finish the oversampled composite limiter/clipper path so the FM back end is more intentional
+- add deterministic MPX verification and stereo/mono-compatibility checks
+- tighten pilot/RDS/deviation calibration workflow
+- stabilize presets for Orbass, widener, mono bass, and final-stage loudness

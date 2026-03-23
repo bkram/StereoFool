@@ -67,63 +67,6 @@ struct SineCosOsc {
     }
 }
 
-struct Halfband2xFIR {
-    private static let h: [Float] = [
-        -0.0016820, 0.0,
-         0.0102060, 0.0,
-        -0.0340400, 0.0,
-         0.0902570, 0.0,
-         0.5000000, 0.0,
-         0.0902570, 0.0,
-        -0.0340400, 0.0,
-         0.0102060, 0.0,
-        -0.0016820
-    ]
-
-    private var z: [Float] = Array(repeating: 0.0, count: h.count)
-    private var zi: Int = 0
-
-    mutating func reset() {
-        for i in 0..<z.count { z[i] = 0.0 }
-        zi = 0
-    }
-
-    @inline(__always)
-    private mutating func push(_ x: Float) {
-        z[zi] = x
-        zi &+= 1
-        if zi >= z.count { zi = 0 }
-    }
-
-    @inline(__always)
-    private func convolve() -> Float {
-        var acc: Float = 0.0
-        var idx = zi
-        for k in 0..<Self.h.count {
-            idx &-= 1
-            if idx < 0 { idx = z.count - 1 }
-            acc += z[idx] * Self.h[k]
-        }
-        return acc
-    }
-
-    @inline(__always)
-    mutating func up2(_ x: Float) -> (Float, Float) {
-        push(x)
-        let odd = convolve()
-        let even = odd
-        return (even, odd)
-    }
-
-    @inline(__always)
-    mutating func down2(_ x0: Float, _ x1: Float) -> Float {
-        push(x0)
-        _ = convolve()
-        push(x1)
-        return convolve()
-    }
-}
-
 struct DCBlocker1p {
     private var r: Float = 0.995
     private var x1: Float = 0.0
@@ -146,135 +89,121 @@ struct DCBlocker1p {
     }
 }
 
-struct OrbassBroadcastClean {
-    var enabled: Bool = false
-    var amount: Float = 0.0
-    var drive: Float = 0.0
-    var harmonics: Float = 0.0
-    var freqHz: Float = 90.0
-
-    private var sampleRate: Float = 48_000.0
-
-    private var bassLP = BiquadCascade6()
-    private var enhLP = BiquadCascade6()
-    private var harmHP = BiquadCascade6()
-
-    private var wet: Float = 1.0
-    private var wetTarget: Float = 1.0
-    private var wetCoeff: Float = 0.0
-
-    mutating func configure(sampleRate: Float) {
-        self.sampleRate = max(8_000.0, sampleRate)
-
-        let fadeS: Float = 0.010
-        wetCoeff = expf(-1.0 / (fadeS * self.sampleRate))
-        wet = wetTarget
-
-        let bassCut = clampf(freqHz, 45.0, min(250.0, (self.sampleRate * 0.5) - 500.0))
-        bassLP.configureLowpass(cutoffHz: bassCut, sampleRate: self.sampleRate)
-
-        enhLP.configureLowpass(cutoffHz: 420.0, sampleRate: self.sampleRate)
-        harmHP.configureHighpass(cutoffHz: 120.0, sampleRate: self.sampleRate)
-    }
-
-    mutating func setEnabled(_ on: Bool) {
-        wetTarget = on ? 1.0 : 0.0
-    }
-
-    @inline(__always)
-    mutating func process(left: Float, right: Float) -> (Float, Float) {
-        wet = (wetCoeff * wet) + ((1.0 - wetCoeff) * wetTarget)
-        wet = clampf(wet, 0.0, 1.0)
-
-        if wet < 1e-4 { return (left, right) }
-
-        let processed = processCore(left: left, right: right)
-        let outL = lerpf(left, processed.0, wet)
-        let outR = lerpf(right, processed.1, wet)
-        return (outL, outR)
-    }
-
-    private mutating func processCore(left: Float, right: Float) -> (Float, Float) {
-        let amt = clampf(amount, 0.0, 1.0)
-        let harm = clampf(harmonics, 0.0, 1.0)
-        if amt <= 1e-4, harm <= 1e-4 { return (left, right) }
-
-        let mid = 0.5 * (left + right)
-        let side = 0.5 * (left - right)
-
-        let bass = bassLP.process(mid)
-
-        let dRaw = 1.0 + clampf(drive, 0.0, 2.5) * (1.2 + 2.0 * harm + 1.5 * amt)
-        let d = clampf(dRaw, 0.5, 12.0)
-
-        let soft = tanhf(bass * d)
-        let hard = tanhf(bass * d * 2.5)
-        let harmonicOnly = hard - soft
-
-        var enh = (bass * (0.9 * amt)) + (harmonicOnly * (0.65 * harm))
-
-        enh = enhLP.process(harmHP.process(enh))
-
-        let midOut = mid + enh
-
-        let outL = midOut + side
-        let outR = midOut - side
-        return (outL, outR)
-    }
-}
-
 struct CompositeTruePeakLimiter {
-    var threshold: Float = 0.98
-    var releaseMS: Float = 80.0
+    var threshold: Float = 0.94
+    var releaseMS: Float = 35.0
+    var ceiling: Float = 0.985
 
     private var gain: Float = 1.0
+    private var attackCoeff: Float = 0.0
     private var releaseCoeff: Float = 0.0
+    private var holdSamples: Int = 0
+    private var holdCounter: Int = 0
+    private var prevPrevPrevIn: Float = 0.0
+    private var prevPrevIn: Float = 0.0
     private var prevIn: Float = 0.0
+    private var decimationLP = BiquadCascade6()
     private var initialized: Bool = false
 
-    mutating func configure(sampleRate: Float) {
-        let sr = max(8_000.0, sampleRate)
-        let relS = max(0.005, Double(releaseMS) * 0.001)
+    mutating func configure(sampleRate: Float, threshold: Float, releaseMS: Float = 35.0) {
+        let sr = max(8_000.0, sampleRate * 4.0)
+        self.threshold = clampf(threshold, 0.75, 0.995)
+        self.releaseMS = max(8.0, releaseMS)
+        let ceilingMargin = max(0.012, (1.0 - self.threshold) * 0.65)
+        ceiling = min(0.999, self.threshold + ceilingMargin)
+
+        let attackS = 0.00025 as Float
+        let relS = max(0.008, Double(self.releaseMS) * 0.001)
+        attackCoeff = expf(-1.0 / (attackS * sr))
         releaseCoeff = expf(-1.0 / Float(relS * Double(sr)))
+        holdSamples = max(1, Int((0.004 * sr).rounded()))
+        holdCounter = 0
         gain = 1.0
+        prevPrevPrevIn = 0.0
+        prevPrevIn = 0.0
         prevIn = 0.0
+        let cutoff = min(sampleRate * 0.30, (sr * 0.5) - 1_000.0)
+        decimationLP.configureLowpass(cutoffHz: max(12_000.0, cutoff), sampleRate: sr)
         initialized = false
-        threshold = clampf(threshold, 0.5, 0.999)
     }
 
     mutating func process(_ x: Float) -> Float {
         if !initialized {
             initialized = true
+            prevPrevPrevIn = x
+            prevPrevIn = x
             prevIn = x
-            return clampToThreshold(x)
+            let q = processStep(x)
+            return decimate(q1: q, q2: q, q3: q, q4: q)
         }
 
-        let mid = 0.5 * (prevIn + x)
+        let q1 = processStep(interpolateLagrange4(t: 0.25, current: x))
+        let q2 = processStep(interpolateLagrange4(t: 0.50, current: x))
+        let q3 = processStep(interpolateLagrange4(t: 0.75, current: x))
+        let q4 = processStep(x)
+        let output = decimate(q1: q1, q2: q2, q3: q3, q4: q4)
 
-        let p0 = fabsf(mid)
-        let p1 = fabsf(x)
-        let peak = max(p0, p1)
+        prevPrevPrevIn = prevPrevIn
+        prevPrevIn = prevIn
+        prevIn = x
+        return output
+    }
+
+    var gainReductionDB: Float {
+        let safeGain = max(1e-6, gain)
+        return max(0.0, -20.0 * log10f(safeGain))
+    }
+
+    @inline(__always)
+    private mutating func processStep(_ x: Float) -> Float {
+        let peak = fabsf(x)
 
         var targetGain: Float = 1.0
         if peak > threshold {
             targetGain = threshold / max(1e-9, peak)
         }
+        targetGain = clampf(targetGain, 0.0, 1.0)
 
         if targetGain < gain {
-            gain = targetGain
+            gain = (attackCoeff * gain) + ((1.0 - attackCoeff) * targetGain)
+            holdCounter = holdSamples
+        } else if holdCounter > 0 {
+            holdCounter -= 1
         } else {
-            gain = (releaseCoeff * gain) + ((1.0 - releaseCoeff) * 1.0)
+            gain = (releaseCoeff * gain) + ((1.0 - releaseCoeff) * targetGain)
         }
 
-        prevIn = x
         let y = x * gain
-        return clampToThreshold(y)
+        return clipToCeiling(y)
     }
 
     @inline(__always)
-    private func clampToThreshold(_ x: Float) -> Float {
-        if fabsf(x) <= threshold { return x }
-        return copysignf(threshold, x)
+    private func interpolateLagrange4(t: Float, current: Float) -> Float {
+        // Causal 4-point reconstruction between prevIn and current using
+        // two prior samples for better curvature tracking.
+        let l0 = -((t + 1.0) * t * (t - 1.0)) / 6.0
+        let l1 = ((t + 2.0) * t * (t - 1.0)) * 0.5
+        let l2 = -((t + 2.0) * (t + 1.0) * (t - 1.0)) * 0.5
+        let l3 = ((t + 2.0) * (t + 1.0) * t) / 6.0
+        return (prevPrevPrevIn * l0) + (prevPrevIn * l1) + (prevIn * l2) + (current * l3)
+    }
+
+    @inline(__always)
+    private mutating func decimate(q1: Float, q2: Float, q3: Float, q4: Float) -> Float {
+        _ = decimationLP.process(q1)
+        _ = decimationLP.process(q2)
+        _ = decimationLP.process(q3)
+        return decimationLP.process(q4)
+    }
+
+    @inline(__always)
+    private func clipToCeiling(_ x: Float) -> Float {
+        let ax = fabsf(x)
+        if ax <= threshold { return x }
+
+        let knee = max(1e-4, ceiling - threshold)
+        let clipped = threshold + ((ceiling - threshold) * tanhf((ax - threshold) / knee))
+        return copysignf(min(clipped, ceiling), x)
     }
 }
 
@@ -589,6 +518,104 @@ struct EnvelopeFollower {
     }
 }
 
+struct WidebandAGCRider {
+    private var detectorAttackCoeff: Float = 0.0
+    private var detectorReleaseCoeff: Float = 0.0
+    private var attackCoeff: Float = 0.0
+    private var releaseCoeff: Float = 0.0
+    private var fastMakeupCoeff: Float = 0.0
+    private var gateReleaseCoeff: Float = 0.0
+
+    private var targetDB: Float = -20.0
+    private var minGainDB: Float = -12.0
+    private var maxGainDB: Float = 12.0
+    private var windowDB: Float = 1.5
+    private var gateThresholdDB: Float = -42.0
+    private var makeupThresholdDB: Float = -30.0
+
+    private var power: Float = 0.0
+    private var gainDB: Float = 0.0
+    private var gateActive: Bool = false
+
+    mutating func configure(
+        sampleRate: Float,
+        targetDB: Float,
+        attackMS: Float,
+        releaseMS: Float,
+        minGainDB: Float,
+        maxGainDB: Float
+    ) {
+        let sr = max(8_000.0, sampleRate)
+        let detectorAttackS = max(0.005, min(Double(attackMS) * 0.001 * 0.35, 0.050))
+        let detectorReleaseS = max(0.120, Double(releaseMS) * 0.001 * 0.60)
+        detectorAttackCoeff = expf(-1.0 / Float(detectorAttackS * Double(sr)))
+        detectorReleaseCoeff = expf(-1.0 / Float(detectorReleaseS * Double(sr)))
+
+        let attackS = max(0.010, Double(attackMS) * 0.001)
+        let releaseS = max(0.250, Double(releaseMS) * 0.001)
+        let fastMakeupS = max(0.120, min(releaseS * 0.35, 0.450))
+        attackCoeff = expf(-1.0 / Float(attackS * Double(sr)))
+        releaseCoeff = expf(-1.0 / Float(releaseS * Double(sr)))
+        fastMakeupCoeff = expf(-1.0 / Float(fastMakeupS * Double(sr)))
+        gateReleaseCoeff = expf(-1.0 / Float(1.6 * Double(sr)))
+
+        self.targetDB = targetDB
+        self.minGainDB = minGainDB
+        self.maxGainDB = maxGainDB
+        self.windowDB = 3.0
+        self.gateThresholdDB = targetDB - maxGainDB - 10.0
+        self.makeupThresholdDB = targetDB - maxGainDB + 2.0
+    }
+
+    mutating func process(left: Float, right: Float) -> (Float, Float) {
+        let monoPower = max(1e-12, 0.5 * ((left * left) + (right * right)))
+        let detectorCoeff = monoPower > power ? detectorAttackCoeff : detectorReleaseCoeff
+        power = (detectorCoeff * power) + ((1.0 - detectorCoeff) * monoPower)
+        power = zapDenorm(power)
+
+        let levelDB = 10.0 * log10f(max(power, 1e-12))
+        let desiredGainDB = clampf(targetDB - levelDB, minGainDB, maxGainDB)
+
+        let targetGainDB: Float
+        let coeff: Float
+        if levelDB < gateThresholdDB {
+            // Do not lift room noise or codec hash; drift back toward unity instead.
+            targetGainDB = 0.0
+            coeff = gateReleaseCoeff
+            gateActive = true
+        } else if fabsf(desiredGainDB - gainDB) <= windowDB {
+            targetGainDB = gainDB
+            coeff = 1.0
+            gateActive = false
+        } else if desiredGainDB < gainDB {
+            targetGainDB = desiredGainDB
+            coeff = attackCoeff
+            gateActive = false
+        } else {
+            targetGainDB = desiredGainDB
+            coeff = levelDB < makeupThresholdDB ? fastMakeupCoeff : releaseCoeff
+            gateActive = false
+        }
+
+        gainDB = (coeff * gainDB) + ((1.0 - coeff) * targetGainDB)
+        gainDB = clampf(gainDB, minGainDB, maxGainDB)
+
+        let gain = powf(10.0, gainDB / 20.0)
+        return (left * gain, right * gain)
+    }
+
+    mutating func reset() {
+        power = 0.0
+        gainDB = 0.0
+        gateActive = false
+    }
+
+    var telemetry: (detectorDB: Float, gainDB: Float, gateActive: Bool) {
+        let detectorDB = 10.0 * log10f(max(power, 1e-12))
+        return (detectorDB, gainDB, gateActive)
+    }
+}
+
 struct MonoCompressor {
     var thresholdDB: Float = -18.0
     var ratio: Float = 2.0
@@ -715,6 +742,11 @@ struct LookaheadLimiter {
             gain = (releaseCoeff * gain) + ((1.0 - releaseCoeff) * targetGain)
         }
         return delayed * gain
+    }
+
+    var gainReductionDB: Float {
+        let safeGain = max(1e-6, gain)
+        return max(0.0, -20.0 * log10f(safeGain))
     }
 }
 
@@ -2423,6 +2455,26 @@ private final class BasicRDSCoder {
 }
 
 final class MPXGenerator {
+    struct AGCStatus {
+        let enabled: Bool
+        let detectorDB: Float
+        let gainDB: Float
+        let gateActive: Bool
+    }
+
+    struct FinalLimiterStatus {
+        let enabled: Bool
+        let gainReductionDB: Float
+        let safetyGainReductionDB: Float
+    }
+
+    struct CompositeCalibrationStatus {
+        let pilotPercent: Float
+        let rdsPercent: Float
+        let audioPeak: Float
+        let budgetMarginDB: Float
+    }
+
     private var sampleRate: Float
     private let preemphasisUS: Int
     private let toneFreq: Float
@@ -2430,10 +2482,13 @@ final class MPXGenerator {
     private let monoMode: Bool
     private let processingBypass: Bool
     private let pilotLevel: Float
+    private let pilotInjectionPercent: Float
+    private let rdsInjectionPercent: Float
     private let sumLevel: Float
     private let diffLevel: Float
     private let inputGain: Float
     private let outputGain: Float
+    private let finalDrive: Float
     private let limitEnabled: Bool
     private let threshold: Float
     private let deviationScale: Float
@@ -2441,11 +2496,11 @@ final class MPXGenerator {
 
     private let widebandAGCEnabled: Bool
     private let widebandAGCTargetDB: Float
-    private let widebandAGCMaxGain: Float
-    private let widebandAGCMinGain: Float
+    private let widebandAGCMaxGainDB: Float
+    private let widebandAGCMinGainDB: Float
     private let widebandAGCAttackMS: Float
     private let widebandAGCReleaseMS: Float
-    private var widebandAGCEnv = EnvelopeFollower()
+    private var widebandAGC = WidebandAGCRider()
 
     private let hpfHz: Float
     private let hfTrimDB: Float
@@ -2465,7 +2520,6 @@ final class MPXGenerator {
     private let orbassSubharmonicsEnabled: Bool
     private let orbassSubharmonicsAmount: Float
     private let orbassFreqHz: Float
-    private var orbassClean = OrbassBroadcastClean()
     private var orbassLP = OnePoleLP()
     private var orbassSubLP = OnePoleLP()
     private var orbassHarmHPF = Biquad()
@@ -2536,9 +2590,20 @@ final class MPXGenerator {
     private var mb5Comp5R = MonoCompressor()
 
     private let stereoWidenEnabled: Bool
+    private let monoBassEnabled: Bool
+    private let monoBassFreqHz: Float
     private let widenWidth: Float
     private let widenCenter: Float
     private let widenMix: Float
+    private var monoBassSideLP = Biquad()
+    private var widenSideHP = Biquad()
+    private var stereoProtectInputMidEnv: Float = 0.0
+    private var stereoProtectInputSideEnv: Float = 0.0
+    private var stereoProtectMidEnv: Float = 0.0
+    private var stereoProtectSideEnv: Float = 0.0
+    private var stereoProtectGain: Float = 1.0
+    private var stereoProtectAttackCoeff: Float = 0.0
+    private var stereoProtectReleaseCoeff: Float = 0.0
     private var rdsCoder: BasicRDSCoder?
 
     private let compositeLimiterEnabled: Bool
@@ -2557,6 +2622,8 @@ final class MPXGenerator {
     private var preSum = PreemphasisFilter()
     private var preDiff = PreemphasisFilter()
     private var programLP = ProgramLowpass()
+    private var compositeAudioSmoother = OnePoleLP()
+    private var compositeAudioSmootherEnabled: Bool = false
     private var monitorLPRLP = BiquadCascade6()
     private var monitorDiffBandHP = BiquadCascade6()
     private var monitorDiffBandLP = BiquadCascade6()
@@ -2568,6 +2635,11 @@ final class MPXGenerator {
     private var monitorDeemphasisL = DeemphasisFilter()
     private var monitorDeemphasisR = DeemphasisFilter()
     private var lastSubcarrierSample: Float = 0.0
+    private var audioCompositePeakState: Float = 0.0
+    private var audioCompositePeakDecayCoeff: Float = 0.0
+    private var subcarrierReservationEnv: Float = 0.0
+    private var subcarrierReservationAttackCoeff: Float = 0.0
+    private var subcarrierReservationReleaseCoeff: Float = 0.0
     private var monitorNoiseGateGain: Float = 0.0
     private var monitorNoiseGateOpen: Bool = false
     private var lastProgramActivity: Float = 0.0
@@ -2587,10 +2659,13 @@ final class MPXGenerator {
         self.monoMode = config.monoMode
         self.processingBypass = config.processingBypass
         self.pilotLevel = Float(config.pilotLevel)
+        self.pilotInjectionPercent = Float(config.pilotLevel * 100.0)
+        self.rdsInjectionPercent = Float(max(0.0, config.rdsLevel / 75.0 * 100.0))
         self.sumLevel = Float(config.sumLevel)
         self.diffLevel = Float(config.diffLevel)
         self.inputGain = powf(10.0, Float(config.inputGainDB) / 20.0)
         self.outputGain = powf(10.0, Float(config.outputGainDB) / 20.0)
+        self.finalDrive = powf(10.0, Float(config.finalDriveDB) / 20.0)
         self.limitEnabled = config.limitMPX
         self.threshold = clampf(Float(config.limitThreshold), 0.5, 0.999)
         self.deviationScale = Float(config.mpxDeviationKHz / 75.0)
@@ -2598,8 +2673,8 @@ final class MPXGenerator {
 
         self.widebandAGCEnabled = config.widebandAGCEnabled
         self.widebandAGCTargetDB = Float(config.widebandAGCTargetDB)
-        self.widebandAGCMaxGain = powf(10.0, Float(config.widebandAGCMaxGainDB) / 20.0)
-        self.widebandAGCMinGain = powf(10.0, Float(config.widebandAGCMinGainDB) / 20.0)
+        self.widebandAGCMaxGainDB = Float(config.widebandAGCMaxGainDB)
+        self.widebandAGCMinGainDB = Float(config.widebandAGCMinGainDB)
         self.widebandAGCAttackMS = Float(config.widebandAGCAttackMS)
         self.widebandAGCReleaseMS = Float(config.widebandAGCReleaseMS)
 
@@ -2651,6 +2726,8 @@ final class MPXGenerator {
         self.multibandHighReleaseMS = Float(config.multibandHighReleaseMS)
 
         self.stereoWidenEnabled = config.stereoWidenEnabled
+        self.monoBassEnabled = config.monoBassEnabled
+        self.monoBassFreqHz = clampf(Float(config.monoBassFreqHz), 60.0, 250.0)
         self.widenWidth = clampf(Float(config.stereoWidenWidth), 0.0, 1.0)
         self.widenCenter = clampf(Float(config.stereoWidenCenter), 0.0, 1.0)
         self.widenMix = clampf(Float(config.stereoWidenMix), 0.0, 1.0)
@@ -2666,23 +2743,31 @@ final class MPXGenerator {
         preDiff.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
         programLP.configure(cutoffHz: programLowpassHz, sampleRate: self.sampleRate)
 
-        widebandAGCEnv.configure(
+        widebandAGC.configure(
             sampleRate: self.sampleRate,
+            targetDB: widebandAGCTargetDB,
             attackMS: widebandAGCAttackMS,
-            releaseMS: widebandAGCReleaseMS
+            releaseMS: widebandAGCReleaseMS,
+            minGainDB: widebandAGCMinGainDB,
+            maxGainDB: widebandAGCMaxGainDB
         )
         inputHPF.configureHighpass(cutoffHz: hpfHz, sampleRate: self.sampleRate)
         hfTrim.configureHighShelf(gainDB: hfTrimDB, cutoffHz: hfTrimHz, sampleRate: self.sampleRate)
         configureOrbassFilters()
         configureMultibandFilters()
         configureMultibandCompressors()
+        configureStereoWidener()
         lookaheadLimiter.configure(
             sampleRate: self.sampleRate,
             lookaheadMS: limitLookaheadMS,
             threshold: threshold,
             enabled: limitEnabled && limitLookaheadEnabled
         )
-        compositeLimiter.configure(sampleRate: self.sampleRate)
+        compositeLimiter.configure(
+            sampleRate: self.sampleRate,
+            threshold: min(0.96, threshold * 0.965),
+            releaseMS: 32.0
+        )
         updateDerivedRates()
         configureMonitorDemod()
     }
@@ -2696,20 +2781,31 @@ final class MPXGenerator {
         preSum.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
         preDiff.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
         programLP.configure(cutoffHz: programLowpassHz, sampleRate: sampleRate)
-        widebandAGCEnv.configure(
-            sampleRate: sampleRate, attackMS: widebandAGCAttackMS, releaseMS: widebandAGCReleaseMS)
+        widebandAGC.configure(
+            sampleRate: sampleRate,
+            targetDB: widebandAGCTargetDB,
+            attackMS: widebandAGCAttackMS,
+            releaseMS: widebandAGCReleaseMS,
+            minGainDB: widebandAGCMinGainDB,
+            maxGainDB: widebandAGCMaxGainDB
+        )
         inputHPF.configureHighpass(cutoffHz: hpfHz, sampleRate: sampleRate)
         hfTrim.configureHighShelf(gainDB: hfTrimDB, cutoffHz: hfTrimHz, sampleRate: sampleRate)
         configureOrbassFilters()
         configureMultibandFilters()
         configureMultibandCompressors()
+        configureStereoWidener()
         lookaheadLimiter.configure(
             sampleRate: sampleRate,
             lookaheadMS: limitLookaheadMS,
             threshold: threshold,
             enabled: limitEnabled && limitLookaheadEnabled
         )
-        compositeLimiter.configure(sampleRate: sampleRate)
+        compositeLimiter.configure(
+            sampleRate: sampleRate,
+            threshold: min(0.96, threshold * 0.965),
+            releaseMS: 32.0
+        )
         rdsCoder?.setSampleRate(sampleRate)
         updateDerivedRates()
         configureMonitorDemod()
@@ -2719,11 +2815,56 @@ final class MPXGenerator {
         processingBypass
     }
 
+    var agcStatus: AGCStatus {
+        let telemetry = widebandAGC.telemetry
+        return AGCStatus(
+            enabled: widebandAGCEnabled && !processingBypass,
+            detectorDB: telemetry.detectorDB,
+            gainDB: telemetry.gainDB,
+            gateActive: telemetry.gateActive
+        )
+    }
+
+    var finalLimiterStatus: FinalLimiterStatus {
+        FinalLimiterStatus(
+            enabled: compositeLimiterEnabled && !processingBypass,
+            gainReductionDB: compositeLimiter.gainReductionDB,
+            safetyGainReductionDB: (limitEnabled && !processingBypass)
+                ? lookaheadLimiter.gainReductionDB : 0.0
+        )
+    }
+
+    var compositeCalibrationStatus: CompositeCalibrationStatus {
+        let reserved = max(0.0, min(1.2, subcarrierReservationEnv))
+        let totalPeakBudget = max(1e-6, audioCompositePeakState + reserved)
+        let budgetMarginDB = -20.0 * log10f(totalPeakBudget)
+        return CompositeCalibrationStatus(
+            pilotPercent: monoMode ? 0.0 : pilotInjectionPercent,
+            rdsPercent: monoMode ? 0.0 : rdsInjectionPercent,
+            audioPeak: audioCompositePeakState,
+            budgetMarginDB: budgetMarginDB
+        )
+    }
+
     private func updateDerivedRates() {
         toneStep = twoPi * toneFreq / sampleRate
         pilotOsc.configure(freq: pilotFreq, sampleRate: sampleRate)
+        let sr = max(8_000.0, sampleRate)
+        audioCompositePeakDecayCoeff = expf(-1.0 / (0.250 * sr))
+        subcarrierReservationAttackCoeff = expf(-1.0 / (0.0005 * sr))
+        subcarrierReservationReleaseCoeff = expf(-1.0 / (0.012 * sr))
 
         let nyquist = (sampleRate * 0.5) - 100.0
+        if nyquist > 56_000.0 {
+            compositeAudioSmoother.configure(
+                cutoffHz: min(54_000.0, nyquist - 1_500.0),
+                sampleRate: sampleRate
+            )
+            compositeAudioSmootherEnabled = true
+        } else {
+            compositeAudioSmootherEnabled = false
+            compositeAudioSmoother.state = 0.0
+        }
         pilotSupported = nyquist > (pilotFreq + 100.0)
         stereoSubcarrierSupported = nyquist > (subcarrierFreq + 100.0)
         rdsSupported = nyquist > 57_100.0
@@ -2735,6 +2876,19 @@ final class MPXGenerator {
         let sr = max(8_000.0, sampleRate)
         monitorExpectedSideAttackCoeff = expf(-1.0 / (0.010 * sr))
         monitorExpectedSideReleaseCoeff = expf(-1.0 / (0.260 * sr))
+    }
+
+    private func configureStereoWidener() {
+        let sr = max(8_000.0, sampleRate)
+        monoBassSideLP.configureLowpass(cutoffHz: monoBassFreqHz, sampleRate: sr, q: 0.7071068)
+        widenSideHP.configureHighpass(cutoffHz: 115.0, sampleRate: sr, q: 0.7071068)
+        stereoProtectInputMidEnv = 0.0
+        stereoProtectInputSideEnv = 0.0
+        stereoProtectMidEnv = 0.0
+        stereoProtectSideEnv = 0.0
+        stereoProtectGain = 1.0
+        stereoProtectAttackCoeff = expf(-1.0 / (0.010 * sr))
+        stereoProtectReleaseCoeff = expf(-1.0 / (0.300 * sr))
     }
 
     private func configureMonitorDemod() {
@@ -2874,13 +3028,6 @@ final class MPXGenerator {
         let harmLPFCutoff = clampf(max(280.0, orbassFreqHz * 5.0), harmLPFMin, nyquist)
         orbassHarmHPF.configureHighpass(cutoffHz: harmHPFCutoff, sampleRate: sampleRate)
         orbassHarmLPF.configureLowpass(cutoffHz: harmLPFCutoff, sampleRate: sampleRate)
-
-        orbassClean.enabled = orbassEnabled
-        orbassClean.amount = orbassAmount
-        orbassClean.drive = orbassDrive
-        orbassClean.harmonics = orbassHarmonics
-        orbassClean.freqHz = orbassFreqHz
-        orbassClean.configure(sampleRate: sampleRate)
     }
 
     private func configureMultibandFilters() {
@@ -3210,13 +3357,9 @@ final class MPXGenerator {
 
         if !processingBypass {
             if widebandAGCEnabled {
-                let mono = (fabsf(l) + fabsf(r)) * 0.5
-                let env = max(1e-7, widebandAGCEnv.processAbs(mono))
-                let envDB = 20.0 * log10f(env)
-                let targetGain = powf(10.0, (widebandAGCTargetDB - envDB) / 20.0)
-                let gain = clampf(targetGain, widebandAGCMinGain, widebandAGCMaxGain)
-                l *= gain
-                r *= gain
+                let adjusted = widebandAGC.process(left: l, right: r)
+                l = adjusted.0
+                r = adjusted.1
             }
 
             let hpfOut = inputHPF.process(left: l, right: r)
@@ -3235,26 +3378,28 @@ final class MPXGenerator {
             l = trimmed.0
             r = trimmed.1
 
-            orbassClean.setEnabled(orbassEnabled)
-            let orbassOut = orbassClean.process(left: l, right: r)
-            l = orbassOut.0
-            r = orbassOut.1
+            if orbassEnabled {
+                let orbassOut = processOrbass(left: l, right: r)
+                l = orbassOut.0
+                r = orbassOut.1
+            }
+
+            if monoBassEnabled {
+                let monoBass = processMonoBass(left: l, right: r)
+                l = monoBass.0
+                r = monoBass.1
+            }
+
+            if stereoWidenEnabled {
+                let widened = processStereoWidener(left: l, right: r)
+                l = widened.0
+                r = widened.1
+            }
 
             if multibandEnabled {
                 let mbOut = processMultibandStereo(left: l, right: r)
                 l = mbOut.0
                 r = mbOut.1
-            }
-
-            if stereoWidenEnabled {
-                let mid = (l + r) * 0.5
-                let side = (l - r) * 0.5
-                let sideGain = widenWidth * 2.0
-                let midGain = widenCenter * 2.0
-                let wetL = (mid * midGain) + (side * sideGain)
-                let wetR = (mid * midGain) - (side * sideGain)
-                l = lerpf(l, wetL, widenMix)
-                r = lerpf(r, wetR, widenMix)
             }
         }
 
@@ -3289,17 +3434,50 @@ final class MPXGenerator {
 
         pilotOsc.step()
         pilotPhaseForRDS = pilotOsc.phase
-        let pilot = pilotSupported ? (pilotOsc.s * pilotLevel) : 0.0
-        let sub = stereoSubcarrierSupported ? pilotOsc.sin2x() : 0.0
+        let stereoServicesEnabled = !monoMode
+        let pilot = (stereoServicesEnabled && pilotSupported) ? (pilotOsc.s * pilotLevel) : 0.0
+        let sub = (stereoServicesEnabled && stereoSubcarrierSupported) ? pilotOsc.sin2x() : 0.0
         lastSubcarrierSample = sub
 
-        rdsCoder?.updateRDSPilotPhase(pilotPhaseForRDS)
-        let rds = rdsSupported ? (rdsCoder?.nextSampleWithPilotLock() ?? 0.0) : 0.0
+        if stereoServicesEnabled {
+            rdsCoder?.updateRDSPilotPhase(pilotPhaseForRDS)
+        }
+        let rds =
+            (stereoServicesEnabled && rdsSupported) ? (rdsCoder?.nextSampleWithPilotLock() ?? 0.0)
+            : 0.0
         
-        var mpx = (base + (diff * sub) + pilot + rds) * deviationScale
+        let subcarriers = (pilot + rds) * deviationScale
+        let subcarrierAbs = fabsf(subcarriers)
+        let subcarrierCoeff =
+            subcarrierAbs > subcarrierReservationEnv
+            ? subcarrierReservationAttackCoeff
+            : subcarrierReservationReleaseCoeff
+        subcarrierReservationEnv =
+            (subcarrierCoeff * subcarrierReservationEnv)
+            + ((1.0 - subcarrierCoeff) * subcarrierAbs)
 
+        let rawAudioComposite = (base + (diff * sub)) * deviationScale * finalDrive
+        let reservedFloor = max(0.20, threshold - subcarrierReservationEnv - 0.015)
+        var audioComposite = Self.softClipSafety(rawAudioComposite, threshold: reservedFloor)
         if compositeLimiterEnabled {
-            mpx = compositeLimiter.process(mpx)
+            audioComposite = compositeLimiter.process(audioComposite)
+        }
+        if compositeAudioSmootherEnabled {
+            audioComposite = compositeAudioSmoother.process(audioComposite)
+        }
+        let audioCompositeAbs = fabsf(audioComposite)
+        audioCompositePeakState = max(
+            audioCompositeAbs,
+            audioCompositePeakState * audioCompositePeakDecayCoeff
+        )
+
+        var mpx = audioComposite + subcarriers
+
+        mpx *= outputGain
+
+        if limitEnabled {
+            mpx = lookaheadLimiter.process(mpx)
+            mpx = Self.softClipSafety(mpx, threshold: threshold)
         }
 
         mpx = clampf(mpx, -1.0, 1.0)
@@ -3313,14 +3491,98 @@ final class MPXGenerator {
         outputL: Float,
         outputR: Float
     ) -> (Float, Float) {
-        // TEMPORARILY DISABLED: The accumulated stereoProtectGain was causing
-        // gradual stereo narrowing over 40-60 seconds. Disabling to verify
-        // if this is the root cause.
-        return (outputL, outputR)
+        let inputMid = (inputL + inputR) * 0.5
+        let inputSide = (inputL - inputR) * 0.5
+        let outputMid = (outputL + outputR) * 0.5
+        let outputSide = (outputL - outputR) * 0.5
+
+        let inputMidAbs = fabsf(inputMid)
+        let inputSideAbs = fabsf(inputSide)
+        let outputMidAbs = fabsf(outputMid)
+        let outputSideAbs = fabsf(outputSide)
+
+        let inputMidCoeff =
+            inputMidAbs > stereoProtectInputMidEnv
+            ? stereoProtectAttackCoeff : stereoProtectReleaseCoeff
+        stereoProtectInputMidEnv =
+            (inputMidCoeff * stereoProtectInputMidEnv) + ((1.0 - inputMidCoeff) * inputMidAbs)
+
+        let inputSideCoeff =
+            inputSideAbs > stereoProtectInputSideEnv
+            ? stereoProtectAttackCoeff : stereoProtectReleaseCoeff
+        stereoProtectInputSideEnv =
+            (inputSideCoeff * stereoProtectInputSideEnv) + ((1.0 - inputSideCoeff) * inputSideAbs)
+
+        let outputMidCoeff =
+            outputMidAbs > stereoProtectMidEnv
+            ? stereoProtectAttackCoeff : stereoProtectReleaseCoeff
+        stereoProtectMidEnv =
+            (outputMidCoeff * stereoProtectMidEnv) + ((1.0 - outputMidCoeff) * outputMidAbs)
+
+        let outputSideCoeff =
+            outputSideAbs > stereoProtectSideEnv
+            ? stereoProtectAttackCoeff : stereoProtectReleaseCoeff
+        stereoProtectSideEnv =
+            (outputSideCoeff * stereoProtectSideEnv) + ((1.0 - outputSideCoeff) * outputSideAbs)
+
+        let inputRatio = stereoProtectInputSideEnv / max(0.02, stereoProtectInputMidEnv)
+        let configuredRatio = 0.70 + (widenWidth * 0.65)
+        let allowedRatio = min(1.55, max(configuredRatio, inputRatio * 1.16))
+        let allowedSide = max(0.008, stereoProtectMidEnv * allowedRatio)
+
+        var targetGain: Float = 1.0
+        if stereoProtectSideEnv > allowedSide {
+            targetGain = clampf(allowedSide / max(1e-5, stereoProtectSideEnv), 0.0, 1.0)
+        }
+
+        let gainCoeff =
+            targetGain < stereoProtectGain
+            ? stereoProtectAttackCoeff : stereoProtectReleaseCoeff
+        stereoProtectGain =
+            (gainCoeff * stereoProtectGain) + ((1.0 - gainCoeff) * targetGain)
+
+        let protectedSide = outputSide * stereoProtectGain
+        return (outputMid + protectedSide, outputMid - protectedSide)
+    }
+
+    private func processStereoWidener(left: Float, right: Float) -> (Float, Float) {
+        let mid = (left + right) * 0.5
+        let side = (left - right) * 0.5
+        let highSide = widenSideHP.process(side)
+        let lowSide = side - highSide
+
+        let sideGain = 1.0 + ((widenWidth - 0.5) * 1.35)
+        let midGain = 1.0 + ((widenCenter - 0.5) * 0.35)
+        let lowSideRetain = 0.34 + ((1.0 - widenWidth) * 0.16)
+
+        var wetMid = mid * midGain
+        var wetSide = (highSide * sideGain) + (lowSide * lowSideRetain)
+
+        let inputEnergy = max(1e-6, (mid * mid) + (side * side))
+        let wetEnergy = max(1e-6, (wetMid * wetMid) + (wetSide * wetSide))
+        let norm = clampf(sqrtf(inputEnergy / wetEnergy), 0.90, 1.12)
+        wetMid *= norm
+        wetSide *= norm
+
+        let wetLeft = wetMid + wetSide
+        let wetRight = wetMid - wetSide
+        let mixedLeft = lerpf(left, wetLeft, widenMix)
+        let mixedRight = lerpf(right, wetRight, widenMix)
+        return (mixedLeft, mixedRight)
+    }
+
+    private func processMonoBass(left: Float, right: Float) -> (Float, Float) {
+        let mid = (left + right) * 0.5
+        let side = (left - right) * 0.5
+        let lowSide = monoBassSideLP.process(side)
+        let highSide = side - lowSide
+        let combinedSide = highSide
+        return (mid + combinedSide, mid - combinedSide)
     }
 
     private func resetDynamicStereoState() {
-        widebandAGCEnv.value = 0.0
+        widebandAGC.reset()
+        configureStereoWidener()
 
         orbassAdaptiveTarget = 0.0
         orbassAdaptiveGain = 0.0

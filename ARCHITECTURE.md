@@ -20,14 +20,14 @@ Audio Input (L/R) @ interface rate (typically 192 kHz)
 ├──► Input conditioning (audio domain)
 │    ├── High-pass ~20–30 Hz (infrasonic removal)
 │    ├── 15 kHz low-pass
-│    ├── HF trim shelf (optional)
-│    └── 19 kHz pilot notch
+│    └── HF trim shelf (optional)
 │
-├──► Dynamics (audio domain, float)
+├──► Dynamics and image shaping (audio domain, float)
 │    ├── Wideband AGC (optional)
 │    ├── Orbass bass enhancement (optional)
-│    ├── Multiband compressor (optional)
-│    └── Stereo widener (optional)
+│    ├── Mono bass management (optional)
+│    ├── Stereo widener with image protection (optional)
+│    └── Multiband compressor (optional)
 │
 ├──► Pre-emphasis stage (region specific)
 │    ├── Pre-emphasis 50 µs / 75 µs
@@ -47,9 +47,11 @@ Audio Input (L/R) @ interface rate (typically 192 kHz)
 ├──► Composite sum (phase-coherent)
 │    └── MPX = M + (S@38k DSB-SC) + Pilot19 + RDS57
 │
-├──► Composite protection
-│    ├── Composite limiter/clipper
-│    └── DC block
+├──► Final MPX chain
+│    ├── Final Drive (audio-composite domain)
+│    ├── Audio-composite limiter/clipper
+│    ├── MPX output calibration
+│    └── Full-MPX safety limiter
 │
 ├──► Output formatting
 │    └── Output: PCM to DAC via AVAudioEngine
@@ -73,6 +75,25 @@ Audio Input (L/R) @ interface rate (typically 192 kHz)
 - Main thread: SwiftUI UI, user interaction
 - Audio render callback: Real-time thread (no locks, no allocations)
 - Background metering: DispatchQueue with `.userInteractive` QoS for scope/meter updates
+
+## Current processing order
+
+Within the main audio path, StereoFool currently runs:
+
+1. Input trim and conditioning
+2. Wideband AGC
+3. HF trim
+4. Orbass
+5. Mono bass
+6. Stereo widener
+7. Multiband
+8. Stereo-image protection
+9. Pre-emphasis
+10. Stereo coder
+11. Pilot and RDS injection
+12. Final MPX loudness and safety stages
+
+When `Mono Mode` is enabled, StereoFool suppresses the pilot, stereo subcarrier, and RDS injection so the transmitted composite is true mono.
 
 ## External Dependencies
 

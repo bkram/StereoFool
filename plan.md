@@ -1,0 +1,437 @@
+# StereoFool FM/MPX Roadmap
+
+## Goal
+
+Bring StereoFool closer to a broadcast-grade FM composite generator and processor by:
+
+- fixing current gain-structure bugs
+- separating operating-level control from output calibration
+- moving final loudness control into the composite/MPX domain
+- preserving pilot and RDS integrity under loudness processing
+- improving calibration, metering, and verification
+
+This plan is based on current StereoFool behavior plus publicly available official material from Telos/Omnia, Orban, Stereo Tool, and Breakaway.
+
+## Research summary
+
+### Enterprise processor patterns
+
+Official Omnia/Telos and Orban material shows a consistent FM architecture:
+
+- integrated stereo and RDS generation inside the processor is preferred because final loudness control can then happen in the composite domain
+- composite-domain limiting/clipping is used to recover headroom that is lost when you clip audio before adding pilot, stereo subcarrier, and RDS
+- MPX/composite output is treated as a calibrated output, separate from upstream gain-riding behavior
+- pre-emphasis should exist in exactly one place
+- pilot and RDS injection are calibrated, not incidental
+- high-rate internal or output MPX handling is standard
+
+### Stereo Tool observations
+
+Stereo Tool is the clearest public software reference for modern MPX generation behavior:
+
+- FM processing is treated as a dedicated subsystem, not a minor add-on
+- composite clipping is explicitly described as a major loudness advantage versus clipping audio before stereo/RDS generation
+- oversampling is treated as important for MPX generation and clipping quality
+- pilot and RDS levels are exposed as calibrated percentages
+- BS.412 / spectrum compliance and RF-spectrum visualization are part of the FM toolset
+
+Takeaway for StereoFool:
+
+- if we want competitive FM loudness and cleanliness, final loudness control must move into an oversampled composite stage
+- RF/compliance visibility should eventually be first-class, not an afterthought
+
+### Breakaway observations
+
+BreakawayOne's official public material is less detailed about internal FM/MPX mechanics, but it does confirm:
+
+- FM-specific cores exist as a distinct product mode
+- BS.412 support matters enough to be a product-level feature
+- "back-end peak control" is a key design element
+- RDS is modular and considered part of the FM ecosystem
+- a separate low-latency monitor path is useful operationally
+
+Takeaway for StereoFool:
+
+- treat FM as a dedicated processing/output topology
+- keep low-latency monitoring as a separate design concern from the highest-quality transmit path
+- make peak control at the back end a central component, not a side effect
+
+### Limits of public research
+
+Breakaway does not appear to publish the same level of public technical detail about its composite clipping path that Stereo Tool, Omnia, and Orban do. We should not infer exact internal algorithms from marketing copy alone.
+
+## Current StereoFool status
+
+### Completed recently
+
+- `outputGain` is now active in the final render path and exposed in the UI as `MPX Output Level`
+- a dedicated `Final Drive` stage now exists ahead of the final composite protection path
+- `limit_mpx` is now active in the render path instead of being configured-but-unused
+- the old simple composite clamp has been replaced with a more useful final limiter stage with fast attack, hold, controlled release, and soft-knee clipping
+- AGC telemetry was added to Monitoring and DSP Overview
+- final-stage telemetry was added to Monitoring and DSP Overview:
+  - live limiter gain reduction
+  - held max gain reduction
+  - full-MPX safety limiter gain reduction
+  - final MPX peak
+- pilot/RDS/audio budget telemetry and explicit composite-budget health state were added
+- the widener path was rebuilt into a restrained band-limited widener with stereo-image protection
+- a dedicated `Mono Bass` stage was added ahead of the widener/multiband image path
+- Orbass presets and UI now match the live adaptive Orbass DSP path
+- broadcast-chain presets were added in the `Processing` -> `Limiter` tab:
+  - `Balanced Music`
+  - `CHR / Dance`
+  - `Punchy Music`
+  - `Speech / Talk`
+- defaults were retuned around the current chain:
+  - wideband AGC target `-16 dB`
+  - composite limiter enabled by default
+  - final drive `6 dB`
+
+### Remaining quality gaps
+
+### 1. Final composite stage is better, but not yet oversampled
+
+StereoFool now has a credible final loudness stage, but it is still not a true oversampled broadcast composite clipper.
+
+Impact:
+
+- intersample composite peaks are still not handled as cleanly as they could be
+- there is still less usable loudness headroom than in enterprise processors or Stereo Tool
+- pilot/RDS protection is still indirect rather than designed as part of an oversampled composite stage
+
+### 2. Pilot/RDS calibration visibility is improved, but still text-heavy
+
+Monitoring now exposes pilot, RDS, audio-composite peak, budget margin, and a composite-budget state indicator, but calibration is still mostly presented as status text rather than a dedicated calibration workflow.
+
+Impact:
+
+- users can make the chain loud, but they still cannot see pilot and RDS contribution clearly
+- exciter alignment remains more trial-and-error than it should be
+
+### 3. AGC is improved, but still needs validation against the stronger final stage
+
+Wideband AGC is now behaving more like a platform leveler, but its defaults and range should be validated further once the oversampled composite stage exists.
+
+### 4. Stereo enhancement is better, but still needs dedicated validation
+
+StereoFool now has a more professional stereo-image path than before, but it still needs deliberate listening and measurement work.
+
+Impact:
+
+- mono bass, widener, Orbass, and multiband interactions still need preset-level validation
+- there is not yet a stereo-correlation or mono-compatibility meter in the app
+- width behavior is still tuned by ear rather than by a formal stereo-verification workflow
+
+### 5. No deterministic composite-quality verification yet
+
+The chain is now audibly and operationally better, but there are still no automated tests or repeatable calibration fixtures for the new final-stage behavior.
+
+### 6. Swift DSP implementation still has cleanup debt
+
+StereoFool's Swift DSP is now credible and effective, but there are still implementation-level loose ends that should be addressed before treating the chain as fully mature.
+
+Loose ends:
+
+- the final composite limiter path is improved, but it is still an evolved approximation rather than a deliberately designed oversampled composite clipper with one clear architecture
+- `Halfband2xFIR` still exists alongside the newer internal limiter oversampling path, so the codebase still has two overlapping oversampling ideas instead of one coherent approach
+- stereo image control is much better than before, but it still lacks explicit stereo-correlation / mono-compatibility metering
+- widener, mono bass, Orbass, and multiband interaction still needs preset-level validation on real program material
+- pilot/RDS/headroom telemetry exists, but there is still no explicit deviation estimator or exciter-calibration workflow
+- some real-time and monitoring paths still need performance cleanup:
+  - input ring buffer locking
+  - per-callback capture-buffer allocation in some fallback paths
+  - FFT/spectrum scratch reuse
+  - RDS wall-clock and string preparation work that should move off the render path
+
+Practical implication:
+
+- the Swift DSP core is strong enough to continue building on directly
+- the next quality gains come from cleanup, validation, and measurement discipline rather than from rewriting out of Swift
+
+### 7. RDS text syntax is functional, but still behind established tooling
+
+StereoFool already supports timed PS/RT sequences such as `10s:Text/10s:Other Text`, but it does not yet match the more mature public user-facing syntax that processors such as Stereo Tool expose.
+
+What StereoFool already supports:
+
+- timed text segments with `Ns:Text`
+- slash-separated PS and RT sequences
+- now-playing macro expansion for RT
+
+Useful compatibility work that can be implemented clean-room from public documentation:
+
+- transmit-count syntax such as `Nt:Text`
+- escape handling for literal separators and control characters
+- optional word-wrap control markers
+- a clearer documented grammar for timed/dynamic PS and RT text
+
+Constraints:
+
+- this should be implemented from public documentation only
+- do not rely on reverse engineering or copied parser behavior
+- preserve StereoFool-specific macro support (`{artist}`, `{title}`, `{date}`, `{time}`, etc.)
+
+## Target architecture
+
+### Proposed FM chain
+
+1. Input trim / source conditioning
+2. Wideband AGC gain rider
+3. Tone shaping and enhancement
+4. Bass management / stereo image conditioning
+5. Multiband / other audio-domain dynamics
+6. Pre-emphasis
+7. Stereo coder
+8. Pilot and RDS injection
+9. Oversampled composite limiter / composite clipper
+10. MPX output calibration trim
+11. Hardware output
+
+### Control separation
+
+StereoFool should clearly distinguish:
+
+- `Input Gain`: source trim
+- `Wideband AGC Target`: average operating platform
+- `Final Drive`: how hard we hit final loudness protection
+- `MPX Output Level` or `Output Calibration`: output alignment to exciter / sound card / deviation target
+
+Users should not need to abuse AGC target to get acceptable loudness.
+
+## Implementation plan
+
+### Phase 1. Fix the gain structure
+
+Status: largely complete
+
+Completed:
+
+1. Wired `outputGain` into the actual signal path.
+2. Renamed/exposed it in UI/docs as `MPX Output Level`.
+3. Added a distinct `Final Drive` so users do not need to misuse AGC target or output calibration for loudness.
+4. Activated the final MPX safety limiter in the real render path.
+
+Still open:
+
+1. Decide whether monitor audio should use a separate monitor gain instead of reusing transmit output trim.
+2. Add one internal gain-structure note per stage in code comments so future tuning stays coherent.
+
+Success criteria:
+
+- output trim measurably changes MPX output level
+- AGC target no longer has to be set unrealistically hot to get normal modulation
+
+### Phase 2. Add a proper final composite stage
+
+Status: partially complete
+
+Completed:
+
+1. Added a real `Final Drive` parameter ahead of final protection.
+2. Improved the composite limiter from a simple clamp to a more useful final-stage limiter/clipper.
+3. Added live and held limiter metering so the final stage can be tuned empirically.
+4. Moved `Final Drive` to the audio-composite path so pilot and RDS remain calibrated separately.
+5. Added a filtered internal oversampling/decimation path inside the final limiter.
+6. Added subcarrier-aware audio reservation ahead of the full MPX sum.
+
+Next work:
+
+1. Keep improving the filtered oversampling path so it becomes a clearly intentional composite clipper/limiter rather than an upgraded causal approximation.
+2. Revisit whether the main loudness limiter should remain fully audio-composite only, with the full-MPX limiter reserved strictly for safety.
+3. Preserve pilot lock and RDS readability while increasing usable composite loudness.
+4. Either fix or retire the current `Halfband2xFIR` helper so the codebase has one coherent oversampling approach instead of two partial ones.
+
+Success criteria:
+
+- higher subjective loudness without excessive HF splatter
+- pilot and RDS remain stable
+- output still respects configured deviation targets
+
+### Phase 3. Calibrate pilot, RDS, and MPX headroom
+
+Status: in progress
+
+Completed:
+
+1. Added pilot, RDS, audio-composite, and budget-margin telemetry to Monitoring / DSP Overview.
+2. Added an explicit composite-budget health indicator (`Safe`, `Tight`, `Risk`).
+3. Added full-MPX safety limiter telemetry.
+
+Next work:
+
+1. Revisit defaults for:
+   - pilot injection
+   - RDS injection
+   - composite headroom
+2. Add clearer calibration indicators and warning states for:
+   - pilot %
+   - RDS %
+   - audio-composite peak
+   - composite budget margin
+   - estimated deviation peak
+   - full-MPX safety limiter engagement
+3. Document expected exciter integration:
+   - when StereoFool pre-emphasis is on, external pre-emphasis must be off
+
+Success criteria:
+
+- defaults are sane without requiring guesswork
+- users can see whether the chain is calibrated rather than just "loud"
+
+### Phase 4. Validate stereo image, mono bass, and Orbass interaction
+
+Status: in progress
+
+Completed:
+
+1. Added a dedicated `Mono Bass` stage and widener controls that are less primitive than the old full-band M/S gain block.
+2. Reworked the widener so it is band-limited, normalized, and guarded against runaway side energy.
+3. Activated the adaptive Orbass path so Orbass UI/presets and live DSP finally describe the same thing.
+
+Next work:
+
+1. Add stereo-correlation or side-energy metering to Monitoring.
+2. Add image presets such as `Safe FM`, `Open Music`, and `Wide CHR`.
+3. Validate mono compatibility and low-end stability on difficult program material.
+
+Success criteria:
+
+- bass stays centered and stable on-air
+- width remains audible without collapsing mono compatibility
+- Orbass and widener do not fight each other
+
+### Phase 5. Tighten AGC role and defaults
+
+Status: partially complete
+
+1. Keep wideband AGC as a slow leveler, not a loudness stage.
+2. Re-evaluate defaults after Phase 1 and Phase 2 are in place.
+   Current implemented default:
+   - `-16 dB`
+3. Consider adding hidden or advanced controls later if needed:
+   - deadband/window
+   - silence gate threshold
+   - low-level recovery speed
+
+Success criteria:
+
+- AGC stabilizes program level
+- AGC does not pump noise or dominate loudness
+
+### Phase 6. Improve measurement and verification
+
+Status: partially complete
+
+Completed:
+
+1. Added live AGC telemetry.
+2. Added live and held final-limiter telemetry.
+
+1. Add deterministic tests for:
+   - `outputGain` behavior
+   - composite limiter / clipper peak behavior
+   - pilot and RDS injection integrity
+   - mono-bass and widener mono-compatibility behavior
+2. Add synthetic verification inputs:
+   - mono 1 kHz tone
+   - pink noise
+   - difficult bright program material
+   - stereo material with deliberately wide low end
+3. Add a lightweight RF/composite analyzer roadmap item:
+   - at minimum, show composite spectrum and pilot/RDS occupancy clearly
+   - later, optionally add compliance-oriented views similar in spirit to Stereo Tool's FM tooling
+
+### Swift DSP cleanup checklist
+
+This section is intentionally concrete and implementation-focused.
+
+1. Choose one oversampling strategy for the final limiter and remove the redundant one.
+2. Add stereo-correlation / mono-compatibility metering to Monitoring.
+3. Validate and retune:
+   - Orbass presets
+   - mono-bass defaults
+   - widener defaults
+   - widener and multiband ordering
+4. Add deterministic offline tests for:
+   - MPX peak control
+   - pilot/RDS integrity
+   - stereo-to-mono collapse behavior
+   - now-playing RT / RT+ formatting edge cases
+5. Extend the RDS timed-text parser with a documented compatible subset:
+   - `Ns:` duration segments
+   - `Nt:` transmit-count segments
+   - escapes for separators
+   - optional wrap markers if they are still judged useful
+6. Move remaining non-DSP work off the audio callback where practical.
+7. Add a short code comment block near the main processing order in `MPXGenerator.swift` describing the intended chain and responsibility of each stage.
+
+Success criteria:
+
+- loudness and deviation changes are measurable and repeatable
+- regressions are detectable without relying only on listening
+
+## Recommended default direction
+
+These are the current practical defaults after the recent gain-structure and final-stage work:
+
+- Wideband AGC target: `-16 dB`
+- Wideband AGC attack: `50-80 ms`
+- Wideband AGC release: `800-1500 ms`
+- Wideband AGC max/min gain: `+12 / -12 dB`
+- Final Drive: `6 dB`
+- Composite limiter: enabled
+- Pilot: approximately `8-10%`
+- RDS: approximately `3-4%`
+- Final loudness should come primarily from `Final Drive` plus composite protection, not AGC target
+
+## Immediate next step
+
+The next quality improvement should be:
+
+1. turn the new calibration telemetry into explicit health indicators and warnings
+2. continue tightening the filtered oversampling limiter path
+3. verify that pilot and RDS remain stable while increasing usable final drive
+
+This is the clearest remaining gap between StereoFool's current chain and broadcast-grade FM processors.
+
+## Design constraints
+
+- keep realtime callbacks lock-free and allocation-free
+- do not move shell/file/network work into DSP paths
+- preserve current integrated RDS and monitoring workflow
+- keep monitor-output latency concerns separate from transmit-path quality concerns
+
+## References
+
+### Enterprise / hardware
+
+- Telos Omnia.9: MPX output and composite-domain clipping guidance
+  - https://docs.telosalliance.com/docs/setting-up-omnia9-for-fm-pre-emph-output-via-aesebu
+- Telos Omnia Direct: MPX-over-AES at high rates
+  - https://docs.telosalliance.com/docs/using-mpx-over-aes-omnia-direct-on-the-omnia9
+- Telos RDS integration guidance
+  - https://docs.telosalliance.com/docs/rds
+- Telos RDS bit-error guidance
+  - https://docs.telosalliance.com/docs/ensuring-rds-bit-errors-do-not-occur
+- Orban 5518 specs
+  - https://www.orban.com/specifications-optimodfm5518
+- Orban 8700i specs
+  - https://www.orban.com/specifications-optimod8700i
+- Orban 8700i key features
+  - https://www.orban.com/keyfeatures-optimod8700i
+
+### Software
+
+- Stereo Tool FM transmitter documentation
+  - https://www.thimeo.com/documentation/fm-transmitter.html
+- Stereo Tool FM transmitter help
+  - https://help.stereotool.com/7.83/fm_transmitter.shtml
+- Stereo Tool limiting/clipping overview
+  - https://help.stereotool.com/7.40/limiting_and_clipping.shtml
+- Thimeo MicroMPX
+  - https://www.thimeo.com/micrompx/
+- BreakawayOne product overview
+  - https://www.breakawaysoftware.com/breakawayone
+- BreakawayOne FM processor product page
+  - https://www.breakawaysoftware.com/store/p/breakawayone-fm-processor

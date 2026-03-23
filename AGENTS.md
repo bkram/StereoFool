@@ -55,6 +55,7 @@ Default runs with GUI. Use `--nogui` for headless mode.
 - Real-time DSP is sensitive to blocking I/O; keep audio callbacks lock-free and allocation-free.
 - RDS carrier frequency is config-only; UI exposes carrier level and program data.
 - The monitoring view includes scopes, MPX meters, and limiter status; keep it lightweight.
+- The processing chain now includes mono-bass and stereo-image control alongside Orbass, multiband, and the final MPX stage.
 - RDS baseband uses EN 50067 biphase shaping and a pilot-locked subcarrier.
 - Standards reference PDFs live in `documents/`.
 
