@@ -354,7 +354,7 @@ struct AppConfig {
 
         // Note: monitor_rate_hz only affects the optional monitoring audio capture, not main render rate
         // Main render rate uses the default sample_rate or is determined by hardware capability
-        cfg.blockSize = max(2048, interfaces.int("blocksize", defaultValue: cfg.blockSize))
+        cfg.blockSize = max(1024, interfaces.int("blocksize", defaultValue: cfg.blockSize))
         cfg.fftWindow96kHz = interfaces.bool("fft_window_92khz", defaultValue: cfg.fftWindow96kHz)
         return cfg
     }

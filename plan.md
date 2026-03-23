@@ -148,6 +148,7 @@ Practical implication:
 
 - the Swift DSP core is strong enough to continue building on directly
 - the next quality gains come from cleanup, validation, and measurement discipline rather than from rewriting out of Swift
+- the final composite stage is sensitive enough that even a structural refactor can change output measurably, so all cleanup there must be verification-backed and incremental
 
 ### 7. RDS text syntax is functional, but still behind established tooling
 
@@ -234,19 +235,39 @@ Completed:
 4. Moved `Final Drive` to the audio-composite path so pilot and RDS remain calibrated separately.
 5. Added a filtered internal oversampling/decimation path inside the final limiter.
 6. Added subcarrier-aware audio reservation ahead of the full MPX sum.
+7. Added an offline verification baseline for the current final-stage behavior:
+   - current config verifies `OK`
+   - worst MPX peak `-0.14 dBFS`
+   - worst safety limiter GR `0.0 dB`
+   - worst composite margin `0.0 dB`
 
 Next work:
 
-1. Keep improving the filtered oversampling path so it becomes a clearly intentional composite clipper/limiter rather than an upgraded causal approximation.
-2. Revisit whether the main loudness limiter should remain fully audio-composite only, with the full-MPX limiter reserved strictly for safety.
-3. Preserve pilot lock and RDS readability while increasing usable composite loudness.
-4. Either fix or retire the current `Halfband2xFIR` helper so the codebase has one coherent oversampling approach instead of two partial ones.
+1. Do not attempt another large helper extraction of the final composite stage until there is a tighter micro-refactor plan.
+2. Extract only pure calculations first:
+   - pre-limiter ceiling math
+   - post-limiter ceiling math
+   - composite budget / margin math
+3. Keep stateful pieces in place until the pure calculations are isolated and verified:
+   - reservation envelope
+   - composite limiter state
+   - smoother state
+   - safety limiter state
+4. After each micro-step, rerun the offline verifier and compare:
+   - worst MPX peak
+   - worst safety limiter GR
+   - worst composite margin
+   - scenario table deltas
+5. Revisit whether the main loudness limiter should remain fully audio-composite only, with the full-MPX limiter reserved strictly for safety.
+6. Preserve pilot lock and RDS readability while increasing usable composite loudness.
+7. Either fix or retire the current `Halfband2xFIR` helper so the codebase has one coherent oversampling approach instead of two partial ones.
 
 Success criteria:
 
 - higher subjective loudness without excessive HF splatter
 - pilot and RDS remain stable
 - output still respects configured deviation targets
+- structural cleanup of the final stage does not change verifier output unless intentionally retuned
 
 ### Phase 3. Calibrate pilot, RDS, and MPX headroom
 
@@ -327,8 +348,22 @@ Completed:
 
 1. Added live AGC telemetry.
 2. Added live and held final-limiter telemetry.
+3. Added an offline verification harness with deterministic scenarios and exit codes.
+4. Added command-line verification mode:
+   - `swift run --package-path macOS StereoFool --verify --seconds 5`
+5. Added verifier output for:
+   - MPX peak
+   - estimated deviation
+   - composite limiter GR
+   - safety limiter GR
+   - audio-composite peak
+   - pilot and RDS injection
+   - composite budget margin
+   - AGC reduction
 
-1. Add deterministic tests for:
+Next work:
+
+1. Extend deterministic tests for:
    - `outputGain` behavior
    - composite limiter / clipper peak behavior
    - pilot and RDS injection integrity
@@ -341,30 +376,37 @@ Completed:
 3. Add a lightweight RF/composite analyzer roadmap item:
    - at minimum, show composite spectrum and pilot/RDS occupancy clearly
    - later, optionally add compliance-oriented views similar in spirit to Stereo Tool's FM tooling
+4. Add stored baseline comparisons so refactors can be checked against a known-good verifier signature instead of relying only on pass/fail.
 
 ### Swift DSP cleanup checklist
 
 This section is intentionally concrete and implementation-focused.
 
-1. Choose one oversampling strategy for the final limiter and remove the redundant one.
-2. Add stereo-correlation / mono-compatibility metering to Monitoring.
-3. Validate and retune:
+1. Treat the current final composite path as the verified baseline until a tighter refactor plan is complete.
+2. Refactor the final composite path only in micro-steps:
+   - pure ceiling math first
+   - budget-margin math second
+   - stateful limiter packaging last
+   - rerun `--verify` after every micro-step
+3. Choose one oversampling strategy for the final limiter and remove the redundant one.
+4. Add stereo-correlation / mono-compatibility metering to Monitoring.
+5. Validate and retune:
    - Orbass presets
    - mono-bass defaults
    - widener defaults
    - widener and multiband ordering
-4. Add deterministic offline tests for:
+6. Add deterministic offline tests for:
    - MPX peak control
    - pilot/RDS integrity
    - stereo-to-mono collapse behavior
    - now-playing RT / RT+ formatting edge cases
-5. Extend the RDS timed-text parser with a documented compatible subset:
+7. Extend the RDS timed-text parser with a documented compatible subset:
    - `Ns:` duration segments
    - `Nt:` transmit-count segments
    - escapes for separators
    - optional wrap markers if they are still judged useful
-6. Move remaining non-DSP work off the audio callback where practical.
-7. Add a short code comment block near the main processing order in `MPXGenerator.swift` describing the intended chain and responsibility of each stage.
+8. Move remaining non-DSP work off the audio callback where practical.
+9. Add a short code comment block near the main processing order in `MPXGenerator.swift` describing the intended chain and responsibility of each stage.
 
 Success criteria:
 
@@ -389,11 +431,11 @@ These are the current practical defaults after the recent gain-structure and fin
 
 The next quality improvement should be:
 
-1. turn the new calibration telemetry into explicit health indicators and warnings
-2. continue tightening the filtered oversampling limiter path
-3. verify that pilot and RDS remain stable while increasing usable final drive
+1. freeze the current final composite path as the known-good verified baseline
+2. extract pure final-stage math helpers without moving limiter state yet
+3. rerun the offline verifier after each micro-step and stop immediately on drift
 
-This is the clearest remaining gap between StereoFool's current chain and broadcast-grade FM processors.
+This is the safest path toward a less fragile final composite implementation without losing the current verified MPX behavior.
 
 ## Design constraints
 

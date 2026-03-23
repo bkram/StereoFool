@@ -61,6 +61,12 @@ Fixed runtime:
 swift run --package-path macOS StereoFool --seconds 10
 ```
 
+Offline verification:
+
+```bash
+swift run --package-path macOS StereoFool --verify --seconds 5
+```
+
 Custom config file:
 
 ```bash
@@ -190,6 +196,33 @@ Important defaults:
 - `Monitor Output Device (Decoded MPX Simulation)` is used when monitor output is enabled
 - The orange microphone indicator in the macOS menu bar is the system privacy indicator and appears when StereoFool is actively using audio input
 - `Mono Mode` now transmits true mono composite and suppresses pilot, stereo subcarrier, and RDS while enabled
+
+## Offline verification
+
+StereoFool includes an offline MPX verification mode that renders deterministic test scenarios without opening audio devices.
+
+Example:
+
+```bash
+./macOS/.build/debug/StereoFool --verify --seconds 5
+```
+
+The report includes:
+
+- MPX peak in dBFS
+- estimated deviation in kHz
+- composite limiter gain reduction
+- safety limiter gain reduction
+- audio-composite peak before pilot/RDS sum
+- pilot and RDS injection percentages
+- composite budget margin
+- AGC reduction
+
+Exit status:
+
+- `0` means no obvious composite-budget or safety-limiter issue was found
+- `1` means the configuration is close to the limit and should be reviewed
+- `2` means at least one verification warning was triggered
 
 ## Processing bypass
 

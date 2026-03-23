@@ -254,6 +254,7 @@ struct MonitoringStreamHealth {
     var inputName: String = "None"
     var renderHz: Int = 0
     var inputHz: Int = 0
+    var blockFrames: Int = 0
     var ringFrames: Int = 0
     var ringCapacity: Int = 0
     var overflowsRecent: Int = 0
@@ -298,6 +299,15 @@ struct MonitoringStreamHealth {
         case .bad:
             return "\(MonitoringBufferHealth.bad.rawValue) (\(dropoutsRecent))"
         }
+    }
+
+    var estimatedDelayMS: Double? {
+        guard isRunning, renderHz > 0 else { return nil }
+        let renderBlockMS = (Double(max(1, blockFrames)) / Double(renderHz)) * 1000.0
+        if inputHz > 0 {
+            return (Double(max(0, ringFrames)) / Double(inputHz)) * 1000.0 + renderBlockMS
+        }
+        return renderBlockMS
     }
 }
 
@@ -1802,6 +1812,7 @@ final class StereoFoolViewModel: ObservableObject {
                     ?? "None")
             health.renderHz = Int(engine.renderSampleRate.rounded())
             health.inputHz = Int((engine.inputSampleRate ?? 0).rounded())
+            health.blockFrames = engine.blockSize
 
             if let stats = engine.inputStats {
                 inputRingText =
@@ -2957,9 +2968,10 @@ private struct MonitoringHealthSummaryRow: View {
                 )
                 DSPMetricGroupCard(
                     title: "Buffer",
-                    subtitle: "Ring fill and health state",
+                    subtitle: "Ring fill, estimated delay, and health state",
                     rows: [
                         ("Ring", ringText),
+                        ("Delay", delayText),
                         ("Health", health.bufferSummary),
                     ]
                 )
@@ -2996,6 +3008,17 @@ private struct MonitoringHealthSummaryRow: View {
             return "render \(health.renderHz) Hz • input \(health.inputHz) Hz"
         }
         return "render \(health.renderHz) Hz"
+    }
+
+    private var delayText: String {
+        guard let delayMS = health.estimatedDelayMS else { return "n/a" }
+        if delayMS >= 100.0 {
+            return String(format: "%.0f ms", delayMS)
+        }
+        if delayMS >= 10.0 {
+            return String(format: "%.1f ms", delayMS)
+        }
+        return String(format: "%.2f ms", delayMS)
     }
 
     private var indicatorColor: Color {
@@ -3710,9 +3733,7 @@ private struct RDSAdvancedCardView: View {
                 Divider()
 
                 LabeledContent("LIC") {
-                    TextField("", text: model.hexByteBinding(\.rdsLIC))
-                        .font(.system(.body, design: .monospaced))
-                        .frame(width: 80)
+                    HexCodeField(text: model.hexByteBinding(\.rdsLIC), placeholder: "1D", width: 54)
                 }
                 DoubleSliderRow(
                     title: "Clock Offset", value: model.configBinding(\.rdsTZOffset),
@@ -4487,7 +4508,7 @@ private struct SystemSettingsSectionContent: View {
     @ObservedObject var model: StereoFoolViewModel
 
     private let sampleRates: [Double] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000]
-    private let blockSizes: [Int] = [2048, 4096, 8192]
+    private let blockSizes: [Int] = [1024, 2048, 4096, 8192]
 
     var body: some View {
         Group {
@@ -4857,9 +4878,7 @@ private struct RDSCarrierTab: View {
             Toggle("Enable CT (4A)", isOn: model.configBinding(\.rdsEnableCT))
             Toggle("Enable ID (1A)", isOn: model.configBinding(\.rdsEnableID))
             LabeledContent("LIC") {
-                TextField("", text: model.hexByteBinding(\.rdsLIC))
-                    .font(.system(.body, design: .monospaced))
-                    .frame(width: 80)
+                HexCodeField(text: model.hexByteBinding(\.rdsLIC), placeholder: "1D", width: 54)
             }
             DoubleSliderRow(
                 title: "Clock Offset", value: model.configBinding(\.rdsTZOffset),

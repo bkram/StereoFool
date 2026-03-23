@@ -2475,6 +2475,12 @@ final class MPXGenerator {
         let budgetMarginDB: Float
     }
 
+    private struct FinalCompositeThresholds {
+        let effectiveThreshold: Float
+        let preLimiterCeiling: Float
+        let postLimiterCeiling: Float
+    }
+
     private var sampleRate: Float
     private let preemphasisUS: Int
     private let toneFreq: Float
@@ -2643,6 +2649,26 @@ final class MPXGenerator {
     private var monitorNoiseGateGain: Float = 0.0
     private var monitorNoiseGateOpen: Bool = false
     private var lastProgramActivity: Float = 0.0
+    private struct ProgramStereoState {
+        var left: Float
+        var right: Float
+        var referenceLeft: Float
+        var referenceRight: Float
+        var inputActivity: Float
+    }
+
+    private struct CompositeComponents {
+        var base: Float
+        var diff: Float
+        var sub: Float
+        var pilot: Float
+        var rds: Float
+    }
+
+    private struct StereoImageState {
+        var left: Float
+        var right: Float
+    }
     private var monitorProgramEnv: Float = 0.0
     private var monitorProgramNoiseFloor: Float = 0.0
     private var monitorExpectedSideEnv: Float = 0.0
@@ -2835,14 +2861,16 @@ final class MPXGenerator {
     }
 
     var compositeCalibrationStatus: CompositeCalibrationStatus {
-        let reserved = max(0.0, min(1.2, subcarrierReservationEnv))
-        let totalPeakBudget = max(1e-6, audioCompositePeakState + reserved)
-        let budgetMarginDB = -20.0 * log10f(totalPeakBudget)
+        let calibration = Self.makeCompositeCalibration(
+            audioPeakState: audioCompositePeakState,
+            reservationEnv: subcarrierReservationEnv,
+            outputGain: outputGain
+        )
         return CompositeCalibrationStatus(
             pilotPercent: monoMode ? 0.0 : pilotInjectionPercent,
             rdsPercent: monoMode ? 0.0 : rdsInjectionPercent,
-            audioPeak: audioCompositePeakState,
-            budgetMarginDB: budgetMarginDB
+            audioPeak: calibration.audioPeak,
+            budgetMarginDB: calibration.budgetMarginDB
         )
     }
 
@@ -2853,7 +2881,6 @@ final class MPXGenerator {
         audioCompositePeakDecayCoeff = expf(-1.0 / (0.250 * sr))
         subcarrierReservationAttackCoeff = expf(-1.0 / (0.0005 * sr))
         subcarrierReservationReleaseCoeff = expf(-1.0 / (0.012 * sr))
-
         let nyquist = (sampleRate * 0.5) - 100.0
         if nyquist > 56_000.0 {
             compositeAudioSmoother.configure(
@@ -3217,6 +3244,11 @@ final class MPXGenerator {
         }
     }
 
+    @inline(__always)
+    func renderSingleSample(leftIn: Float, rightIn: Float) -> Float {
+        processSample(leftIn: leftIn, rightIn: rightIn)
+    }
+
     func renderFromInputInPlace(
         frameCount: Int,
         left: UnsafeMutablePointer<Float>,
@@ -3345,85 +3377,106 @@ final class MPXGenerator {
     }
 
     private func processSample(leftIn: Float, rightIn: Float) -> Float {
-        var l = leftIn * inputGain
-        var r = rightIn * inputGain
-
-        if monoMode {
-            let m = (l + r) * 0.5
-            l = m
-            r = m
-        }
-        let inputActivity = max(fabsf(l), fabsf(r))
-
-        if !processingBypass {
-            if widebandAGCEnabled {
-                let adjusted = widebandAGC.process(left: l, right: r)
-                l = adjusted.0
-                r = adjusted.1
-            }
-
-            let hpfOut = inputHPF.process(left: l, right: r)
-            l = hpfOut.0
-            r = hpfOut.1
-        }
-
-        let filtered = programLP.process(left: l, right: r)
-        l = filtered.0
-        r = filtered.1
-        let stereoRefL = l
-        let stereoRefR = r
-
-        if !processingBypass {
-            let trimmed = hfTrim.process(left: l, right: r)
-            l = trimmed.0
-            r = trimmed.1
-
-            if orbassEnabled {
-                let orbassOut = processOrbass(left: l, right: r)
-                l = orbassOut.0
-                r = orbassOut.1
-            }
-
-            if monoBassEnabled {
-                let monoBass = processMonoBass(left: l, right: r)
-                l = monoBass.0
-                r = monoBass.1
-            }
-
-            if stereoWidenEnabled {
-                let widened = processStereoWidener(left: l, right: r)
-                l = widened.0
-                r = widened.1
-            }
-
-            if multibandEnabled {
-                let mbOut = processMultibandStereo(left: l, right: r)
-                l = mbOut.0
-                r = mbOut.1
-            }
-        }
+        // High-level chain order:
+        // 1. Program-domain stereo processing (AGC, filtering, enhancement, multiband)
+        // 2. Stereo-image protection and monitoring
+        // 3. Composite component assembly (L+R, L-R, pilot, stereo subcarrier, RDS)
+        // 4. Final composite loudness and safety limiting
+        var stereo = processProgramStereo(leftIn: leftIn, rightIn: rightIn)
 
         if !processingBypass {
             let protected = protectStereoImage(
-                inputL: stereoRefL,
-                inputR: stereoRefR,
-                outputL: l,
-                outputR: r
+                inputL: stereo.referenceLeft,
+                inputR: stereo.referenceRight,
+                outputL: stereo.left,
+                outputR: stereo.right
             )
-            l = protected.0
-            r = protected.1
+            stereo.left = protected.0
+            stereo.right = protected.1
         }
 
-        let postSideAbs = fabsf((l - r) * 0.5)
-        let sideCoeff =
-            postSideAbs > monitorExpectedSideEnv
-            ? monitorExpectedSideAttackCoeff
-            : monitorExpectedSideReleaseCoeff
-        monitorExpectedSideEnv =
-            (sideCoeff * monitorExpectedSideEnv) + ((1.0 - sideCoeff) * postSideAbs)
+        updateStereoImageMonitor(left: stereo.left, right: stereo.right)
 
-        var base = ((l + r) * 0.5) * sumLevel
-        var diff = monoMode ? 0.0 : (((r - l) * 0.5) * diffLevel)
+        let composite = makeCompositeComponents(
+            left: stereo.left,
+            right: stereo.right,
+            inputActivity: stereo.inputActivity
+        )
+
+        return processFinalComposite(
+            base: composite.base,
+            diff: composite.diff,
+            sub: composite.sub,
+            pilot: composite.pilot,
+            rds: composite.rds
+        )
+    }
+
+    private func processProgramStereo(leftIn: Float, rightIn: Float) -> ProgramStereoState {
+        var left = leftIn * inputGain
+        var right = rightIn * inputGain
+
+        if monoMode {
+            let mono = (left + right) * 0.5
+            left = mono
+            right = mono
+        }
+        let inputActivity = max(fabsf(left), fabsf(right))
+
+        if !processingBypass {
+            if widebandAGCEnabled {
+                let adjusted = widebandAGC.process(left: left, right: right)
+                left = adjusted.0
+                right = adjusted.1
+            }
+
+            let filteredInput = inputHPF.process(left: left, right: right)
+            left = filteredInput.0
+            right = filteredInput.1
+        }
+
+        let programBand = programLP.process(left: left, right: right)
+        left = programBand.0
+        right = programBand.1
+        let referenceLeft = left
+        let referenceRight = right
+
+        if !processingBypass {
+            let trimmed = hfTrim.process(left: left, right: right)
+            left = trimmed.0
+            right = trimmed.1
+
+            if orbassEnabled {
+                let orbassOut = processOrbass(left: left, right: right)
+                left = orbassOut.0
+                right = orbassOut.1
+            }
+
+            let stereoImage = processStereoImageStage(left: left, right: right)
+            left = stereoImage.left
+            right = stereoImage.right
+
+            if multibandEnabled {
+                let multiband = processMultibandStereo(left: left, right: right)
+                left = multiband.0
+                right = multiband.1
+            }
+        }
+
+        return ProgramStereoState(
+            left: left,
+            right: right,
+            referenceLeft: referenceLeft,
+            referenceRight: referenceRight,
+            inputActivity: inputActivity
+        )
+    }
+
+    private func makeCompositeComponents(left: Float, right: Float, inputActivity: Float)
+        -> CompositeComponents
+    {
+        var base = ((left + right) * 0.5) * sumLevel
+        var diff = monoMode ? 0.0 : (((right - left) * 0.5) * diffLevel)
 
         base = preSum.process(base)
         diff = preDiff.process(diff)
@@ -3445,44 +3498,176 @@ final class MPXGenerator {
         let rds =
             (stereoServicesEnabled && rdsSupported) ? (rdsCoder?.nextSampleWithPilotLock() ?? 0.0)
             : 0.0
-        
-        let subcarriers = (pilot + rds) * deviationScale
-        let subcarrierAbs = fabsf(subcarriers)
-        let subcarrierCoeff =
-            subcarrierAbs > subcarrierReservationEnv
-            ? subcarrierReservationAttackCoeff
-            : subcarrierReservationReleaseCoeff
-        subcarrierReservationEnv =
-            (subcarrierCoeff * subcarrierReservationEnv)
-            + ((1.0 - subcarrierCoeff) * subcarrierAbs)
 
-        let rawAudioComposite = (base + (diff * sub)) * deviationScale * finalDrive
-        let reservedFloor = max(0.20, threshold - subcarrierReservationEnv - 0.015)
-        var audioComposite = Self.softClipSafety(rawAudioComposite, threshold: reservedFloor)
+        return CompositeComponents(base: base, diff: diff, sub: sub, pilot: pilot, rds: rds)
+    }
+
+    private func processStereoImageStage(left: Float, right: Float) -> StereoImageState {
+        var state = StereoImageState(left: left, right: right)
+
+        if monoBassEnabled {
+            let monoBass = processMonoBass(left: state.left, right: state.right)
+            state.left = monoBass.0
+            state.right = monoBass.1
+        }
+
+        if stereoWidenEnabled {
+            let widened = processStereoWidener(left: state.left, right: state.right)
+            state.left = widened.0
+            state.right = widened.1
+        }
+
+        return state
+    }
+
+    private func processFinalComposite(
+        base: Float,
+        diff: Float,
+        sub: Float,
+        pilot: Float,
+        rds: Float
+    ) -> Float {
+        let subcarriers = (pilot + rds) * deviationScale
+        let reserved = updateSubcarrierReservation(subcarriers)
+        let thresholds = Self.makeFinalCompositeThresholds(
+            outputGain: outputGain,
+            threshold: threshold,
+            reserved: reserved
+        )
+
+        // Keep the loudness work in the audio composite before the calibrated
+        // pilot/RDS subcarriers are added back into the final MPX waveform.
+        let rawAudioComposite = Self.makeDrivenAudioComposite(
+            base: base,
+            diff: diff,
+            sub: sub,
+            deviationScale: deviationScale,
+            finalDrive: finalDrive
+        )
+        var audioComposite = Self.softClipSafety(
+            rawAudioComposite,
+            threshold: thresholds.preLimiterCeiling
+        )
         if compositeLimiterEnabled {
             audioComposite = compositeLimiter.process(audioComposite)
         }
         if compositeAudioSmootherEnabled {
             audioComposite = compositeAudioSmoother.process(audioComposite)
         }
+
+        audioComposite = Self.softClipSafety(
+            audioComposite,
+            threshold: thresholds.postLimiterCeiling
+        )
+
         let audioCompositeAbs = fabsf(audioComposite)
         audioCompositePeakState = max(
             audioCompositeAbs,
             audioCompositePeakState * audioCompositePeakDecayCoeff
         )
 
-        var mpx = audioComposite + subcarriers
-
-        mpx *= outputGain
+        var mpx = Self.makeOutputComposite(
+            audioComposite: audioComposite,
+            subcarriers: subcarriers,
+            outputGain: outputGain
+        )
 
         if limitEnabled {
             mpx = lookaheadLimiter.process(mpx)
             mpx = Self.softClipSafety(mpx, threshold: threshold)
         }
 
-        mpx = clampf(mpx, -1.0, 1.0)
+        return clampf(mpx, -1.0, 1.0)
+    }
 
-        return mpx
+    @inline(__always)
+    private func updateSubcarrierReservation(_ subcarriers: Float) -> Float {
+        let subcarrierAbs = fabsf(subcarriers)
+        subcarrierReservationEnv = Self.smoothEnvelope(
+            current: subcarrierReservationEnv,
+            input: subcarrierAbs,
+            attackCoeff: subcarrierReservationAttackCoeff,
+            releaseCoeff: subcarrierReservationReleaseCoeff
+        )
+        return subcarrierReservationEnv
+    }
+
+    private func updateStereoImageMonitor(left: Float, right: Float) {
+        let postSideAbs = fabsf((left - right) * 0.5)
+        monitorExpectedSideEnv = Self.smoothEnvelope(
+            current: monitorExpectedSideEnv,
+            input: postSideAbs,
+            attackCoeff: monitorExpectedSideAttackCoeff,
+            releaseCoeff: monitorExpectedSideReleaseCoeff
+        )
+    }
+
+    private static func makeFinalCompositeThresholds(
+        outputGain: Float,
+        threshold: Float,
+        reserved: Float
+    ) -> FinalCompositeThresholds {
+        let effectiveThreshold = threshold / max(1.0, outputGain)
+        return FinalCompositeThresholds(
+            effectiveThreshold: effectiveThreshold,
+            preLimiterCeiling: max(0.18, effectiveThreshold - reserved - 0.040),
+            postLimiterCeiling: max(0.16, effectiveThreshold - reserved - 0.030)
+        )
+    }
+
+    private static func makeCompositeCalibration(
+        audioPeakState: Float,
+        reservationEnv: Float,
+        outputGain: Float
+    ) -> (audioPeak: Float, budgetMarginDB: Float) {
+        let postGain = max(0.0, outputGain)
+        let reserved = max(0.0, min(1.2, reservationEnv * postGain))
+        let audioPeak = audioPeakState * postGain
+        let totalPeakBudget = max(1e-6, audioPeak + reserved)
+        let budgetMarginDB = -20.0 * log10f(totalPeakBudget)
+        return (audioPeak, budgetMarginDB)
+    }
+
+    @inline(__always)
+    private static func makeDrivenAudioComposite(
+        base: Float,
+        diff: Float,
+        sub: Float,
+        deviationScale: Float,
+        finalDrive: Float
+    ) -> Float {
+        (base + (diff * sub)) * deviationScale * finalDrive
+    }
+
+    @inline(__always)
+    private static func makeOutputComposite(
+        audioComposite: Float,
+        subcarriers: Float,
+        outputGain: Float
+    ) -> Float {
+        (audioComposite + subcarriers) * outputGain
+    }
+
+    @inline(__always)
+    private static func smoothEnvelope(
+        current: Float,
+        input: Float,
+        attackCoeff: Float,
+        releaseCoeff: Float
+    ) -> Float {
+        let coeff = input > current ? attackCoeff : releaseCoeff
+        return (coeff * current) + ((1.0 - coeff) * input)
+    }
+
+    @inline(__always)
+    private static func smoothTowardTarget(
+        current: Float,
+        target: Float,
+        attackCoeff: Float,
+        releaseCoeff: Float
+    ) -> Float {
+        let coeff = target < current ? attackCoeff : releaseCoeff
+        return (coeff * current) + ((1.0 - coeff) * target)
     }
 
     private func protectStereoImage(
@@ -3501,29 +3686,30 @@ final class MPXGenerator {
         let outputMidAbs = fabsf(outputMid)
         let outputSideAbs = fabsf(outputSide)
 
-        let inputMidCoeff =
-            inputMidAbs > stereoProtectInputMidEnv
-            ? stereoProtectAttackCoeff : stereoProtectReleaseCoeff
-        stereoProtectInputMidEnv =
-            (inputMidCoeff * stereoProtectInputMidEnv) + ((1.0 - inputMidCoeff) * inputMidAbs)
-
-        let inputSideCoeff =
-            inputSideAbs > stereoProtectInputSideEnv
-            ? stereoProtectAttackCoeff : stereoProtectReleaseCoeff
-        stereoProtectInputSideEnv =
-            (inputSideCoeff * stereoProtectInputSideEnv) + ((1.0 - inputSideCoeff) * inputSideAbs)
-
-        let outputMidCoeff =
-            outputMidAbs > stereoProtectMidEnv
-            ? stereoProtectAttackCoeff : stereoProtectReleaseCoeff
-        stereoProtectMidEnv =
-            (outputMidCoeff * stereoProtectMidEnv) + ((1.0 - outputMidCoeff) * outputMidAbs)
-
-        let outputSideCoeff =
-            outputSideAbs > stereoProtectSideEnv
-            ? stereoProtectAttackCoeff : stereoProtectReleaseCoeff
-        stereoProtectSideEnv =
-            (outputSideCoeff * stereoProtectSideEnv) + ((1.0 - outputSideCoeff) * outputSideAbs)
+        stereoProtectInputMidEnv = Self.smoothEnvelope(
+            current: stereoProtectInputMidEnv,
+            input: inputMidAbs,
+            attackCoeff: stereoProtectAttackCoeff,
+            releaseCoeff: stereoProtectReleaseCoeff
+        )
+        stereoProtectInputSideEnv = Self.smoothEnvelope(
+            current: stereoProtectInputSideEnv,
+            input: inputSideAbs,
+            attackCoeff: stereoProtectAttackCoeff,
+            releaseCoeff: stereoProtectReleaseCoeff
+        )
+        stereoProtectMidEnv = Self.smoothEnvelope(
+            current: stereoProtectMidEnv,
+            input: outputMidAbs,
+            attackCoeff: stereoProtectAttackCoeff,
+            releaseCoeff: stereoProtectReleaseCoeff
+        )
+        stereoProtectSideEnv = Self.smoothEnvelope(
+            current: stereoProtectSideEnv,
+            input: outputSideAbs,
+            attackCoeff: stereoProtectAttackCoeff,
+            releaseCoeff: stereoProtectReleaseCoeff
+        )
 
         let inputRatio = stereoProtectInputSideEnv / max(0.02, stereoProtectInputMidEnv)
         let configuredRatio = 0.70 + (widenWidth * 0.65)
@@ -3535,11 +3721,12 @@ final class MPXGenerator {
             targetGain = clampf(allowedSide / max(1e-5, stereoProtectSideEnv), 0.0, 1.0)
         }
 
-        let gainCoeff =
-            targetGain < stereoProtectGain
-            ? stereoProtectAttackCoeff : stereoProtectReleaseCoeff
-        stereoProtectGain =
-            (gainCoeff * stereoProtectGain) + ((1.0 - gainCoeff) * targetGain)
+        stereoProtectGain = Self.smoothTowardTarget(
+            current: stereoProtectGain,
+            target: targetGain,
+            attackCoeff: stereoProtectAttackCoeff,
+            releaseCoeff: stereoProtectReleaseCoeff
+        )
 
         let protectedSide = outputSide * stereoProtectGain
         return (outputMid + protectedSide, outputMid - protectedSide)
@@ -3700,17 +3887,15 @@ final class MPXGenerator {
         )
         midOut *= orbassMakeupGain
 
-        var outL = midOut + side
-        var outR = midOut - side
-        let inPeak = max(max(fabsf(left), fabsf(right)), 1e-6)
-        let outPeak = max(max(fabsf(outL), fabsf(outR)), 1e-6)
-        let allowedPeak = inPeak * (1.10 + (0.06 * amount) + (0.08 * subAmount))
-        if outPeak > allowedPeak {
-            let scale = allowedPeak / outPeak
-            outL = left + ((outL - left) * scale)
-            outR = right + ((outR - right) * scale)
-        }
-        return (outL, outR)
+        let outL = midOut + side
+        let outR = midOut - side
+        return Self.limitStereoDeltaPeak(
+            inputLeft: left,
+            inputRight: right,
+            outputLeft: outL,
+            outputRight: outR,
+            allowedPeakScale: 1.10 + (0.06 * amount) + (0.08 * subAmount)
+        )
     }
 
     private func smoothOrbassGain(current: Float, target: Float, attackMS: Float, releaseMS: Float)
@@ -3720,6 +3905,27 @@ final class MPXGenerator {
         let tauMS = target > current ? max(0.1, attackMS) : max(1.0, releaseMS)
         let coeff = expf(-1.0 / ((tauMS * 0.001) * sr))
         return (coeff * current) + ((1.0 - coeff) * target)
+    }
+
+    private static func limitStereoDeltaPeak(
+        inputLeft: Float,
+        inputRight: Float,
+        outputLeft: Float,
+        outputRight: Float,
+        allowedPeakScale: Float
+    ) -> (Float, Float) {
+        let inPeak = max(max(fabsf(inputLeft), fabsf(inputRight)), 1e-6)
+        let outPeak = max(max(fabsf(outputLeft), fabsf(outputRight)), 1e-6)
+        let allowedPeak = inPeak * allowedPeakScale
+        guard outPeak > allowedPeak else {
+            return (outputLeft, outputRight)
+        }
+
+        let scale = allowedPeak / outPeak
+        return (
+            inputLeft + ((outputLeft - inputLeft) * scale),
+            inputRight + ((outputRight - inputRight) * scale)
+        )
     }
 
     private func processMultibandStereo(left: Float, right: Float) -> (Float, Float) {
@@ -3758,9 +3964,12 @@ final class MPXGenerator {
             rightComp: &mbHighCompR
         )
 
-        let outL = (lowOut.0 + midOut.0 + highOut.0) * multibandMakeup
-        let outR = (lowOut.1 + midOut.1 + highOut.1) * multibandMakeup
-        return (outL, outR)
+        return Self.sumStereoBands(
+            lowOut,
+            midOut,
+            highOut,
+            makeup: multibandMakeup
+        )
     }
 
     private func processFiveBandMultiband(left: Float, right: Float) -> (Float, Float) {
@@ -3795,9 +4004,14 @@ final class MPXGenerator {
         let o5 = compressStereoBand(
             left: b5L, right: b5R, leftComp: &mb5Comp5L, rightComp: &mb5Comp5R)
 
-        let outL = (o1.0 + o2.0 + o3.0 + o4.0 + o5.0) * multibandMakeup
-        let outR = (o1.1 + o2.1 + o3.1 + o4.1 + o5.1) * multibandMakeup
-        return (outL, outR)
+        return Self.sumStereoBands(
+            o1,
+            o2,
+            o3,
+            o4,
+            o5,
+            makeup: multibandMakeup
+        )
     }
 
     private func compressStereoBand(
@@ -3811,15 +4025,50 @@ final class MPXGenerator {
         if multibandLinkStrength > 1e-4 {
             // When link is enabled, drive both channels from one shared detector.
             // This keeps gain reduction matched between L/R and prevents slow image collapse.
-            let avgAbs = (absL + absR) * 0.5
-            let linkedRMS = sqrtf(((absL * absL) + (absR * absR)) * 0.5)
-            let sidechain = lerpf(avgAbs, linkedRMS, multibandLinkStrength)
+            let sidechain = Self.makeLinkedBandSidechain(
+                absLeft: absL,
+                absRight: absR,
+                linkStrength: multibandLinkStrength
+            )
             return (
                 leftComp.process(left, sidechainAbs: sidechain),
                 rightComp.process(right, sidechainAbs: sidechain)
             )
         }
         return (leftComp.process(left), rightComp.process(right))
+    }
+
+    @inline(__always)
+    private static func sumStereoBands(
+        _ a: (Float, Float),
+        _ b: (Float, Float),
+        _ c: (Float, Float),
+        makeup: Float
+    ) -> (Float, Float) {
+        ((a.0 + b.0 + c.0) * makeup, (a.1 + b.1 + c.1) * makeup)
+    }
+
+    @inline(__always)
+    private static func sumStereoBands(
+        _ a: (Float, Float),
+        _ b: (Float, Float),
+        _ c: (Float, Float),
+        _ d: (Float, Float),
+        _ e: (Float, Float),
+        makeup: Float
+    ) -> (Float, Float) {
+        ((a.0 + b.0 + c.0 + d.0 + e.0) * makeup, (a.1 + b.1 + c.1 + d.1 + e.1) * makeup)
+    }
+
+    @inline(__always)
+    private static func makeLinkedBandSidechain(
+        absLeft: Float,
+        absRight: Float,
+        linkStrength: Float
+    ) -> Float {
+        let avgAbs = (absLeft + absRight) * 0.5
+        let linkedRMS = sqrtf(((absLeft * absLeft) + (absRight * absRight)) * 0.5)
+        return lerpf(avgAbs, linkedRMS, linkStrength)
     }
 
     static func softClipSafety(_ x: Float, threshold: Float) -> Float {

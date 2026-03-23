@@ -19,6 +19,7 @@ struct CLIOptions {
     var configPathExplicit: Bool = false
     var runSeconds: Double?
     var gui: Bool = true
+    var verify: Bool = false
 }
 
 func normalizeConfigPath(_ rawPath: String) -> String {
@@ -55,6 +56,9 @@ func parseCLI() -> CLIOptions {
             options.gui = true
         case "--nogui":
             options.gui = false
+        case "--verify":
+            options.verify = true
+            options.gui = false
         default:
             break
         }
@@ -69,12 +73,14 @@ func printUsage() {
 
         Usage:
           StereoFool [--config <path>] [--seconds 30] [--gui|--nogui]
+          StereoFool [--config <path>] --verify [--seconds 5]
 
         Options:
           --config   Path to macOS INI config (default: ~/Library/Application Support/StereoFool/StereoFool.ini)
           --seconds  Auto-stop after N seconds (GUI or headless)
           --gui      Launch native SwiftUI macOS window (default)
           --nogui    Run headless
+          --verify   Run the offline MPX verification harness
         """
     print(text)
 }
@@ -110,6 +116,11 @@ let configPath = options.configPathExplicit
     : AppConfig.defaultINIPath
 
 do {
+    if options.verify {
+        let duration = max(1.0, options.runSeconds ?? 5.0)
+        exit(try runVerificationHarness(configPath: configPath, durationSeconds: duration))
+    }
+
     let qosApplied = applyRealtimePriorityHints()
     if !qosApplied {
         fputs("StereoFool: unable to apply QoS hint\n", stderr)
