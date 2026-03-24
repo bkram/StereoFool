@@ -60,37 +60,9 @@ Takeaway for StereoFool:
 
 Breakaway does not appear to publish the same level of public technical detail about its composite clipping path that Stereo Tool, Omnia, and Orban do. We should not infer exact internal algorithms from marketing copy alone.
 
-## Current StereoFool status
+## Current open gaps
 
-### Completed recently
-
-- `outputGain` is now active in the final render path and exposed in the UI as `MPX Output Level`
-- a dedicated `Final Drive` stage now exists ahead of the final composite protection path
-- `limit_mpx` is now active in the render path instead of being configured-but-unused
-- the old simple composite clamp has been replaced with a more useful final limiter stage with fast attack, hold, controlled release, and soft-knee clipping
-- AGC telemetry was added to Monitoring and DSP Overview
-- final-stage telemetry was added to Monitoring and DSP Overview:
-  - live limiter gain reduction
-  - held max gain reduction
-  - full-MPX safety limiter gain reduction
-  - final MPX peak
-- pilot/RDS/audio budget telemetry and explicit composite-budget health state were added
-- the widener path was rebuilt into a restrained band-limited widener with stereo-image protection
-- a dedicated `Mono Bass` stage was added ahead of the widener/multiband image path
-- Orbass presets and UI now match the live adaptive Orbass DSP path
-- broadcast-chain presets were added in the `Processing` -> `Limiter` tab:
-  - `Balanced Music`
-  - `CHR / Dance`
-  - `Punchy Music`
-  - `Speech / Talk`
-- defaults were retuned around the current chain:
-  - wideband AGC target `-16 dB`
-  - composite limiter enabled by default
-  - final drive `6 dB`
-
-### Remaining quality gaps
-
-### 1. Pilot/RDS calibration visibility is improved, but still text-heavy
+### 1. Pilot/RDS calibration workflow is still too text-heavy
 
 Monitoring now exposes pilot, RDS, audio-composite peak, budget margin, and a composite-budget state indicator, but calibration is still mostly presented as status text rather than a dedicated calibration workflow.
 
@@ -99,11 +71,11 @@ Impact:
 - users can make the chain loud, but they still cannot see pilot and RDS contribution clearly
 - exciter alignment remains more trial-and-error than it should be
 
-### 2. AGC is improved, but still needs validation against the stronger final stage
+### 2. AGC still needs more validation against the current final stage
 
-Wideband AGC is now behaving more like a platform leveler, but its defaults and range should be validated further once the oversampled composite stage exists.
+Wideband AGC is now behaving more like a platform leveler, but its defaults and range still need broader validation against the current final stage.
 
-### 3. Stereo enhancement is better, but still needs dedicated validation
+### 3. Stereo enhancement still needs deeper validation
 
 StereoFool now has a more professional stereo-image path than before, but it still needs deliberate listening and measurement work.
 
@@ -111,47 +83,15 @@ Impact:
 
 - mono bass, widener, Orbass, and multiband interactions still need preset-level validation
 - stereo/correlation metering now exists, but there is still no stronger compliance-style validation workflow or history
-- width behavior is still tuned by ear rather than by a formal stereo-verification workflow
+- width behavior still needs broader validation on difficult real program
 
-### 4. Deterministic verification exists, but coverage is improving
+### 4. Verification is strong, but coverage is still limited
 
-The chain is now audibly and operationally better, and the offline verifier exists, but scenario coverage and golden-baseline checks are still limited.
+The offline verifier, preset sweep, width/compliance checks, and long-run mode now exist, but:
 
-Completed recently:
-
-- added brighter and more program-like stress scenarios:
-  - `bright_dense`
-  - `vocal_sibilant`
-  - `transient_push`
-  - `wide_bass`
-- added decoded-audio quality checks:
-  - correlation drift
-  - side-to-mid retention
-  - RMS drift
-- added a focused preset sweep for:
-  - `5B AC/Pop`
-  - `5B CHR/EDM`
-  - `5B Rock`
-  - `5B Talk`
-  - `5B News`
-  - `5B Urban`
-  - `5B Dance`
-- current post-build preset sweep status is:
-  - `5B AC/Pop`: `OK`
-  - `5B CHR/EDM`: `OK`
-  - `5B Rock`: `OK`
-  - `5B Talk`: `OK`
-  - `5B News`: `OK`
-  - `5B Urban`: `OK`
-  - `5B Dance`: `OK`
-- added explicit MPX width/compliance checks:
-  - `Occ999 Hz`
-  - `>60k/In`
-  - `>67k/In`
-- added scenario-level width/compliance expectations, including a previously failing `bright_dense` case that now verifies `OK`
-- added a focused long-run compliance/regression mode:
-  - `--verify-long`
-  - current 5-second baseline verifies `OK`
+- long-run coverage is still short and focused rather than broad and archival
+- there is no stored golden-baseline artifact beyond the current in-code signature
+- compliance-style analysis is still lighter than a true RF toolchain
 
 ### 5. Swift DSP implementation still has cleanup debt
 
@@ -160,7 +100,6 @@ StereoFool's Swift DSP is now credible and effective, but there are still implem
 Loose ends:
 
 - the final composite limiter path is improved, but it is still an evolved approximation rather than a deliberately designed composite clipper with one clear architecture
-- `Halfband2xFIR` still exists alongside the newer internal limiter oversampling path, so the codebase still has two overlapping oversampling ideas instead of one coherent approach
 - widener, mono bass, Orbass, and multiband interaction still needs broader preset-level validation on real program material beyond the current focused sweep
 - pilot/RDS/headroom telemetry exists, but there is still no explicit deviation estimator or exciter-calibration workflow
 - some real-time and monitoring paths still need performance cleanup:
@@ -175,7 +114,7 @@ Practical implication:
 - the next quality gains come from cleanup, validation, and measurement discipline rather than from rewriting out of Swift
 - the final composite stage is sensitive enough that even a structural refactor can change output measurably, so all cleanup there must be verification-backed and incremental
 
-### 7. RDS text syntax is functional, but still behind established tooling
+### 6. RDS text syntax is functional, but still behind established tooling
 
 StereoFool already supports timed PS/RT sequences such as `10s:Text/10s:Other Text`, but it does not yet match the more mature public user-facing syntax that processors such as Stereo Tool expose.
 
@@ -229,14 +168,7 @@ Users should not need to abuse AGC target to get acceptable loudness.
 
 ### Phase 1. Fix the gain structure
 
-Status: largely complete
-
-Completed:
-
-1. Wired `outputGain` into the actual signal path.
-2. Renamed/exposed it in UI/docs as `MPX Output Level`.
-3. Added a distinct `Final Drive` so users do not need to misuse AGC target or output calibration for loudness.
-4. Activated the final MPX safety limiter in the real render path.
+Status: maintenance only
 
 Still open:
 
@@ -251,26 +183,6 @@ Success criteria:
 ### Phase 2. Add a proper final composite stage
 
 Status: partially complete
-
-Completed:
-
-1. Added a real `Final Drive` parameter ahead of final protection.
-2. Improved the composite limiter from a simple clamp to a more useful final-stage limiter/clipper.
-3. Added live and held limiter metering so the final stage can be tuned empirically.
-4. Moved `Final Drive` to the audio-composite path so pilot and RDS remain calibrated separately.
-5. Added a filtered internal oversampling/decimation path inside the final limiter.
-6. Added subcarrier-aware audio reservation ahead of the full MPX sum.
-7. Added an offline verification baseline for the current final-stage behavior:
-   - current config verifies `OK`
-   - worst MPX peak `-0.14 dBFS`
-   - worst safety limiter GR `0.0 dB`
-   - worst composite margin `0.0 dB`
-8. Added explicit encoder-side bandwidth control:
-   - steeper program low-pass
-   - final encoder-facing bandwidth guard
-   - dynamic HF compliance guard ahead of stereo encode/pre-emphasis
-9. Added verifier-backed MPX width/compliance checks and brought the `bright_dense` case back to `OK`
-10. Added a longer focused compliance/regression verifier mode for program-material cases (`--verify-long`)
 
 Next work:
 
@@ -291,9 +203,8 @@ Next work:
    - scenario table deltas
 5. Revisit whether the main loudness limiter should remain fully audio-composite only, with the full-MPX limiter reserved strictly for safety.
 6. Preserve pilot lock and RDS readability while increasing usable composite loudness.
-7. Either fix or retire the current `Halfband2xFIR` helper so the codebase has one coherent oversampling approach instead of two partial ones.
-8. Add long-run width/compliance regression checks, not just 2-second deterministic cases.
-9. Add baseline comparison storage or signature snapshots for the long-run verifier.
+7. Strengthen long-run width/compliance regression checks beyond the current focused mode.
+8. Move from in-code signature checks toward stored baseline artifacts if they prove useful.
 
 Success criteria:
 
@@ -306,13 +217,6 @@ Success criteria:
 ### Phase 3. Calibrate pilot, RDS, and MPX headroom
 
 Status: in progress
-
-Completed:
-
-1. Added pilot, RDS, audio-composite, and budget-margin telemetry to Monitoring / DSP Overview.
-2. Added an explicit composite-budget health indicator (`Safe`, `Tight`, `Risk`).
-3. Added full-MPX safety limiter telemetry.
-4. Added a fixed `0-100 kHz` modulation display with target-aware warning behavior.
 
 Next work:
 
@@ -339,12 +243,6 @@ Success criteria:
 ### Phase 4. Validate stereo image, mono bass, and Orbass interaction
 
 Status: in progress
-
-Completed:
-
-1. Added a dedicated `Mono Bass` stage and widener controls that are less primitive than the old full-band M/S gain block.
-2. Reworked the widener so it is band-limited, normalized, and guarded against runaway side energy.
-3. Activated the adaptive Orbass path so Orbass UI/presets and live DSP finally describe the same thing.
 
 Next work:
 
@@ -380,44 +278,19 @@ Success criteria:
 
 Status: partially complete
 
-Completed:
-
-1. Added live AGC telemetry.
-2. Added live and held final-limiter telemetry.
-3. Added an offline verification harness with deterministic scenarios and exit codes.
-4. Added command-line verification mode:
-   - `swift run --package-path macOS StereoFool --verify --seconds 5`
-5. Added verifier output for:
-   - MPX peak
-   - estimated deviation
-   - composite limiter GR
-   - safety limiter GR
-   - audio-composite peak
-   - pilot and RDS injection
-   - composite budget margin
-   - AGC reduction
-6. Added verifier output for MPX width/compliance:
-   - occupied bandwidth proxy (`Occ999 Hz`)
-   - energy above 60 kHz relative to in-band
-   - energy above 67 kHz relative to in-band
-
 Next work:
 
 1. Extend deterministic tests for:
-   - `outputGain` behavior
-   - composite limiter / clipper peak behavior
-   - pilot and RDS injection integrity
    - mono-bass and widener mono-compatibility behavior
+   - RT and RT+ formatting edge cases
 2. Add synthetic verification inputs:
-   - mono 1 kHz tone
-   - pink noise
    - more real-world dense music classes beyond the current bright/vocal/transient/wide-bass set
+   - pink noise and shaped noise classes
    - stereo material with deliberately wide low end
 3. Add a lightweight RF/composite analyzer roadmap item:
-   - at minimum, show composite spectrum and pilot/RDS occupancy clearly
-   - later, optionally add compliance-oriented views similar in spirit to Stereo Tool's FM tooling
-4. Add stored baseline comparisons so refactors can be checked against a known-good verifier signature instead of relying only on pass/fail.
-5. Grow `--verify-long` from a focused manual tool into a stricter regression gate with saved expected envelopes.
+    - at minimum, show composite spectrum and pilot/RDS occupancy clearly
+    - later, optionally add compliance-oriented views similar in spirit to Stereo Tool's FM tooling
+4. Grow `--verify-long` from a focused manual tool into a stricter regression gate with saved expected envelopes or stored baseline artifacts.
 
 ### Swift DSP cleanup checklist
 
@@ -429,25 +302,22 @@ This section is intentionally concrete and implementation-focused.
    - budget-margin math second
    - stateful limiter packaging last
    - rerun `--verify` after every micro-step
-3. Choose one oversampling strategy for the final limiter and remove the redundant one.
-4. Validate and retune:
+3. Validate and retune:
    - Orbass presets
    - mono-bass defaults
    - widener defaults
    - widener and multiband ordering
-5. Add deterministic offline tests for:
-   - MPX peak control
-   - pilot/RDS integrity
+4. Add deterministic offline tests for:
    - stereo-to-mono collapse behavior
    - now-playing RT / RT+ formatting edge cases
-6. Keep the MPX width/compliance checks as a regression gate and extend them with longer-run cases.
-7. Extend the RDS timed-text parser with a documented compatible subset:
+5. Keep the MPX width/compliance checks as a regression gate and extend them with longer-run cases.
+6. Extend the RDS timed-text parser with a documented compatible subset:
    - `Ns:` duration segments
    - `Nt:` transmit-count segments
    - escapes for separators
    - optional wrap markers if they are still judged useful
-8. Move remaining non-DSP work off the audio callback where practical.
-9. Keep shrinking the final composite cleanup into verifier-backed micro-steps until the stateful stage can be isolated safely.
+7. Move remaining non-DSP work off the audio callback where practical.
+8. Keep shrinking the final composite cleanup into verifier-backed micro-steps until the stateful stage can be isolated safely.
 
 Success criteria:
 
@@ -472,15 +342,9 @@ These are the current practical defaults after the recent gain-structure and fin
 
 The next quality improvement should be:
 
-1. add baseline comparison/signature checks to `--verify-long`
-2. continue only small state-safe DSP cleanups around the final stage
-3. then retune image-stage presets and interactions from measurements instead of intuition
-
-Completed already:
-
-- the final composite path is frozen as the verified baseline
-- pure final-stage math extraction is underway
-- `--verify` is now the gating check after each micro-step
+1. continue only small state-safe DSP cleanups around the final stage
+2. then retune image-stage presets and interactions from measurements instead of intuition
+3. move from in-code long-run signatures toward stored baseline artifacts if they prove useful
 
 This keeps the plan focused on the actual remaining work instead of repeating steps that are already done.
 
