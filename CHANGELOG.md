@@ -12,16 +12,31 @@
 - Composite calibration telemetry showing pilot %, RDS %, audio-composite peak, budget margin, and a `Safe` / `Tight` / `Risk` composite-budget state
 - Dedicated `Mono Bass` stage with configurable crossover in the Widener tab
 - Orbass preset/config wiring for density and subharmonics, with the adaptive Orbass path now active in the live DSP chain
+- Offline MPX verification mode with deterministic scenarios and exit codes
+- Additional audible-quality verification scenarios:
+  - `bright_dense`
+  - `vocal_sibilant`
+  - `transient_push`
+  - `wide_bass`
+- Preset-sweep verification mode:
+  - `--verify-presets`
+  - focused on `5B AC/Pop`, `5B CHR/EDM`, `5B Rock`, `5B Talk`, `5B News`, `5B Urban`, and `5B Dance`
+- Window frame persistence for the main window and utility windows
 
 ### Fixed
 - RT+ tagging now uses structured now-playing metadata more reliably for artist/title extraction
 - RT+ tag ordering now follows the field positions in transmitted radiotext
+- Now-playing script failures and empty output now clear the active metadata, show a friendly `No Song Data` status, and discard the affected RT segment instead of leaving blank labels behind
 - `output_gain_db` and `limit_mpx` are now active in the final render path
 - Added a proper `Final Drive` stage ahead of composite limiting and improved composite limiter behavior
 - `Mono Mode` now suppresses pilot, stereo subcarrier, and RDS so it behaves as a true mono composite mode
 - Final drive now affects the audio-composite path without dragging pilot and RDS injection levels along with it
 - The main composite limiter now runs before pilot/RDS sum, with the full-MPX limiter acting as a safety stage
 - Stereo widener no longer behaves as a raw full-band M/S gain stage and now includes stereo-image protection
+- Orbass was retuned to be substantially more conservative and less artifact-prone
+- Multiband now uses complementary Linkwitz-Riley crossover stages instead of one-pole residual splits
+- Multiband defaults and presets were retuned toward more realistic broadcast-style starting points
+- `5B AC/Pop`, `5B CHR/EDM`, `5B Rock`, `5B Talk`, `5B News`, `5B Urban`, and `5B Dance` were tuned and verified against the focused preset sweep
 - Processing and RDS reset buttons now only reset the active tab
 - External config reloads now correctly preserve pending apply state
 

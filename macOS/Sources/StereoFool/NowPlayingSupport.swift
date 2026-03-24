@@ -44,8 +44,9 @@ final class NowPlayingState: @unchecked Sendable {
 
 enum NowPlayingFormatter {
     static func expandTemplate(_ template: String, snapshot: NowPlayingSnapshot) -> String {
+        let filteredTemplate = filterEmptyNowPlayingSegments(template, snapshot: snapshot)
         let now = Date()
-        return template
+        return filteredTemplate
             .replacingOccurrences(of: "{now_playing}", with: snapshot.display)
             .replacingOccurrences(of: "{display}", with: snapshot.display)
             .replacingOccurrences(of: "{artist}", with: snapshot.artist)
@@ -81,6 +82,59 @@ enum NowPlayingFormatter {
         formatter.dateFormat = "HH:mm"
         return formatter
     }()
+
+    private static func filterEmptyNowPlayingSegments(
+        _ template: String,
+        snapshot: NowPlayingSnapshot
+    ) -> String {
+        guard !snapshot.hasContent else { return template }
+
+        let trimmed = template.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard containsNowPlayingMacro(trimmed) else { return template }
+
+        if trimmed.contains("/") {
+            let segments = template
+                .split(separator: "/", omittingEmptySubsequences: false)
+                .map(String.init)
+            let filtered = segments.filter { segment in
+                !containsNowPlayingMacro(segment)
+            }
+            return filtered.joined(separator: "/")
+        }
+
+        if let regex = try? NSRegularExpression(
+            pattern: #"([0-9]+(?:\.[0-9]+)?)s:(.*?)(?=(?:\s+[0-9]+(?:\.[0-9]+)?s:)|$)"#,
+            options: []
+        ) {
+            let ns = trimmed as NSString
+            let matches = regex.matches(
+                in: trimmed,
+                options: [],
+                range: NSRange(location: 0, length: ns.length)
+            )
+            if !matches.isEmpty, matches[0].range.location == 0 {
+                let kept = matches.compactMap { match -> String? in
+                    guard match.numberOfRanges >= 3 else { return nil }
+                    let duration = ns.substring(with: match.range(at: 1))
+                    let text = ns.substring(with: match.range(at: 2)).trimmingCharacters(
+                        in: .whitespacesAndNewlines
+                    )
+                    guard !containsNowPlayingMacro(text) else { return nil }
+                    return "\(duration)s:\(text)"
+                }
+                return kept.joined(separator: "/")
+            }
+        }
+
+        return ""
+    }
+
+    private static func containsNowPlayingMacro(_ text: String) -> Bool {
+        text.contains("{now_playing}")
+            || text.contains("{display}")
+            || text.contains("{artist}")
+            || text.contains("{title}")
+    }
 }
 
 final class NowPlayingScriptRunner: @unchecked Sendable {
@@ -178,7 +232,8 @@ final class NowPlayingScriptRunner: @unchecked Sendable {
                 : snapshot.display
             statusHandler("Now Playing: \(rendered)")
         case .failure(let error):
-            statusHandler("Now Playing: \(error.message)")
+            state.clear()
+            statusHandler("Now Playing: \(friendlyStatusMessage(for: error))")
         }
     }
 
@@ -263,6 +318,14 @@ final class NowPlayingScriptRunner: @unchecked Sendable {
             title: title,
             revision: 0
         )
+    }
+
+    private func friendlyStatusMessage(for error: ScriptFailure) -> String {
+        let normalized = error.message.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "empty output" || normalized == "exit 1" {
+            return "No Song Data"
+        }
+        return error.message
     }
 }
 

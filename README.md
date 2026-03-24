@@ -67,6 +67,12 @@ Offline verification:
 swift run --package-path macOS StereoFool --verify --seconds 5
 ```
 
+Preset sweep verification:
+
+```bash
+swift run --package-path macOS StereoFool --verify-presets --seconds 5
+```
+
 Custom config file:
 
 ```bash
@@ -141,16 +147,37 @@ Recommended starting point:
 
 This keeps bass more mono-compatible while leaving the upper image open enough for FM.
 
+### Orbass and multiband
+
+The current low-frequency enhancement and multiband stages are now tuned more conservatively than earlier builds.
+
+- `Orbass` uses adaptive low-band enhancement with restrained harmonics, optional subharmonics, and gated makeup behavior to avoid obvious bass pumping and synthetic overhang.
+- `Multiband` now uses complementary 4th-order Linkwitz-Riley stereo crossovers for both 3-band and 5-band modes. This is a substantial improvement over residual one-pole band splitting and should produce cleaner band separation and more stable recombination.
+
+Recommended starting point:
+
+- `Orbass`: `AC/Pop` or `Rock` preset first
+- `Multiband`: `5B AC/Pop` for general music, `5B Talk` for speech, `5B CHR/EDM` only when you actually want a denser result
+
+The current defaults are intentionally more moderate and are meant to be tuned upward from a clean starting point, not downward from a hyped one.
+
 ### Now Playing script output
 
 The RDS Radiotext section can poll an external script for now-playing metadata.
 
 Expected script behavior:
 
-- Exit with status `0` when metadata is available
+- Exit with status `0` only when active playback metadata is available
 - Write metadata to `stdout`
 - Plain single-line output is accepted and treated as the display text
 - Structured `key=value` lines are preferred for correct RT+ tagging
+
+No-data behavior:
+
+- Exit with status `1` when no song is currently playing or no usable metadata is available
+- StereoFool treats `exit 1` and empty output as `No Song Data`
+- Any RT segment containing `{now_playing}`, `{display}`, `{artist}`, or `{title}` is discarded entirely when no song data is available
+- This works for both slash-separated timed RT and consecutive timed markers
 
 Supported keys:
 
@@ -170,7 +197,13 @@ title=I Venti Megamix
 Example Radiotext / RT+ settings:
 
 ```text
-Radiotext: 10s:Now: {artist} - {title}
+Radiotext: 10s:In STEREO on RDS/10s:Now: {artist} - {title}
+```
+
+If the script reports no song data, the transmitted RT falls back cleanly to:
+
+```text
+10s:In STEREO on RDS
 ```
 
 When the now-playing script is enabled, RT+ tags are derived automatically from structured script output (`artist`, `title`, `display`). There is no separate RT+ format field to maintain for this workflow.
@@ -207,6 +240,12 @@ Example:
 ./macOS/.build/debug/StereoFool --verify --seconds 5
 ```
 
+For key multiband-preset validation:
+
+```bash
+./macOS/.build/debug/StereoFool --verify-presets --seconds 5
+```
+
 The report includes:
 
 - MPX peak in dBFS
@@ -217,6 +256,42 @@ The report includes:
 - pilot and RDS injection percentages
 - composite budget margin
 - AGC reduction
+- decoded-audio quality metrics per scenario:
+  - input/output correlation
+  - input/output side-to-mid ratio
+  - RMS drift
+
+Current deterministic scenarios include:
+
+- `mono_1khz`
+- `stereo_diff_400hz`
+- `program_mix`
+- `bright_dense`
+- `vocal_sibilant`
+- `transient_push`
+- `wide_bass`
+
+`--verify-presets` runs a shorter focused sweep across the main 5-band presets:
+
+- `5B AC/Pop`
+- `5B CHR/EDM`
+- `5B Rock`
+- `5B Talk`
+- `5B News`
+- `5B Urban`
+- `5B Dance`
+
+Current post-build preset sweep status:
+
+- `5B AC/Pop`: `OK`
+- `5B CHR/EDM`: `OK`
+- `5B Rock`: `OK`
+- `5B Talk`: `OK`
+- `5B News`: `OK`
+- `5B Urban`: `OK`
+- `5B Dance`: `OK`
+
+Current verification is strongest for composite safety and budget behavior. It is not yet a full listening-quality oracle for multiband crossover tone, stereo-image feel, or Orbass character, so final tuning still requires real program listening.
 
 Exit status:
 

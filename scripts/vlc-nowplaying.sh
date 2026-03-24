@@ -1,5 +1,25 @@
 #!/bin/zsh
 
+is_playing=$(
+osascript <<'EOF' 2>/dev/null
+if application "VLC" is not running then return "0"
+tell application "VLC"
+	try
+		if playing then
+			return "1"
+		end if
+		return "0"
+	on error
+		return ""
+	end try
+end tell
+EOF
+)
+
+if [[ "$is_playing" != "1" ]]; then
+  exit 1
+fi
+
 track=$(
 osascript <<'EOF' 2>/dev/null
 tell application "VLC"

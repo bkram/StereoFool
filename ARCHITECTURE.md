@@ -27,7 +27,7 @@ Audio Input (L/R) @ interface rate (typically 192 kHz)
 │    ├── Orbass bass enhancement (optional)
 │    ├── Mono bass management (optional)
 │    ├── Stereo widener with image protection (optional)
-│    └── Multiband compressor (optional)
+│    └── Multiband compressor with complementary LR4 crossovers (optional)
 │
 ├──► Pre-emphasis stage (region specific)
 │    ├── Pre-emphasis 50 µs / 75 µs
@@ -86,7 +86,7 @@ Within the main audio path, StereoFool currently runs:
 4. Orbass
 5. Mono bass
 6. Stereo widener
-7. Multiband
+7. Multiband with 3-band or 5-band complementary crossovers
 8. Stereo-image protection
 9. Pre-emphasis
 10. Stereo coder
@@ -100,3 +100,10 @@ When `Mono Mode` is enabled, StereoFool suppresses the pilot, stereo subcarrier,
 - AVFoundation / CoreAudio for audio I/O
 - Accelerate framework for vDSP (SIMD-optimized metering)
 - SwiftUI for native macOS UI
+
+## Current DSP notes
+
+- Orbass is now intentionally conservative. It uses adaptive low-band enhancement with restrained harmonic and optional subharmonic support, plus gated makeup behavior to reduce bass pumping and low-level artifacts.
+- The multiband stage now uses complementary Linkwitz-Riley 4th-order stereo crossover stages instead of one-pole residual band splits. This is a significant improvement in band separation and should reduce recombination smear and tonal instability when adjacent bands compress differently.
+- The final MPX chain remains verification-backed. Structural cleanup there is intentionally done in small steps because even behavior-preserving refactors can change composite output measurably.
+- Verification now covers both composite safety and decoded-audio quality signals. In addition to the base offline verifier, a focused preset sweep exists for the main 5-band preset family (`5B AC/Pop`, `5B CHR/EDM`, `5B Rock`, `5B Talk`, `5B News`, `5B Urban`, `5B Dance`).

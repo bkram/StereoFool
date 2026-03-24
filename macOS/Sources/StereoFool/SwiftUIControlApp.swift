@@ -8,11 +8,18 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 // Sizes
-private let kWindowWidth: CGFloat = 700
-private let kWindowHeight: CGFloat = 330
-private let kWindowMinWidth: CGFloat = 700
-private let kWindowMinHeight: CGFloat = 330
+private let kWindowWidth: CGFloat = 860
+private let kWindowHeight: CGFloat = 440
+private let kWindowMinWidth: CGFloat = 760
+private let kWindowMinHeight: CGFloat = 380
 private let kStereoFoolIconSymbol = "\u{1F3A7}"
+private let kMainWindowAutosaveName = "StereoFool.MainWindow"
+private let kScopesWindowAutosaveName = "StereoFool.ScopesWindow"
+private let kSpectrumWindowAutosaveName = "StereoFool.SpectrumWindow"
+private let kLevelsWindowAutosaveName = "StereoFool.LevelsWindow"
+private let kAboutWindowAutosaveName = "StereoFool.AboutWindow"
+private let kHelpWindowAutosaveName = "StereoFool.HelpWindow"
+private let kSettingsWindowAutosaveName = "StereoFool.SettingsWindow"
 
 private func makeStereoFoolAppIcon(size: CGFloat = 512) -> NSImage {
     let image = NSImage(size: NSSize(width: size, height: size))
@@ -562,23 +569,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         self.runSeconds = runSeconds
     }
 
+    private func restoreFrame(for window: NSWindow, autosaveName: String) {
+        window.setFrameAutosaveName(autosaveName)
+        if !window.setFrameUsingName(autosaveName) {
+            window.center()
+        }
+    }
+
+    private func revealWindow(_ window: NSWindow) {
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         if sender == window {
             sender.orderOut(nil)
             return false
         } else if sender == scopesWindow {
-            scopesWindow = nil
+            sender.orderOut(nil)
+            return false
         } else if sender == spectrumWindow {
-            spectrumWindow = nil
             model?.spectrumWindowVisible = false
+            sender.orderOut(nil)
+            return false
         } else if sender == levelsWindow {
-            levelsWindow = nil
+            sender.orderOut(nil)
+            return false
         } else if sender == aboutWindow {
-            aboutWindow = nil
+            sender.orderOut(nil)
+            return false
         } else if sender == helpWindow {
-            helpWindow = nil
+            sender.orderOut(nil)
+            return false
         } else if sender == settingsWindow {
-            settingsWindow = nil
+            sender.orderOut(nil)
+            return false
         }
         return true
     }
@@ -611,7 +636,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.titleVisibility = .visible
         w.minSize = NSSize(width: 900, height: 620)
         w.delegate = self
-        
+        restoreFrame(for: w, autosaveName: kMainWindowAutosaveName)
         w.contentView = host
         w.makeKeyAndOrderFront(nil)
         window = w
@@ -761,14 +786,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc private func showAbout() {
-        let app = NSApplication.shared
         if let existing = aboutWindow {
-            if existing.isKeyWindow {
-                existing.close()
-            } else {
-                existing.makeKeyAndOrderFront(nil)
-                app.activate(ignoringOtherApps: true)
-            }
+            revealWindow(existing)
             return
         }
         let aboutView = AboutSectionView()
@@ -779,21 +798,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.setContentSize(NSSize(width: 450, height: 500))
         w.isReleasedWhenClosed = false
         w.delegate = self
-        w.center()
+        restoreFrame(for: w, autosaveName: kAboutWindowAutosaveName)
         w.makeKeyAndOrderFront(nil)
         aboutWindow = w
-        app.activate(ignoringOtherApps: true)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     @objc private func showHelp() {
-        let app = NSApplication.shared
         if let existing = helpWindow {
-            if existing.isKeyWindow {
-                existing.close()
-            } else {
-                existing.makeKeyAndOrderFront(nil)
-                app.activate(ignoringOtherApps: true)
-            }
+            revealWindow(existing)
             return
         }
         let helpView = HelpWindowView()
@@ -805,10 +818,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.minSize = NSSize(width: 520, height: 420)
         w.isReleasedWhenClosed = false
         w.delegate = self
-        w.center()
+        restoreFrame(for: w, autosaveName: kHelpWindowAutosaveName)
         w.makeKeyAndOrderFront(nil)
         helpWindow = w
-        app.activate(ignoringOtherApps: true)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     @objc private func openDocs() {
@@ -816,10 +829,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc private func showSettings() {
-        let app = NSApplication.shared
         if let existing = settingsWindow {
-            existing.makeKeyAndOrderFront(nil)
-            app.activate(ignoringOtherApps: true)
+            revealWindow(existing)
             return
         }
         guard let vm = model else { return }
@@ -833,10 +844,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.minSize = NSSize(width: 700, height: 520)
         w.isReleasedWhenClosed = false
         w.delegate = self
-        w.center()
+        restoreFrame(for: w, autosaveName: kSettingsWindowAutosaveName)
         w.makeKeyAndOrderFront(nil)
         settingsWindow = w
-        app.activate(ignoringOtherApps: true)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     @objc private func toggleTransport() {
@@ -860,10 +871,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     @objc private func showMainWindow() {
-        let app = NSApplication.shared
         if let existing = window {
-            existing.makeKeyAndOrderFront(nil)
-            app.activate(ignoringOtherApps: true)
+            revealWindow(existing)
             return
         }
         guard let vm = model else { return }
@@ -880,21 +889,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.titleVisibility = .visible
         w.minSize = NSSize(width: 900, height: 620)
         w.delegate = self
+        restoreFrame(for: w, autosaveName: kMainWindowAutosaveName)
         w.contentView = host
         w.makeKeyAndOrderFront(nil)
         window = w
-        app.activate(ignoringOtherApps: true)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     @objc private func showScopesWindow() {
-        let app = NSApplication.shared
         if let existing = scopesWindow {
-            if existing.isKeyWindow {
-                existing.close()
-            } else {
-                existing.makeKeyAndOrderFront(nil)
-                app.activate(ignoringOtherApps: true)
-            }
+            revealWindow(existing)
             return
         }
         guard let vm = model else { return }
@@ -907,21 +911,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.minSize = NSSize(width: kWindowMinWidth, height: kWindowMinHeight)
         w.isReleasedWhenClosed = false
         w.delegate = self
-        w.center()
+        restoreFrame(for: w, autosaveName: kScopesWindowAutosaveName)
         w.makeKeyAndOrderFront(nil)
         scopesWindow = w
-        app.activate(ignoringOtherApps: true)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     @objc private func showSpectrumWindow() {
-        let app = NSApplication.shared
         if let existing = spectrumWindow {
-            if existing.isKeyWindow {
-                existing.close()
-            } else {
-                existing.makeKeyAndOrderFront(nil)
-                app.activate(ignoringOtherApps: true)
-            }
+            revealWindow(existing)
+            model?.spectrumWindowVisible = true
             return
         }
         guard let vm = model else { return }
@@ -934,22 +933,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.minSize = NSSize(width: kWindowMinWidth, height: kWindowMinHeight)
         w.isReleasedWhenClosed = false
         w.delegate = self
-        w.center()
+        restoreFrame(for: w, autosaveName: kSpectrumWindowAutosaveName)
         w.makeKeyAndOrderFront(nil)
         spectrumWindow = w
         model?.spectrumWindowVisible = true
-        app.activate(ignoringOtherApps: true)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     @objc private func showLevelsWindow() {
-        let app = NSApplication.shared
         if let existing = levelsWindow {
-            if existing.isKeyWindow {
-                existing.close()
-            } else {
-                existing.makeKeyAndOrderFront(nil)
-                app.activate(ignoringOtherApps: true)
-            }
+            revealWindow(existing)
             return
         }
         guard let vm = model else { return }
@@ -962,10 +955,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         w.minSize = NSSize(width: kWindowMinWidth, height: kWindowMinHeight)
         w.isReleasedWhenClosed = false
         w.delegate = self
-        w.center()
+        restoreFrame(for: w, autosaveName: kLevelsWindowAutosaveName)
         w.makeKeyAndOrderFront(nil)
         levelsWindow = w
-        app.activate(ignoringOtherApps: true)
+        NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
     @objc private func openConfig() {
@@ -2277,41 +2270,41 @@ final class StereoFoolViewModel: ObservableObject {
 
     private static let orbassPresets: [OrbassPreset] = [
         .init(
-            id: "chr", title: "CHR/EDM", enabled: true, amount: 0.52, freqHz: 76, harmonics: 0.52,
-            drive: 1.10, density: 0.72, subharmonicsEnabled: true, subharmonicsAmount: 0.28),
+            id: "chr", title: "CHR/EDM", enabled: true, amount: 0.34, freqHz: 78, harmonics: 0.28,
+            drive: 0.92, density: 0.56, subharmonicsEnabled: true, subharmonicsAmount: 0.16),
         .init(
-            id: "urban", title: "Urban", enabled: true, amount: 0.50, freqHz: 72, harmonics: 0.48,
-            drive: 1.05, density: 0.70, subharmonicsEnabled: true, subharmonicsAmount: 0.24),
+            id: "urban", title: "Urban", enabled: true, amount: 0.32, freqHz: 74, harmonics: 0.24,
+            drive: 0.88, density: 0.54, subharmonicsEnabled: true, subharmonicsAmount: 0.14),
         .init(
-            id: "rock", title: "Rock", enabled: true, amount: 0.38, freqHz: 88, harmonics: 0.28,
-            drive: 0.92, density: 0.58, subharmonicsEnabled: false, subharmonicsAmount: 0.14),
+            id: "rock", title: "Rock", enabled: true, amount: 0.24, freqHz: 90, harmonics: 0.16,
+            drive: 0.76, density: 0.44, subharmonicsEnabled: false, subharmonicsAmount: 0.08),
         .init(
-            id: "ac", title: "AC/Pop", enabled: true, amount: 0.26, freqHz: 98, harmonics: 0.16,
-            drive: 0.78, density: 0.48, subharmonicsEnabled: false, subharmonicsAmount: 0.10),
+            id: "ac", title: "AC/Pop", enabled: true, amount: 0.18, freqHz: 100, harmonics: 0.10,
+            drive: 0.68, density: 0.36, subharmonicsEnabled: false, subharmonicsAmount: 0.06),
         .init(
-            id: "talk", title: "Talk", enabled: true, amount: 0.12, freqHz: 120, harmonics: 0.08,
-            drive: 0.55, density: 0.32, subharmonicsEnabled: false, subharmonicsAmount: 0.0),
+            id: "talk", title: "Talk", enabled: true, amount: 0.08, freqHz: 120, harmonics: 0.04,
+            drive: 0.48, density: 0.22, subharmonicsEnabled: false, subharmonicsAmount: 0.0),
     ]
 
     private static let multibandPresets: [MultibandPreset] = [
         .init(
-            id: "3_chr", title: "3B CHR/EDM", mode: 3, lowHz: 260, highHz: 2300, x1Hz: nil,
-            x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -25, lowRatio: 2.6, lowAttackMS: 18,
-            lowReleaseMS: 290, midThresholdDB: -23, midRatio: 2.3, midAttackMS: 12,
-            midReleaseMS: 220, highThresholdDB: -21, highRatio: 1.8, highAttackMS: 7,
-            highReleaseMS: 150, kneeDB: 2.0, linkStrength: 0.36, releaseProgramDependent: true),
+            id: "3_chr", title: "3B CHR/EDM", mode: 3, lowHz: 290, highHz: 2500, x1Hz: nil,
+            x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -23, lowRatio: 2.3, lowAttackMS: 20,
+            lowReleaseMS: 310, midThresholdDB: -21, midRatio: 2.0, midAttackMS: 14,
+            midReleaseMS: 235, highThresholdDB: -19, highRatio: 1.6, highAttackMS: 8,
+            highReleaseMS: 165, kneeDB: 2.4, linkStrength: 0.42, releaseProgramDependent: true),
         .init(
-            id: "3_rock", title: "3B Rock", mode: 3, lowHz: 290, highHz: 2400, x1Hz: nil, x2Hz: nil,
-            x3Hz: nil, x4Hz: nil, lowThresholdDB: -23, lowRatio: 2.4, lowAttackMS: 20,
-            lowReleaseMS: 310, midThresholdDB: -20, midRatio: 2.2, midAttackMS: 13,
-            midReleaseMS: 230, highThresholdDB: -18, highRatio: 1.7, highAttackMS: 8,
-            highReleaseMS: 165, kneeDB: 2.2, linkStrength: 0.40, releaseProgramDependent: true),
+            id: "3_rock", title: "3B Rock", mode: 3, lowHz: 310, highHz: 2550, x1Hz: nil, x2Hz: nil,
+            x3Hz: nil, x4Hz: nil, lowThresholdDB: -21, lowRatio: 2.1, lowAttackMS: 22,
+            lowReleaseMS: 325, midThresholdDB: -19, midRatio: 1.9, midAttackMS: 14,
+            midReleaseMS: 245, highThresholdDB: -18, highRatio: 1.55, highAttackMS: 9,
+            highReleaseMS: 175, kneeDB: 2.5, linkStrength: 0.44, releaseProgramDependent: true),
         .init(
-            id: "3_ac", title: "3B AC/Pop", mode: 3, lowHz: 310, highHz: 2550, x1Hz: nil, x2Hz: nil,
-            x3Hz: nil, x4Hz: nil, lowThresholdDB: -20, lowRatio: 2.0, lowAttackMS: 24,
-            lowReleaseMS: 340, midThresholdDB: -18, midRatio: 1.8, midAttackMS: 16,
-            midReleaseMS: 260, highThresholdDB: -17, highRatio: 1.4, highAttackMS: 10,
-            highReleaseMS: 190, kneeDB: 2.8, linkStrength: 0.44, releaseProgramDependent: true),
+            id: "3_ac", title: "3B AC/Pop", mode: 3, lowHz: 320, highHz: 2650, x1Hz: nil, x2Hz: nil,
+            x3Hz: nil, x4Hz: nil, lowThresholdDB: -19, lowRatio: 1.9, lowAttackMS: 24,
+            lowReleaseMS: 340, midThresholdDB: -17, midRatio: 1.7, midAttackMS: 16,
+            midReleaseMS: 260, highThresholdDB: -16, highRatio: 1.4, highAttackMS: 10,
+            highReleaseMS: 190, kneeDB: 3.0, linkStrength: 0.48, releaseProgramDependent: true),
         .init(
             id: "3_country", title: "3B Country", mode: 3, lowHz: 300, highHz: 2450, x1Hz: nil,
             x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -21, lowRatio: 2.2, lowAttackMS: 22,
@@ -2319,11 +2312,11 @@ final class StereoFoolViewModel: ObservableObject {
             midReleaseMS: 250, highThresholdDB: -17, highRatio: 1.5, highAttackMS: 10,
             highReleaseMS: 185, kneeDB: 2.6, linkStrength: 0.42, releaseProgramDependent: true),
         .init(
-            id: "3_talk", title: "3B Talk", mode: 3, lowHz: 340, highHz: 3000, x1Hz: nil, x2Hz: nil,
-            x3Hz: nil, x4Hz: nil, lowThresholdDB: -16, lowRatio: 1.6, lowAttackMS: 34,
-            lowReleaseMS: 420, midThresholdDB: -15, midRatio: 1.5, midAttackMS: 28,
-            midReleaseMS: 340, highThresholdDB: -14, highRatio: 1.3, highAttackMS: 18,
-            highReleaseMS: 270, kneeDB: 3.8, linkStrength: 0.58, releaseProgramDependent: true),
+            id: "3_talk", title: "3B Talk", mode: 3, lowHz: 360, highHz: 3200, x1Hz: nil, x2Hz: nil,
+            x3Hz: nil, x4Hz: nil, lowThresholdDB: -15, lowRatio: 1.5, lowAttackMS: 36,
+            lowReleaseMS: 440, midThresholdDB: -14, midRatio: 1.4, midAttackMS: 30,
+            midReleaseMS: 360, highThresholdDB: -13, highRatio: 1.22, highAttackMS: 20,
+            highReleaseMS: 290, kneeDB: 4.0, linkStrength: 0.62, releaseProgramDependent: true),
         .init(
             id: "3_urban", title: "3B Urban", mode: 3, lowHz: 250, highHz: 2200, x1Hz: nil,
             x2Hz: nil, x3Hz: nil, x4Hz: nil, lowThresholdDB: -24, lowRatio: 2.7, lowAttackMS: 16,
@@ -2355,23 +2348,23 @@ final class StereoFoolViewModel: ObservableObject {
             midReleaseMS: 430, highThresholdDB: -12, highRatio: 1.2, highAttackMS: 26,
             highReleaseMS: 340, kneeDB: 4.6, linkStrength: 0.66, releaseProgramDependent: true),
         .init(
-            id: "5_chr", title: "5B CHR/EDM", mode: 5, lowHz: nil, highHz: nil, x1Hz: 80, x2Hz: 300,
-            x3Hz: 1250, x4Hz: 5000, lowThresholdDB: -25, lowRatio: 2.8, lowAttackMS: 14,
-            lowReleaseMS: 270, midThresholdDB: -23, midRatio: 2.4, midAttackMS: 10,
-            midReleaseMS: 210, highThresholdDB: -21, highRatio: 1.9, highAttackMS: 5,
-            highReleaseMS: 140, kneeDB: 1.8, linkStrength: 0.34, releaseProgramDependent: true),
+            id: "5_chr", title: "5B CHR/EDM", mode: 5, lowHz: nil, highHz: nil, x1Hz: 90, x2Hz: 320,
+            x3Hz: 1600, x4Hz: 6200, lowThresholdDB: -23, lowRatio: 2.25, lowAttackMS: 20,
+            lowReleaseMS: 320, midThresholdDB: -21, midRatio: 1.9, midAttackMS: 13,
+            midReleaseMS: 240, highThresholdDB: -19, highRatio: 1.6, highAttackMS: 8,
+            highReleaseMS: 180, kneeDB: 2.6, linkStrength: 0.48, releaseProgramDependent: true),
         .init(
-            id: "5_rock", title: "5B Rock", mode: 5, lowHz: nil, highHz: nil, x1Hz: 85, x2Hz: 320,
-            x3Hz: 1400, x4Hz: 5400, lowThresholdDB: -23, lowRatio: 2.5, lowAttackMS: 18,
-            lowReleaseMS: 300, midThresholdDB: -21, midRatio: 2.1, midAttackMS: 12,
-            midReleaseMS: 225, highThresholdDB: -19, highRatio: 1.8, highAttackMS: 7,
-            highReleaseMS: 160, kneeDB: 2.1, linkStrength: 0.38, releaseProgramDependent: true),
+            id: "5_rock", title: "5B Rock", mode: 5, lowHz: nil, highHz: nil, x1Hz: 90, x2Hz: 340,
+            x3Hz: 1550, x4Hz: 6100, lowThresholdDB: -21, lowRatio: 2.1, lowAttackMS: 20,
+            lowReleaseMS: 320, midThresholdDB: -19, midRatio: 1.85, midAttackMS: 13,
+            midReleaseMS: 240, highThresholdDB: -18, highRatio: 1.55, highAttackMS: 8,
+            highReleaseMS: 175, kneeDB: 2.5, linkStrength: 0.46, releaseProgramDependent: true),
         .init(
-            id: "5_ac", title: "5B AC/Pop", mode: 5, lowHz: nil, highHz: nil, x1Hz: 80, x2Hz: 320,
-            x3Hz: 1500, x4Hz: 5800, lowThresholdDB: -20, lowRatio: 1.9, lowAttackMS: 22,
-            lowReleaseMS: 330, midThresholdDB: -18, midRatio: 1.8, midAttackMS: 14,
-            midReleaseMS: 260, highThresholdDB: -17, highRatio: 1.5, highAttackMS: 10,
-            highReleaseMS: 190, kneeDB: 2.8, linkStrength: 0.44, releaseProgramDependent: true),
+            id: "5_ac", title: "5B AC/Pop", mode: 5, lowHz: nil, highHz: nil, x1Hz: 90, x2Hz: 350,
+            x3Hz: 1800, x4Hz: 6800, lowThresholdDB: -17.5, lowRatio: 1.75, lowAttackMS: 28,
+            lowReleaseMS: 375, midThresholdDB: -16.0, midRatio: 1.55, midAttackMS: 19,
+            midReleaseMS: 300, highThresholdDB: -14.5, highRatio: 1.28, highAttackMS: 13,
+            highReleaseMS: 225, kneeDB: 3.6, linkStrength: 0.52, releaseProgramDependent: true),
         .init(
             id: "5_classic", title: "5B Classical/Jazz", mode: 5, lowHz: nil, highHz: nil, x1Hz: 90,
             x2Hz: 360, x3Hz: 1700, x4Hz: 6500, lowThresholdDB: -17, lowRatio: 1.5, lowAttackMS: 36,
@@ -2379,23 +2372,23 @@ final class StereoFoolViewModel: ObservableObject {
             midReleaseMS: 360, highThresholdDB: -15, highRatio: 1.25, highAttackMS: 20,
             highReleaseMS: 280, kneeDB: 4.5, linkStrength: 0.60, releaseProgramDependent: true),
         .init(
-            id: "5_talk", title: "5B Talk", mode: 5, lowHz: nil, highHz: nil, x1Hz: 100, x2Hz: 400,
-            x3Hz: 1800, x4Hz: 7000, lowThresholdDB: -16, lowRatio: 1.5, lowAttackMS: 38,
-            lowReleaseMS: 480, midThresholdDB: -15, midRatio: 1.4, midAttackMS: 32,
-            midReleaseMS: 380, highThresholdDB: -14, highRatio: 1.2, highAttackMS: 22,
-            highReleaseMS: 300, kneeDB: 4.2, linkStrength: 0.62, releaseProgramDependent: true),
+            id: "5_talk", title: "5B Talk", mode: 5, lowHz: nil, highHz: nil, x1Hz: 110, x2Hz: 420,
+            x3Hz: 2200, x4Hz: 7600, lowThresholdDB: -12.5, lowRatio: 1.24, lowAttackMS: 48,
+            lowReleaseMS: 560, midThresholdDB: -11.8, midRatio: 1.18, midAttackMS: 40,
+            midReleaseMS: 450, highThresholdDB: -11.2, highRatio: 1.08, highAttackMS: 30,
+            highReleaseMS: 360, kneeDB: 5.2, linkStrength: 0.46, releaseProgramDependent: true),
         .init(
-            id: "5_urban", title: "5B Urban", mode: 5, lowHz: nil, highHz: nil, x1Hz: 75, x2Hz: 280,
-            x3Hz: 1100, x4Hz: 4700, lowThresholdDB: -24, lowRatio: 2.7, lowAttackMS: 14,
-            lowReleaseMS: 270, midThresholdDB: -22, midRatio: 2.3, midAttackMS: 10,
-            midReleaseMS: 205, highThresholdDB: -20, highRatio: 1.9, highAttackMS: 5,
-            highReleaseMS: 140, kneeDB: 1.9, linkStrength: 0.36, releaseProgramDependent: true),
+            id: "5_urban", title: "5B Urban", mode: 5, lowHz: nil, highHz: nil, x1Hz: 85, x2Hz: 300,
+            x3Hz: 1300, x4Hz: 5400, lowThresholdDB: -23, lowRatio: 2.3, lowAttackMS: 18,
+            lowReleaseMS: 295, midThresholdDB: -21, midRatio: 2.0, midAttackMS: 12,
+            midReleaseMS: 220, highThresholdDB: -19, highRatio: 1.7, highAttackMS: 7,
+            highReleaseMS: 155, kneeDB: 2.2, linkStrength: 0.42, releaseProgramDependent: true),
         .init(
-            id: "5_dance", title: "5B Dance", mode: 5, lowHz: nil, highHz: nil, x1Hz: 70, x2Hz: 260,
-            x3Hz: 1000, x4Hz: 4300, lowThresholdDB: -26, lowRatio: 3.0, lowAttackMS: 12,
-            lowReleaseMS: 250, midThresholdDB: -24, midRatio: 2.6, midAttackMS: 9,
-            midReleaseMS: 190, highThresholdDB: -22, highRatio: 2.1, highAttackMS: 4,
-            highReleaseMS: 130, kneeDB: 1.7, linkStrength: 0.32, releaseProgramDependent: true),
+            id: "5_dance", title: "5B Dance", mode: 5, lowHz: nil, highHz: nil, x1Hz: 80, x2Hz: 290,
+            x3Hz: 1200, x4Hz: 5000, lowThresholdDB: -24, lowRatio: 2.5, lowAttackMS: 16,
+            lowReleaseMS: 285, midThresholdDB: -22, midRatio: 2.1, midAttackMS: 11,
+            midReleaseMS: 215, highThresholdDB: -20, highRatio: 1.75, highAttackMS: 6,
+            highReleaseMS: 150, kneeDB: 2.0, linkStrength: 0.40, releaseProgramDependent: true),
         .init(
             id: "5_news", title: "5B News", mode: 5, lowHz: nil, highHz: nil, x1Hz: 110, x2Hz: 450,
             x3Hz: 2100, x4Hz: 7600, lowThresholdDB: -15, lowRatio: 1.4, lowAttackMS: 40,
@@ -2768,7 +2761,7 @@ private struct RootView: View {
 
                 Spacer()
             }
-            .frame(width: 220)
+            .frame(minWidth: 200, idealWidth: 220, maxWidth: 260)
 
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
@@ -3299,7 +3292,7 @@ private struct MonitoringLevelsSectionView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 100)
+                .frame(minWidth: 100)
                 Picker(
                     "Fall",
                     selection: Binding(
@@ -3312,7 +3305,7 @@ private struct MonitoringLevelsSectionView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .frame(width: 110)
+                .frame(minWidth: 110)
                 Button("Reset Peaks") {
                     model.resetPeaks()
                 }
@@ -4282,7 +4275,7 @@ private struct ProcessingSectionView: View {
                     }
                 }
                 .padding(20)
-                .frame(maxWidth: 800, alignment: .topLeading)
+                .frame(maxWidth: 1120, alignment: .topLeading)
             }
         }
     }
@@ -4367,9 +4360,9 @@ private struct ProcessingOrbassTab: View {
             }
             .pickerStyle(.menu)
             Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled))
-            DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount), range: 0...1.2, format: "%.2f")
+            DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount), range: 0...1.0, format: "%.2f")
             DoubleSliderRow(title: "Frequency", value: model.configBinding(\.orbassFreqHz), range: 40...180, format: "%.1f Hz")
-            DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics), range: 0...1.2, format: "%.2f")
+            DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics), range: 0...1.0, format: "%.2f")
             DoubleSliderRow(title: "Drive", value: model.configBinding(\.orbassDrive), range: 0.2...2.0, format: "%.2f")
             DoubleSliderRow(title: "Density", value: model.configBinding(\.orbassDensity), range: 0...1.0, format: "%.2f")
             Toggle("Enable Subharmonics", isOn: model.configBinding(\.orbassSubharmonicsEnabled))
@@ -4671,7 +4664,7 @@ private struct RDSSectionView: View {
                     }
                 }
                 .padding(20)
-                .frame(maxWidth: 800, alignment: .topLeading)
+                .frame(maxWidth: 1120, alignment: .topLeading)
             }
         }
     }
@@ -4944,7 +4937,7 @@ private struct SettingsSectionView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(maxWidth: 720, alignment: .topLeading)
+        .frame(maxWidth: 920, alignment: .topLeading)
         .padding(.horizontal, 10)
         .controlSize(.small)
     }
@@ -4984,7 +4977,7 @@ private struct HelpWindowView: View {
                     .tag(topic)
             }
             .listStyle(.sidebar)
-            .frame(minWidth: 180, idealWidth: 200, maxWidth: 220)
+            .frame(minWidth: 190, idealWidth: 220, maxWidth: 260)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -4998,7 +4991,7 @@ private struct HelpWindowView: View {
                     }
                 }
                 .padding(20)
-                .frame(maxWidth: 640, alignment: .leading)
+                .frame(maxWidth: 860, alignment: .leading)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
@@ -5062,7 +5055,7 @@ private struct HelpInputLevelsView: View {
 
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: 640, alignment: .leading)
+        .frame(maxWidth: 860, alignment: .leading)
     }
 }
 
@@ -5131,7 +5124,7 @@ Now: {now_playing}
 
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: 640, alignment: .leading)
+        .frame(maxWidth: 860, alignment: .leading)
     }
 }
 

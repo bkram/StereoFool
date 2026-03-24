@@ -20,6 +20,7 @@ struct CLIOptions {
     var runSeconds: Double?
     var gui: Bool = true
     var verify: Bool = false
+    var verifyPresets: Bool = false
 }
 
 func normalizeConfigPath(_ rawPath: String) -> String {
@@ -59,6 +60,10 @@ func parseCLI() -> CLIOptions {
         case "--verify":
             options.verify = true
             options.gui = false
+        case "--verify-presets":
+            options.verify = true
+            options.verifyPresets = true
+            options.gui = false
         default:
             break
         }
@@ -74,6 +79,7 @@ func printUsage() {
         Usage:
           StereoFool [--config <path>] [--seconds 30] [--gui|--nogui]
           StereoFool [--config <path>] --verify [--seconds 5]
+          StereoFool [--config <path>] --verify-presets [--seconds 5]
 
         Options:
           --config   Path to macOS INI config (default: ~/Library/Application Support/StereoFool/StereoFool.ini)
@@ -81,6 +87,7 @@ func printUsage() {
           --gui      Launch native SwiftUI macOS window (default)
           --nogui    Run headless
           --verify   Run the offline MPX verification harness
+          --verify-presets  Sweep key multiband presets through the offline verification harness
         """
     print(text)
 }
@@ -118,7 +125,13 @@ let configPath = options.configPathExplicit
 do {
     if options.verify {
         let duration = max(1.0, options.runSeconds ?? 5.0)
-        exit(try runVerificationHarness(configPath: configPath, durationSeconds: duration))
+        exit(
+            try runVerificationHarness(
+                configPath: configPath,
+                durationSeconds: duration,
+                presetSweep: options.verifyPresets
+            )
+        )
     }
 
     let qosApplied = applyRealtimePriorityHints()

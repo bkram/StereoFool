@@ -377,6 +377,40 @@ struct StereoBiquad {
     }
 }
 
+struct LinkwitzRiley4 {
+    private var lp1 = Biquad()
+    private var lp2 = Biquad()
+    private var hp1 = Biquad()
+    private var hp2 = Biquad()
+
+    mutating func configure(cutoffHz: Float, sampleRate: Float) {
+        lp1.configureLowpass(cutoffHz: cutoffHz, sampleRate: sampleRate)
+        lp2.configureLowpass(cutoffHz: cutoffHz, sampleRate: sampleRate)
+        hp1.configureHighpass(cutoffHz: cutoffHz, sampleRate: sampleRate)
+        hp2.configureHighpass(cutoffHz: cutoffHz, sampleRate: sampleRate)
+    }
+
+    mutating func process(_ x: Float) -> (low: Float, high: Float) {
+        let low = lp2.process(lp1.process(x))
+        let high = hp2.process(hp1.process(x))
+        return (low, high)
+    }
+}
+
+struct StereoLinkwitzRiley4 {
+    private var left = LinkwitzRiley4()
+    private var right = LinkwitzRiley4()
+
+    mutating func configure(cutoffHz: Float, sampleRate: Float) {
+        left.configure(cutoffHz: cutoffHz, sampleRate: sampleRate)
+        right.configure(cutoffHz: cutoffHz, sampleRate: sampleRate)
+    }
+
+    mutating func process(left: Float, right: Float) -> ((Float, Float), (Float, Float)) {
+        (self.left.process(left), self.right.process(right))
+    }
+}
+
 struct BiquadCascade6 {
     private static let butterworthQ: (Float, Float, Float) = (0.5176381, 0.7071068, 1.9318517)
     var s1 = Biquad()
@@ -2565,10 +2599,8 @@ final class MPXGenerator {
     private let multibandMidReleaseMS: Float
     private let multibandHighReleaseMS: Float
 
-    private var mbLowL = OnePoleLP()
-    private var mbLowR = OnePoleLP()
-    private var mbMidL = OnePoleLP()
-    private var mbMidR = OnePoleLP()
+    private var mb3Split1 = StereoLinkwitzRiley4()
+    private var mb3Split2 = StereoLinkwitzRiley4()
     private var mbLowCompL = MonoCompressor()
     private var mbLowCompR = MonoCompressor()
     private var mbMidCompL = MonoCompressor()
@@ -2576,14 +2608,10 @@ final class MPXGenerator {
     private var mbHighCompL = MonoCompressor()
     private var mbHighCompR = MonoCompressor()
 
-    private var mb5X1L = OnePoleLP()
-    private var mb5X1R = OnePoleLP()
-    private var mb5X2L = OnePoleLP()
-    private var mb5X2R = OnePoleLP()
-    private var mb5X3L = OnePoleLP()
-    private var mb5X3R = OnePoleLP()
-    private var mb5X4L = OnePoleLP()
-    private var mb5X4R = OnePoleLP()
+    private var mb5Split1 = StereoLinkwitzRiley4()
+    private var mb5Split2 = StereoLinkwitzRiley4()
+    private var mb5Split3 = StereoLinkwitzRiley4()
+    private var mb5Split4 = StereoLinkwitzRiley4()
     private var mb5Comp1L = MonoCompressor()
     private var mb5Comp1R = MonoCompressor()
     private var mb5Comp2L = MonoCompressor()
@@ -3063,19 +3091,13 @@ final class MPXGenerator {
         let x3 = clampf(multibandX3Hz, x2 + 80.0, max(x2 + 100.0, (sampleRate * 0.5) - 120.0))
         let x4 = clampf(multibandX4Hz, x3 + 120.0, max(x3 + 140.0, (sampleRate * 0.5) - 60.0))
 
-        mbLowL.configure(cutoffHz: x1, sampleRate: sampleRate)
-        mbLowR.configure(cutoffHz: x1, sampleRate: sampleRate)
-        mbMidL.configure(cutoffHz: x2, sampleRate: sampleRate)
-        mbMidR.configure(cutoffHz: x2, sampleRate: sampleRate)
+        mb3Split1.configure(cutoffHz: x1, sampleRate: sampleRate)
+        mb3Split2.configure(cutoffHz: x2, sampleRate: sampleRate)
 
-        mb5X1L.configure(cutoffHz: x1, sampleRate: sampleRate)
-        mb5X1R.configure(cutoffHz: x1, sampleRate: sampleRate)
-        mb5X2L.configure(cutoffHz: x2, sampleRate: sampleRate)
-        mb5X2R.configure(cutoffHz: x2, sampleRate: sampleRate)
-        mb5X3L.configure(cutoffHz: x3, sampleRate: sampleRate)
-        mb5X3R.configure(cutoffHz: x3, sampleRate: sampleRate)
-        mb5X4L.configure(cutoffHz: x4, sampleRate: sampleRate)
-        mb5X4R.configure(cutoffHz: x4, sampleRate: sampleRate)
+        mb5Split1.configure(cutoffHz: x1, sampleRate: sampleRate)
+        mb5Split2.configure(cutoffHz: x2, sampleRate: sampleRate)
+        mb5Split3.configure(cutoffHz: x3, sampleRate: sampleRate)
+        mb5Split4.configure(cutoffHz: x4, sampleRate: sampleRate)
     }
 
     private func configureMultibandCompressors() {
@@ -3814,7 +3836,13 @@ final class MPXGenerator {
 
         let dt = 1.0 / max(8_000.0, sampleRate)
         let midAbs = max(1e-6, fabsf(mid))
-        let lowRatio = fabsf(low) / midAbs
+        let bassAbs = fabsf(low)
+        let gateFloor = max(0.012, orbassLevelEst * 0.18)
+        if midAbs < gateFloor, bassAbs < gateFloor {
+            return (left, right)
+        }
+
+        let lowRatio = bassAbs / max(midAbs, orbassLevelEst * 0.7, 0.02)
         let ratioAlpha = 1.0 - expf(-dt / 0.45)
         orbassRatioEst += (lowRatio - orbassRatioEst) * ratioAlpha
         let targetRatio = orbassTargetRatio + (0.06 * density)
@@ -3842,15 +3870,15 @@ final class MPXGenerator {
         }
         let adaptive = clampf(orbassAdaptiveGain, 0.0, 1.0)
 
-        let driveFactor = 0.75 + (0.75 * drive)
-        let densityFactor = 0.62 + (0.95 * density)
-        let boostGain = amount * driveFactor * densityFactor * (0.70 + (0.90 * adaptive))
+        let driveFactor = 0.55 + (0.42 * drive)
+        let densityFactor = 0.50 + (0.42 * density)
+        let boostGain = amount * driveFactor * densityFactor * (0.62 + (0.42 * adaptive))
         let lowBoost = low * boostGain
 
-        let nlDrive = 1.0 + (drive * (1.6 + (amount * 3.2) + (harmonics * 2.8)))
-        let harmonicSrc = tanhf(low * nlDrive) - tanhf(low * (0.45 + (0.25 * density)))
+        let nlDrive = 1.0 + (drive * (1.0 + (amount * 1.8) + (harmonics * 1.4)))
+        let harmonicSrc = tanhf(low * nlDrive) - tanhf(low * (0.65 + (0.18 * density)))
         let harmonicBand = orbassHarmLPF.process(orbassHarmHPF.process(harmonicSrc))
-        let harmonicGain = harmonics * (0.55 + (0.95 * density)) * (0.75 + (0.85 * adaptive))
+        let harmonicGain = harmonics * (0.28 + (0.34 * density)) * (0.62 + (0.36 * adaptive))
         var enhancement = lowBoost + (harmonicBand * harmonicGain)
 
         if subAmount > 1e-4 {
@@ -3863,27 +3891,27 @@ final class MPXGenerator {
             let envelope = sqrtf(max(0.0, fabsf(low)))
             let subRaw = square * envelope
             let subWave = orbassSubLP.process(subRaw)
-            let subGain = subAmount * (0.45 + (0.75 * density)) * (0.70 + (0.45 * drive))
+            let subGain = subAmount * (0.22 + (0.24 * density)) * (0.55 + (0.24 * drive))
             enhancement += subWave * subGain
         }
 
-        let enhClip = max(0.62, 0.86 - (0.12 * density))
+        let enhClip = max(0.52, 0.72 - (0.08 * density))
         let satEnhancement = enhClip * tanhf(enhancement / max(1e-4, enhClip))
         var midOut = mid + satEnhancement
-        midOut *= 1.0 / (1.0 + (0.05 * amount) + (0.04 * subAmount))
+        midOut *= 1.0 / (1.0 + (0.03 * amount) + (0.03 * subAmount))
 
         let outMidAbs = max(1e-6, fabsf(midOut))
-        let targetMakeupPower = 0.62 + (0.12 * density)
+        let targetMakeupPower = 0.34 + (0.08 * density)
         let targetMakeup = clampf(
             powf(midAbs / outMidAbs, targetMakeupPower),
-            0.90,
-            1.26 + (0.14 * density)
+            0.94,
+            1.06 + (0.06 * density)
         )
         orbassMakeupGain = smoothOrbassGain(
             current: orbassMakeupGain,
             target: targetMakeup,
-            attackMS: 35.0,
-            releaseMS: 180.0
+            attackMS: 45.0,
+            releaseMS: 220.0
         )
         midOut *= orbassMakeupGain
 
@@ -3894,7 +3922,7 @@ final class MPXGenerator {
             inputRight: right,
             outputLeft: outL,
             outputRight: outR,
-            allowedPeakScale: 1.10 + (0.06 * amount) + (0.08 * subAmount)
+            allowedPeakScale: 1.04 + (0.04 * amount) + (0.04 * subAmount)
         )
     }
 
@@ -3936,14 +3964,17 @@ final class MPXGenerator {
     }
 
     private func processThreeBandMultiband(left: Float, right: Float) -> (Float, Float) {
-        let lowBandL = mbLowL.process(left)
-        let lowBandR = mbLowR.process(right)
-        let lowCutL = left - lowBandL
-        let lowCutR = right - lowBandR
-        let midBandL = mbMidL.process(lowCutL)
-        let midBandR = mbMidR.process(lowCutR)
-        let highBandL = lowCutL - midBandL
-        let highBandR = lowCutR - midBandR
+        let split1 = mb3Split1.process(left: left, right: right)
+        let lowBandL = split1.0.0
+        let lowBandR = split1.1.0
+        let highResidL = split1.0.1
+        let highResidR = split1.1.1
+
+        let split2 = mb3Split2.process(left: highResidL, right: highResidR)
+        let midBandL = split2.0.0
+        let midBandR = split2.1.0
+        let highBandL = split2.0.1
+        let highBandR = split2.1.1
 
         let lowOut = compressStereoBand(
             left: lowBandL,
@@ -3973,25 +4004,29 @@ final class MPXGenerator {
     }
 
     private func processFiveBandMultiband(left: Float, right: Float) -> (Float, Float) {
-        let b1L = mb5X1L.process(left)
-        let b1R = mb5X1R.process(right)
-        let rem1L = left - b1L
-        let rem1R = right - b1R
+        let split1 = mb5Split1.process(left: left, right: right)
+        let b1L = split1.0.0
+        let b1R = split1.1.0
+        let rem1L = split1.0.1
+        let rem1R = split1.1.1
 
-        let b2L = mb5X2L.process(rem1L)
-        let b2R = mb5X2R.process(rem1R)
-        let rem2L = rem1L - b2L
-        let rem2R = rem1R - b2R
+        let split2 = mb5Split2.process(left: rem1L, right: rem1R)
+        let b2L = split2.0.0
+        let b2R = split2.1.0
+        let rem2L = split2.0.1
+        let rem2R = split2.1.1
 
-        let b3L = mb5X3L.process(rem2L)
-        let b3R = mb5X3R.process(rem2R)
-        let rem3L = rem2L - b3L
-        let rem3R = rem2R - b3R
+        let split3 = mb5Split3.process(left: rem2L, right: rem2R)
+        let b3L = split3.0.0
+        let b3R = split3.1.0
+        let rem3L = split3.0.1
+        let rem3R = split3.1.1
 
-        let b4L = mb5X4L.process(rem3L)
-        let b4R = mb5X4R.process(rem3R)
-        let b5L = rem3L - b4L
-        let b5R = rem3R - b4R
+        let split4 = mb5Split4.process(left: rem3L, right: rem3R)
+        let b4L = split4.0.0
+        let b4R = split4.1.0
+        let b5L = split4.0.1
+        let b5R = split4.1.1
 
         let o1 = compressStereoBand(
             left: b1L, right: b1R, leftComp: &mb5Comp1L, rightComp: &mb5Comp1R)
