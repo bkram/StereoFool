@@ -290,6 +290,8 @@ Current post-build preset sweep status:
 - `5B News`: `OK`
 - `5B Urban`: `OK`
 - `5B Dance`: `OK`
+- `5B Urban`: `OK`
+- `5B Dance`: `OK`
 
 Current verification is strongest for composite safety and budget behavior. It is not yet a full listening-quality oracle for multiband crossover tone, stereo-image feel, or Orbass character, so final tuning still requires real program listening.
 
