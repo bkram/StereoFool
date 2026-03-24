@@ -21,6 +21,7 @@ struct CLIOptions {
     var gui: Bool = true
     var verify: Bool = false
     var verifyPresets: Bool = false
+    var verifyLong: Bool = false
 }
 
 func normalizeConfigPath(_ rawPath: String) -> String {
@@ -64,6 +65,10 @@ func parseCLI() -> CLIOptions {
             options.verify = true
             options.verifyPresets = true
             options.gui = false
+        case "--verify-long":
+            options.verify = true
+            options.verifyLong = true
+            options.gui = false
         default:
             break
         }
@@ -80,6 +85,7 @@ func printUsage() {
           StereoFool [--config <path>] [--seconds 30] [--gui|--nogui]
           StereoFool [--config <path>] --verify [--seconds 5]
           StereoFool [--config <path>] --verify-presets [--seconds 5]
+          StereoFool [--config <path>] --verify-long [--seconds 30]
 
         Options:
           --config   Path to macOS INI config (default: ~/Library/Application Support/StereoFool/StereoFool.ini)
@@ -88,6 +94,7 @@ func printUsage() {
           --nogui    Run headless
           --verify   Run the offline MPX verification harness
           --verify-presets  Sweep key multiband presets through the offline verification harness
+          --verify-long  Run the longer focused compliance/regression verifier
         """
     print(text)
 }
@@ -124,12 +131,14 @@ let configPath = options.configPathExplicit
 
 do {
     if options.verify {
-        let duration = max(1.0, options.runSeconds ?? 5.0)
+        let defaultDuration = options.verifyLong ? 30.0 : 5.0
+        let duration = max(1.0, options.runSeconds ?? defaultDuration)
         exit(
             try runVerificationHarness(
                 configPath: configPath,
                 durationSeconds: duration,
-                presetSweep: options.verifyPresets
+                presetSweep: options.verifyPresets,
+                longRun: options.verifyLong
             )
         )
     }

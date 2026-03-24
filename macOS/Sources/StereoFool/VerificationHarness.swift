@@ -1,3 +1,4 @@
+import Accelerate
 import Foundation
 
 private struct StereoSignalMetrics {
@@ -5,6 +6,12 @@ private struct StereoSignalMetrics {
     var peak: Float = 0.0
     var correlation: Float = 0.0
     var sideToMidRatio: Float = 0.0
+}
+
+private struct MPXBandwidthMetrics {
+    var occupied999Hz: Float = 0.0
+    var above60kRatioDB: Float = -160.0
+    var above67kRatioDB: Float = -160.0
 }
 
 private struct VerificationMetrics {
@@ -21,6 +28,7 @@ private struct VerificationMetrics {
     var detectorDBAtMaxReduction: Float = -120.0
     var inputSignal = StereoSignalMetrics()
     var outputSignal = StereoSignalMetrics()
+    var bandwidth = MPXBandwidthMetrics()
 
     mutating func ingest(
         sample: Float,
@@ -68,12 +76,18 @@ private struct QualityExpectations {
     let maxOutputCorrelation: Float?
     let minSideRetention: Float?
     let maxAbsRMSDeltaDB: Float?
+    let maxOccupied999Hz: Float?
+    let maxAbove60kRatioDB: Float?
+    let maxAbove67kRatioDB: Float?
 
     static let none = QualityExpectations(
         maxCorrelationDelta: nil,
         maxOutputCorrelation: nil,
         minSideRetention: nil,
-        maxAbsRMSDeltaDB: nil
+        maxAbsRMSDeltaDB: nil,
+        maxOccupied999Hz: nil,
+        maxAbove60kRatioDB: nil,
+        maxAbove67kRatioDB: nil
     )
 }
 
@@ -81,6 +95,14 @@ private struct VerificationPresetSweep {
     let id: String
     let title: String
     let apply: (inout AppConfig) -> Void
+}
+
+private struct LongRunSignatureReference {
+    let peakDBFS: Float
+    let minMarginDB: Float
+    let outCorrelation: Float
+    let occ999Hz: Float
+    let above60kRatioDB: Float
 }
 
 private struct DeterministicNoise {
@@ -118,7 +140,10 @@ private func verificationScenarios() -> [VerificationScenario] {
                 maxCorrelationDelta: 0.05,
                 maxOutputCorrelation: 1.0,
                 minSideRetention: nil,
-                maxAbsRMSDeltaDB: 6.0
+                maxAbsRMSDeltaDB: 6.0,
+                maxOccupied999Hz: nil,
+                maxAbove60kRatioDB: nil,
+                maxAbove67kRatioDB: nil
             )
         ) { frame, sampleRate in
             let t = Double(frame) / sampleRate
@@ -132,7 +157,10 @@ private func verificationScenarios() -> [VerificationScenario] {
                 maxCorrelationDelta: 0.08,
                 maxOutputCorrelation: nil,
                 minSideRetention: nil,
-                maxAbsRMSDeltaDB: 30.0
+                maxAbsRMSDeltaDB: 30.0,
+                maxOccupied999Hz: nil,
+                maxAbove60kRatioDB: nil,
+                maxAbove67kRatioDB: nil
             )
         ) { frame, sampleRate in
             let t = Double(frame) / sampleRate
@@ -146,7 +174,10 @@ private func verificationScenarios() -> [VerificationScenario] {
                 maxCorrelationDelta: 0.12,
                 maxOutputCorrelation: 0.92,
                 minSideRetention: 0.75,
-                maxAbsRMSDeltaDB: 2.5
+                maxAbsRMSDeltaDB: 2.5,
+                maxOccupied999Hz: 58_500.0,
+                maxAbove60kRatioDB: -50.0,
+                maxAbove67kRatioDB: -60.0
             )
         ) { frame, sampleRate in
             let t = Double(frame) / sampleRate
@@ -178,7 +209,10 @@ private func verificationScenarios() -> [VerificationScenario] {
                 maxCorrelationDelta: 0.45,
                 maxOutputCorrelation: 0.55,
                 minSideRetention: 0.55,
-                maxAbsRMSDeltaDB: 3.0
+                maxAbsRMSDeltaDB: 3.0,
+                maxOccupied999Hz: 56_000.0,
+                maxAbove60kRatioDB: -40.0,
+                maxAbove67kRatioDB: -44.0
             )
         ) { frame, sampleRate in
             let t = Double(frame) / sampleRate
@@ -209,7 +243,10 @@ private func verificationScenarios() -> [VerificationScenario] {
                 maxCorrelationDelta: 0.18,
                 maxOutputCorrelation: 0.92,
                 minSideRetention: 0.72,
-                maxAbsRMSDeltaDB: 2.5
+                maxAbsRMSDeltaDB: 2.5,
+                maxOccupied999Hz: 58_500.0,
+                maxAbove60kRatioDB: -41.0,
+                maxAbove67kRatioDB: -52.0
             )
         ) { frame, sampleRate in
             let t = Double(frame) / sampleRate
@@ -245,7 +282,10 @@ private func verificationScenarios() -> [VerificationScenario] {
                 maxCorrelationDelta: 0.15,
                 maxOutputCorrelation: 0.88,
                 minSideRetention: 0.70,
-                maxAbsRMSDeltaDB: 3.0
+                maxAbsRMSDeltaDB: 3.0,
+                maxOccupied999Hz: 58_500.0,
+                maxAbove60kRatioDB: -45.0,
+                maxAbove67kRatioDB: -53.0
             )
         ) { frame, sampleRate in
             let t = Double(frame) / sampleRate
@@ -274,7 +314,10 @@ private func verificationScenarios() -> [VerificationScenario] {
                 maxCorrelationDelta: nil,
                 maxOutputCorrelation: 0.60,
                 minSideRetention: 0.30,
-                maxAbsRMSDeltaDB: 2.5
+                maxAbsRMSDeltaDB: 2.5,
+                maxOccupied999Hz: 58_500.0,
+                maxAbove60kRatioDB: -50.0,
+                maxAbove67kRatioDB: -60.0
             )
         ) { frame, sampleRate in
             let t = Double(frame) / sampleRate
@@ -295,6 +338,53 @@ private func verificationScenarios() -> [VerificationScenario] {
 
             return (left, right)
         },
+    ]
+}
+
+private func longRunVerificationScenarios() -> [VerificationScenario] {
+    verificationScenarios().filter {
+        ["program_mix", "bright_dense", "vocal_sibilant", "transient_push", "wide_bass"]
+            .contains($0.name)
+    }
+}
+
+private func longRunSignatureReferences() -> [String: LongRunSignatureReference] {
+    [
+        "program_mix": LongRunSignatureReference(
+            peakDBFS: -2.74,
+            minMarginDB: 2.0,
+            outCorrelation: 0.84,
+            occ999Hz: 57_954.0,
+            above60kRatioDB: -82.7
+        ),
+        "bright_dense": LongRunSignatureReference(
+            peakDBFS: -0.20,
+            minMarginDB: 0.3,
+            outCorrelation: 0.35,
+            occ999Hz: 56_099.0,
+            above60kRatioDB: -40.9
+        ),
+        "vocal_sibilant": LongRunSignatureReference(
+            peakDBFS: -0.60,
+            minMarginDB: 0.4,
+            outCorrelation: 0.73,
+            occ999Hz: 57_895.0,
+            above60kRatioDB: -70.0
+        ),
+        "transient_push": LongRunSignatureReference(
+            peakDBFS: -0.45,
+            minMarginDB: 0.4,
+            outCorrelation: 0.79,
+            occ999Hz: 58_129.0,
+            above60kRatioDB: -70.9
+        ),
+        "wide_bass": LongRunSignatureReference(
+            peakDBFS: -4.83,
+            minMarginDB: 4.3,
+            outCorrelation: 0.40,
+            occ999Hz: 58_175.0,
+            above60kRatioDB: -80.8
+        ),
     ]
 }
 
@@ -319,6 +409,7 @@ private func verifyScenario(
     var monitorRight = inputRight
     var mpxLeft = [Float](repeating: 0.0, count: frames)
     var mpxRight = [Float](repeating: 0.0, count: frames)
+    var mpxSamples = [Float](repeating: 0.0, count: frames)
     let monitorGenerator = MPXGenerator(config: config, sampleRate: sampleRate)
 
     monitorLeft.withUnsafeMutableBufferPointer { monL in
@@ -349,6 +440,7 @@ private func verifyScenario(
 
     for frame in 0..<frames {
         let mpx = generator.renderSingleSample(leftIn: inputLeft[frame], rightIn: inputRight[frame])
+        mpxSamples[frame] = mpx
         metrics.ingest(
             sample: mpx,
             agc: generator.agcStatus,
@@ -356,6 +448,7 @@ private func verifyScenario(
             calibration: generator.compositeCalibrationStatus
         )
     }
+    metrics.bandwidth = computeMPXBandwidthMetrics(samples: mpxSamples, sampleRate: sampleRate)
 
     return metrics
 }
@@ -443,6 +536,112 @@ private func computeStereoSignalMetrics(
     )
 }
 
+private func computeMPXBandwidthMetrics(
+    samples: [Float],
+    sampleRate: Double
+) -> MPXBandwidthMetrics {
+    let maxFFTSize = min(samples.count, 131_072)
+    let log2n = Int(floor(log2(Double(maxFFTSize))))
+    let fftSize = 1 << max(10, log2n)
+    guard fftSize >= 1024, fftSize <= samples.count else {
+        return MPXBandwidthMetrics()
+    }
+
+    var window = [Float](repeating: 0.0, count: fftSize)
+    vDSP_hann_window(&window, vDSP_Length(fftSize), Int32(vDSP_HANN_NORM))
+
+    let signal = Array(samples.prefix(fftSize))
+    var windowed = [Float](repeating: 0.0, count: fftSize)
+    vDSP_vmul(signal, 1, window, 1, &windowed, 1, vDSP_Length(fftSize))
+
+    let halfSize = fftSize / 2
+    var real = [Float](repeating: 0.0, count: halfSize)
+    var imag = [Float](repeating: 0.0, count: halfSize)
+
+    real.withUnsafeMutableBufferPointer { realPtr in
+        imag.withUnsafeMutableBufferPointer { imagPtr in
+            guard let realBase = realPtr.baseAddress,
+                let imagBase = imagPtr.baseAddress
+            else { return }
+            var split = DSPSplitComplex(realp: realBase, imagp: imagBase)
+            windowed.withUnsafeBufferPointer { windowedPtr in
+                guard let windowedBase = windowedPtr.baseAddress else { return }
+                windowedBase.withMemoryRebound(to: DSPComplex.self, capacity: halfSize) { complexPtr in
+                    vDSP_ctoz(complexPtr, 2, &split, 1, vDSP_Length(halfSize))
+                }
+            }
+            guard let fftSetup = vDSP_create_fftsetup(vDSP_Length(log2(Double(fftSize))), FFTRadix(kFFTRadix2))
+            else { return }
+            vDSP_fft_zrip(
+                fftSetup,
+                &split,
+                1,
+                vDSP_Length(log2(Double(fftSize))),
+                FFTDirection(FFT_FORWARD)
+            )
+            vDSP_destroy_fftsetup(fftSetup)
+        }
+    }
+
+    var mags = [Float](repeating: 0.0, count: halfSize)
+    mags.withUnsafeMutableBufferPointer { magsPtr in
+        real.withUnsafeMutableBufferPointer { realPtr in
+            imag.withUnsafeMutableBufferPointer { imagPtr in
+                guard let magsBase = magsPtr.baseAddress,
+                    let realBase = realPtr.baseAddress,
+                    let imagBase = imagPtr.baseAddress
+                else { return }
+                var split = DSPSplitComplex(realp: realBase, imagp: imagBase)
+                vDSP_zvmags(&split, 1, magsBase, 1, vDSP_Length(halfSize))
+            }
+        }
+    }
+
+    let binHz = Float(sampleRate) / Float(fftSize)
+    var totalPower: Double = 0.0
+    var inBandPower: Double = 0.0
+    var above60Power: Double = 0.0
+    var above67Power: Double = 0.0
+    var cumulativePower: Double = 0.0
+    var occupied999Hz: Float = 0.0
+
+    for bin in 1..<halfSize {
+        let freq = Float(bin) * binHz
+        let power = Double(mags[bin])
+        totalPower += power
+        if freq <= 60_000.0 {
+            inBandPower += power
+        } else {
+            above60Power += power
+        }
+        if freq > 67_000.0 {
+            above67Power += power
+        }
+    }
+
+    let targetPower = totalPower * 0.999
+    if targetPower > 0.0 {
+        for bin in 1..<halfSize {
+            cumulativePower += Double(mags[bin])
+            if cumulativePower >= targetPower {
+                occupied999Hz = Float(bin) * binHz
+                break
+            }
+        }
+    }
+
+    func ratioDB(_ num: Double, _ den: Double) -> Float {
+        guard num > 1e-18, den > 1e-18 else { return -160.0 }
+        return Float(10.0 * log10(num / den))
+    }
+
+    return MPXBandwidthMetrics(
+        occupied999Hz: occupied999Hz,
+        above60kRatioDB: ratioDB(above60Power, inBandPower),
+        above67kRatioDB: ratioDB(above67Power, inBandPower)
+    )
+}
+
 private func qualityFindings(
     scenario: VerificationScenario,
     metrics: VerificationMetrics,
@@ -490,6 +689,69 @@ private func qualityFindings(
         }
     }
 
+    if let maxOccupied999Hz = expectations.maxOccupied999Hz {
+        let occupied = metrics.bandwidth.occupied999Hz
+        if occupied > (maxOccupied999Hz + 150.0) {
+            findings.append(
+                "occ999 \(String(format: "%.0f", occupied)) Hz > \(String(format: "%.0f", maxOccupied999Hz)) Hz"
+            )
+        }
+    }
+
+    if let maxAbove60kRatioDB = expectations.maxAbove60kRatioDB {
+        let ratio = metrics.bandwidth.above60kRatioDB
+        if ratio > (maxAbove60kRatioDB + 0.75) {
+            findings.append(
+                ">60k/in \(String(format: "%.1f", ratio)) dB > \(String(format: "%.1f", maxAbove60kRatioDB)) dB"
+            )
+        }
+    }
+
+    if let maxAbove67kRatioDB = expectations.maxAbove67kRatioDB {
+        let ratio = metrics.bandwidth.above67kRatioDB
+        if ratio > (maxAbove67kRatioDB + 0.75) {
+            findings.append(
+                ">67k/in \(String(format: "%.1f", ratio)) dB > \(String(format: "%.1f", maxAbove67kRatioDB)) dB"
+            )
+        }
+    }
+
+    return findings
+}
+
+private func longRunSignatureFindings(
+    scenario: VerificationScenario,
+    metrics: VerificationMetrics,
+    reference: LongRunSignatureReference
+) -> [String] {
+    var findings: [String] = []
+    let peakDBFS = metrics.peakAbs > 1e-9 ? Float(20.0 * log10(Double(metrics.peakAbs))) : -160.0
+    if peakDBFS > (reference.peakDBFS + 0.6) {
+        findings.append(
+            "peak \(String(format: "%.2f", peakDBFS)) dBFS > \(String(format: "%.2f", reference.peakDBFS + 0.6)) dBFS"
+        )
+    }
+    if metrics.minBudgetMarginDB < (reference.minMarginDB - 0.35) {
+        findings.append(
+            "margin \(String(format: "%.1f", metrics.minBudgetMarginDB)) dB < \(String(format: "%.1f", reference.minMarginDB - 0.35)) dB"
+        )
+    }
+    if fabsf(metrics.outputSignal.correlation - reference.outCorrelation) > 0.08 {
+        findings.append(
+            "out corr drift \(String(format: "%.2f", metrics.outputSignal.correlation)) vs \(String(format: "%.2f", reference.outCorrelation))"
+        )
+    }
+    if metrics.bandwidth.occupied999Hz > (reference.occ999Hz + 200.0) {
+        findings.append(
+            "occ999 \(String(format: "%.0f", metrics.bandwidth.occupied999Hz)) Hz > \(String(format: "%.0f", reference.occ999Hz + 200.0)) Hz"
+        )
+    }
+    if metrics.bandwidth.above60kRatioDB > (reference.above60kRatioDB + 1.5) {
+        findings.append(
+            ">60k/in \(String(format: "%.1f", metrics.bandwidth.above60kRatioDB)) dB > \(String(format: "%.1f", reference.above60kRatioDB + 1.5)) dB"
+        )
+    }
+    _ = scenario
     return findings
 }
 
@@ -684,14 +946,20 @@ private func presetQualityOverride(
             maxCorrelationDelta: 0.24,
             maxOutputCorrelation: 0.95,
             minSideRetention: 0.60,
-            maxAbsRMSDeltaDB: 3.2
+            maxAbsRMSDeltaDB: 3.2,
+            maxOccupied999Hz: 58_500.0,
+            maxAbove60kRatioDB: -40.0,
+            maxAbove67kRatioDB: -50.0
         )
     case "transient_push":
         return QualityExpectations(
             maxCorrelationDelta: 0.18,
             maxOutputCorrelation: 0.92,
             minSideRetention: 0.68,
-            maxAbsRMSDeltaDB: 3.4
+            maxAbsRMSDeltaDB: 3.4,
+            maxOccupied999Hz: 58_500.0,
+            maxAbove60kRatioDB: -44.0,
+            maxAbove67kRatioDB: -52.0
         )
     default:
         return nil
@@ -775,7 +1043,8 @@ private func runPresetSweepVerification(
 func runVerificationHarness(
     configPath: String,
     durationSeconds: Double,
-    presetSweep: Bool = false
+    presetSweep: Bool = false,
+    longRun: Bool = false
 ) throws -> Int32 {
     let config = try AppConfig.load(fromINI: configPath)
     if presetSweep {
@@ -790,13 +1059,16 @@ func runVerificationHarness(
             durationSeconds: durationSeconds
         )
     }
-    let scenarios = verificationScenarios()
+    let scenarios = longRun ? longRunVerificationScenarios() : verificationScenarios()
 
-    print("StereoFool Verification")
+    print(longRun ? "StereoFool Long-Run Verification" : "StereoFool Verification")
     print("Config: \(configPath)")
     print(
         "Render: \(Int(config.sampleRate)) Hz • Block \(config.blockSize) • Duration \(String(format: "%.1f", durationSeconds)) s"
     )
+    if longRun {
+        print("Scope: focused program-material compliance/regression scenarios")
+    }
     print("")
     print(
         "Scenario              Peak dBFS  Dev kHz  LimGR  SafeGR  AudioPk  Pilot  RDS   Margin  AGC"
@@ -810,6 +1082,8 @@ func runVerificationHarness(
     var worstMargin: Float = .greatestFiniteMagnitude
     var scenarioMetrics: [(VerificationScenario, VerificationMetrics)] = []
     var qualityWarnings: [String] = []
+    var signatureWarnings: [String] = []
+    let signatureReferences = longRun ? longRunSignatureReferences() : [:]
 
     for scenario in scenarios {
         let metrics = verifyScenario(
@@ -824,6 +1098,15 @@ func runVerificationHarness(
         qualityWarnings.append(
             contentsOf: qualityFindings(scenario: scenario, metrics: metrics).map { "\(scenario.name): \($0)" }
         )
+        if longRun, let reference = signatureReferences[scenario.name] {
+            signatureWarnings.append(
+                contentsOf: longRunSignatureFindings(
+                    scenario: scenario,
+                    metrics: metrics,
+                    reference: reference
+                ).map { "\(scenario.name): \($0)" }
+            )
+        }
 
         let line =
             "\(padded(scenario.name, width: 20))  "
@@ -862,10 +1145,32 @@ func runVerificationHarness(
     }
 
     print("")
+    print("MPX Width")
+    print(
+        "Scenario              Occ999 Hz  >60k/In  >67k/In"
+    )
+    print(
+        "--------------------  ---------  -------  -------"
+    )
+
+    for (scenario, metrics) in scenarioMetrics {
+        let line =
+            "\(padded(scenario.name, width: 20))  "
+            + "\(leftPadded(String(format: "%.0f", metrics.bandwidth.occupied999Hz), width: 9))"
+            + "  \(leftPadded(String(format: "%.1f", metrics.bandwidth.above60kRatioDB), width: 7))"
+            + "  \(leftPadded(String(format: "%.1f", metrics.bandwidth.above67kRatioDB), width: 7))"
+        print(line)
+    }
+
+    print("")
     print("Assessment")
     print("Worst MPX peak: \(dbfsString(worstPeak)) dBFS")
     print("Worst safety limiter GR: \(String(format: "%.1f", nonNegative(worstSafety))) dB")
     print("Worst composite margin: \(String(format: "%.1f", worstMargin)) dB")
+
+    if longRun {
+        print("Signature warnings: \(signatureWarnings.isEmpty ? "none" : "\(signatureWarnings.count)")")
+    }
 
     if !qualityWarnings.isEmpty {
         print("Quality warnings:")
@@ -873,6 +1178,13 @@ func runVerificationHarness(
             print("- \(warning)")
         }
         print("Result: TIGHT - composite safety is OK, but decoded-audio quality drift exceeded expected bounds.")
+        return 1
+    } else if !signatureWarnings.isEmpty {
+        print("Signature drift warnings:")
+        for warning in signatureWarnings {
+            print("- \(warning)")
+        }
+        print("Result: TIGHT - long-run verifier drifted beyond the current reference signature.")
         return 1
     } else if worstSafety > 1.0 {
         print("Result: WARN - safety limiter is doing significant work.")
@@ -884,7 +1196,11 @@ func runVerificationHarness(
         print("Result: TIGHT - verification stayed close to the composite budget limit.")
         return 1
     } else {
-        print("Result: OK - no obvious composite-budget or safety-limiter issue.")
+        print(
+            longRun
+                ? "Result: OK - no obvious long-run compliance or safety regression."
+                : "Result: OK - no obvious composite-budget or safety-limiter issue."
+        )
         return 0
     }
 }

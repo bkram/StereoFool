@@ -73,6 +73,12 @@ Preset sweep verification:
 swift run --package-path macOS StereoFool --verify-presets --seconds 5
 ```
 
+Long-run compliance/regression verification:
+
+```bash
+swift run --package-path macOS StereoFool --verify-long --seconds 30
+```
+
 Custom config file:
 
 ```bash

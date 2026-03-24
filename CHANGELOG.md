@@ -13,6 +13,9 @@
 - Dedicated `Mono Bass` stage with configurable crossover in the Widener tab
 - Orbass preset/config wiring for density and subharmonics, with the adaptive Orbass path now active in the live DSP chain
 - Offline MPX verification mode with deterministic scenarios and exit codes
+- Long-run compliance/regression verification mode:
+  - `--verify-long`
+  - focused on `program_mix`, `bright_dense`, `vocal_sibilant`, `transient_push`, and `wide_bass`
 - Additional audible-quality verification scenarios:
   - `bright_dense`
   - `vocal_sibilant`
@@ -37,6 +40,7 @@
 - Multiband now uses complementary Linkwitz-Riley crossover stages instead of one-pole residual splits
 - Multiband defaults and presets were retuned toward more realistic broadcast-style starting points
 - `5B AC/Pop`, `5B CHR/EDM`, `5B Rock`, `5B Talk`, `5B News`, `5B Urban`, and `5B Dance` were tuned and verified against the focused preset sweep
+- MPX width/compliance is now explicitly verifier-backed with encoder-side bandwidth guarding and a dynamic HF compliance guard ahead of stereo encode/pre-emphasis
 - Processing and RDS reset buttons now only reset the active tab
 - External config reloads now correctly preserve pending apply state
 

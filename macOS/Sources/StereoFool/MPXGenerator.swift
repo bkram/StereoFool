@@ -443,27 +443,33 @@ struct BiquadCascade6 {
 }
 
 struct ProgramLowpass {
-    var left1 = OnePoleLP()
-    var left2 = OnePoleLP()
-    var right1 = OnePoleLP()
-    var right2 = OnePoleLP()
+    var left = BiquadCascade6()
+    var right = BiquadCascade6()
 
     mutating func configure(cutoffHz: Float, sampleRate: Float) {
-        left1.configure(cutoffHz: cutoffHz, sampleRate: sampleRate)
-        left2.configure(cutoffHz: cutoffHz, sampleRate: sampleRate)
-        right1.configure(cutoffHz: cutoffHz, sampleRate: sampleRate)
-        right2.configure(cutoffHz: cutoffHz, sampleRate: sampleRate)
-        left1.state = 0.0
-        left2.state = 0.0
-        right1.state = 0.0
-        right2.state = 0.0
+        left.configureLowpass(cutoffHz: cutoffHz, sampleRate: sampleRate)
+        right.configureLowpass(cutoffHz: cutoffHz, sampleRate: sampleRate)
     }
 
     mutating func process(left: Float, right: Float) -> (Float, Float) {
-        let l = left2.process(left1.process(left))
-        let r = right2.process(right1.process(right))
+        let l = self.left.process(left)
+        let r = self.right.process(right)
         return (l, r)
     }
+}
+
+@inline(__always)
+private func effectiveProgramLowpassHz(configured: Float, preemphasisUS: Int) -> Float {
+    guard preemphasisUS > 0 else { return configured }
+    let complianceCap: Float = preemphasisUS <= 50 ? 15_300.0 : 15_000.0
+    return min(configured, complianceCap)
+}
+
+@inline(__always)
+private func effectiveEncoderLowpassHz(configured: Float, preemphasisUS: Int) -> Float {
+    guard preemphasisUS > 0 else { return configured }
+    let encoderCap: Float = preemphasisUS <= 50 ? 14_900.0 : 14_600.0
+    return min(configured, encoderCap)
 }
 
 struct PreemphasisFilter {
@@ -2533,6 +2539,7 @@ final class MPXGenerator {
     private let threshold: Float
     private let deviationScale: Float
     private let programLowpassHz: Float
+    private let encoderHFGuardEnabled: Bool
 
     private let widebandAGCEnabled: Bool
     private let widebandAGCTargetDB: Float
@@ -2656,6 +2663,12 @@ final class MPXGenerator {
     private var preSum = PreemphasisFilter()
     private var preDiff = PreemphasisFilter()
     private var programLP = ProgramLowpass()
+    private var encoderProgramLP = ProgramLowpass()
+    private var encoderHFGuardSplit = StereoLinkwitzRiley4()
+    private var encoderHFGuardEnv: Float = 0.0
+    private var encoderHFGuardGain: Float = 1.0
+    private var encoderHFGuardAttackCoeff: Float = 0.0
+    private var encoderHFGuardReleaseCoeff: Float = 0.0
     private var compositeAudioSmoother = OnePoleLP()
     private var compositeAudioSmootherEnabled: Bool = false
     private var monitorLPRLP = BiquadCascade6()
@@ -2724,6 +2737,7 @@ final class MPXGenerator {
         self.threshold = clampf(Float(config.limitThreshold), 0.5, 0.999)
         self.deviationScale = Float(config.mpxDeviationKHz / 75.0)
         self.programLowpassHz = Float(config.programLowpassHz)
+        self.encoderHFGuardEnabled = config.preemphasisUS > 0
 
         self.widebandAGCEnabled = config.widebandAGCEnabled
         self.widebandAGCTargetDB = Float(config.widebandAGCTargetDB)
@@ -2795,7 +2809,17 @@ final class MPXGenerator {
 
         preSum.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
         preDiff.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
-        programLP.configure(cutoffHz: programLowpassHz, sampleRate: self.sampleRate)
+        let effectiveProgramLP = effectiveProgramLowpassHz(
+            configured: programLowpassHz,
+            preemphasisUS: preemphasisUS
+        )
+        let effectiveEncoderLP = effectiveEncoderLowpassHz(
+            configured: effectiveProgramLP,
+            preemphasisUS: preemphasisUS
+        )
+        programLP.configure(cutoffHz: effectiveProgramLP, sampleRate: self.sampleRate)
+        encoderProgramLP.configure(cutoffHz: effectiveEncoderLP, sampleRate: self.sampleRate)
+        encoderHFGuardSplit.configure(cutoffHz: 6_200.0, sampleRate: self.sampleRate)
 
         widebandAGC.configure(
             sampleRate: self.sampleRate,
@@ -2834,7 +2858,17 @@ final class MPXGenerator {
         sampleRate = sr
         preSum.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
         preDiff.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
-        programLP.configure(cutoffHz: programLowpassHz, sampleRate: sampleRate)
+        let effectiveProgramLP = effectiveProgramLowpassHz(
+            configured: programLowpassHz,
+            preemphasisUS: preemphasisUS
+        )
+        let effectiveEncoderLP = effectiveEncoderLowpassHz(
+            configured: effectiveProgramLP,
+            preemphasisUS: preemphasisUS
+        )
+        programLP.configure(cutoffHz: effectiveProgramLP, sampleRate: sampleRate)
+        encoderProgramLP.configure(cutoffHz: effectiveEncoderLP, sampleRate: sampleRate)
+        encoderHFGuardSplit.configure(cutoffHz: 6_200.0, sampleRate: sampleRate)
         widebandAGC.configure(
             sampleRate: sampleRate,
             targetDB: widebandAGCTargetDB,
@@ -2909,6 +2943,10 @@ final class MPXGenerator {
         audioCompositePeakDecayCoeff = expf(-1.0 / (0.250 * sr))
         subcarrierReservationAttackCoeff = expf(-1.0 / (0.0005 * sr))
         subcarrierReservationReleaseCoeff = expf(-1.0 / (0.012 * sr))
+        encoderHFGuardEnv = 0.0
+        encoderHFGuardGain = 1.0
+        encoderHFGuardAttackCoeff = expf(-1.0 / (0.004 * sr))
+        encoderHFGuardReleaseCoeff = expf(-1.0 / (0.080 * sr))
         let nyquist = (sampleRate * 0.5) - 100.0
         if nyquist > 56_000.0 {
             compositeAudioSmoother.configure(
@@ -3485,12 +3523,57 @@ final class MPXGenerator {
             }
         }
 
+        if encoderHFGuardEnabled {
+            let guarded = processEncoderHFGuard(left: left, right: right)
+            left = guarded.0
+            right = guarded.1
+        }
+
+        // Final encoder-facing bandwidth guard. This sits immediately ahead of
+        // stereo encoding and pre-emphasis so later nonlinear stages do not
+        // re-broaden the transmitted audio spectrum.
+        let encoderBand = encoderProgramLP.process(left: left, right: right)
+        left = encoderBand.0
+        right = encoderBand.1
+
         return ProgramStereoState(
             left: left,
             right: right,
             referenceLeft: referenceLeft,
             referenceRight: referenceRight,
             inputActivity: inputActivity
+        )
+    }
+
+    private func processEncoderHFGuard(left: Float, right: Float) -> (Float, Float) {
+        let split = encoderHFGuardSplit.process(left: left, right: right)
+        let lowL = split.0.0
+        let highL = split.0.1
+        let lowR = split.1.0
+        let highR = split.1.1
+
+        let hfDrive = max(fabsf(highL), fabsf(highR))
+        encoderHFGuardEnv = Self.smoothEnvelope(
+            current: encoderHFGuardEnv,
+            input: hfDrive,
+            attackCoeff: encoderHFGuardAttackCoeff,
+            releaseCoeff: encoderHFGuardReleaseCoeff
+        )
+
+        let threshold: Float = 0.11
+        let over = max(0.0, encoderHFGuardEnv - threshold)
+        let targetReductionDB = min(2.0, over * 24.0)
+        let targetGain = powf(10.0, -targetReductionDB / 20.0)
+        encoderHFGuardGain = Self.smoothTowardTarget(
+            current: encoderHFGuardGain,
+            target: targetGain,
+            attackCoeff: encoderHFGuardAttackCoeff,
+            releaseCoeff: encoderHFGuardReleaseCoeff
+        )
+
+        return (
+            lowL + (highL * encoderHFGuardGain),
+            lowR + (highR * encoderHFGuardGain)
         )
     }
 
