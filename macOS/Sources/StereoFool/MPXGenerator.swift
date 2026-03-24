@@ -2521,6 +2521,12 @@ final class MPXGenerator {
         let postLimiterCeiling: Float
     }
 
+    private struct EncoderComplianceConfig {
+        let programLowpassHz: Float
+        let encoderLowpassHz: Float
+        let hfGuardCrossoverHz: Float
+    }
+
     private var sampleRate: Float
     private let preemphasisUS: Int
     private let toneFreq: Float
@@ -2809,17 +2815,7 @@ final class MPXGenerator {
 
         preSum.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
         preDiff.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
-        let effectiveProgramLP = effectiveProgramLowpassHz(
-            configured: programLowpassHz,
-            preemphasisUS: preemphasisUS
-        )
-        let effectiveEncoderLP = effectiveEncoderLowpassHz(
-            configured: effectiveProgramLP,
-            preemphasisUS: preemphasisUS
-        )
-        programLP.configure(cutoffHz: effectiveProgramLP, sampleRate: self.sampleRate)
-        encoderProgramLP.configure(cutoffHz: effectiveEncoderLP, sampleRate: self.sampleRate)
-        encoderHFGuardSplit.configure(cutoffHz: 6_200.0, sampleRate: self.sampleRate)
+        applyEncoderComplianceConfiguration(sampleRate: self.sampleRate)
 
         widebandAGC.configure(
             sampleRate: self.sampleRate,
@@ -2858,17 +2854,7 @@ final class MPXGenerator {
         sampleRate = sr
         preSum.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
         preDiff.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
-        let effectiveProgramLP = effectiveProgramLowpassHz(
-            configured: programLowpassHz,
-            preemphasisUS: preemphasisUS
-        )
-        let effectiveEncoderLP = effectiveEncoderLowpassHz(
-            configured: effectiveProgramLP,
-            preemphasisUS: preemphasisUS
-        )
-        programLP.configure(cutoffHz: effectiveProgramLP, sampleRate: sampleRate)
-        encoderProgramLP.configure(cutoffHz: effectiveEncoderLP, sampleRate: sampleRate)
-        encoderHFGuardSplit.configure(cutoffHz: 6_200.0, sampleRate: sampleRate)
+        applyEncoderComplianceConfiguration(sampleRate: sampleRate)
         widebandAGC.configure(
             sampleRate: sampleRate,
             targetDB: widebandAGCTargetDB,
@@ -2897,6 +2883,29 @@ final class MPXGenerator {
         rdsCoder?.setSampleRate(sampleRate)
         updateDerivedRates()
         configureMonitorDemod()
+    }
+
+    private func makeEncoderComplianceConfig() -> EncoderComplianceConfig {
+        let effectiveProgramLP = effectiveProgramLowpassHz(
+            configured: programLowpassHz,
+            preemphasisUS: preemphasisUS
+        )
+        let effectiveEncoderLP = effectiveEncoderLowpassHz(
+            configured: effectiveProgramLP,
+            preemphasisUS: preemphasisUS
+        )
+        return EncoderComplianceConfig(
+            programLowpassHz: effectiveProgramLP,
+            encoderLowpassHz: effectiveEncoderLP,
+            hfGuardCrossoverHz: 6_200.0
+        )
+    }
+
+    private func applyEncoderComplianceConfiguration(sampleRate: Float) {
+        let config = makeEncoderComplianceConfig()
+        programLP.configure(cutoffHz: config.programLowpassHz, sampleRate: sampleRate)
+        encoderProgramLP.configure(cutoffHz: config.encoderLowpassHz, sampleRate: sampleRate)
+        encoderHFGuardSplit.configure(cutoffHz: config.hfGuardCrossoverHz, sampleRate: sampleRate)
     }
 
     var isProcessingBypassEnabled: Bool {
