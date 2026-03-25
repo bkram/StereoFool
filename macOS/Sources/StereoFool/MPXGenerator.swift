@@ -2527,6 +2527,56 @@ final class MPXGenerator {
         let hfGuardCrossoverHz: Float
     }
 
+    struct RuntimeConfig {
+        let inputGainDB: Float
+        let outputGainDB: Float
+        let finalDriveDB: Float
+        let widebandAGCEnabled: Bool
+        let widebandAGCTargetDB: Float
+        let widebandAGCMaxGainDB: Float
+        let widebandAGCMinGainDB: Float
+        let widebandAGCAttackMS: Float
+        let widebandAGCReleaseMS: Float
+        let compositeLimiterEnabled: Bool
+        let mpxDeviationKHz: Float
+        let orbassEnabled: Bool
+        let orbassAmount: Float
+        let orbassHarmonics: Float
+        let orbassDrive: Float
+        let orbassDensity: Float
+        let orbassSubharmonicsEnabled: Bool
+        let orbassSubharmonicsAmount: Float
+        let orbassFreqHz: Float
+        let stereoWidenEnabled: Bool
+        let monoBassEnabled: Bool
+        let monoBassFreqHz: Float
+        let widenWidth: Float
+        let widenCenter: Float
+        let widenMix: Float
+        let multibandEnabled: Bool
+        let multibandMode: Int
+        let multibandMakeupDB: Float
+        let multibandKneeDB: Float
+        let multibandLinkStrength: Float
+        let multibandReleaseProgramDependent: Bool
+        let multibandX1Hz: Float
+        let multibandX2Hz: Float
+        let multibandX3Hz: Float
+        let multibandX4Hz: Float
+        let multibandLowThresholdDB: Float
+        let multibandMidThresholdDB: Float
+        let multibandHighThresholdDB: Float
+        let multibandLowRatio: Float
+        let multibandMidRatio: Float
+        let multibandHighRatio: Float
+        let multibandLowAttackMS: Float
+        let multibandMidAttackMS: Float
+        let multibandHighAttackMS: Float
+        let multibandLowReleaseMS: Float
+        let multibandMidReleaseMS: Float
+        let multibandHighReleaseMS: Float
+    }
+
     private var sampleRate: Float
     private let preemphasisUS: Int
     private let toneFreq: Float
@@ -2538,21 +2588,21 @@ final class MPXGenerator {
     private let rdsInjectionPercent: Float
     private let sumLevel: Float
     private let diffLevel: Float
-    private let inputGain: Float
-    private let outputGain: Float
-    private let finalDrive: Float
+    private var inputGain: Float
+    private var outputGain: Float
+    private var finalDrive: Float
     private let limitEnabled: Bool
     private let threshold: Float
-    private let deviationScale: Float
+    private var deviationScale: Float
     private let programLowpassHz: Float
     private let encoderHFGuardEnabled: Bool
 
-    private let widebandAGCEnabled: Bool
-    private let widebandAGCTargetDB: Float
-    private let widebandAGCMaxGainDB: Float
-    private let widebandAGCMinGainDB: Float
-    private let widebandAGCAttackMS: Float
-    private let widebandAGCReleaseMS: Float
+    private var widebandAGCEnabled: Bool
+    private var widebandAGCTargetDB: Float
+    private var widebandAGCMaxGainDB: Float
+    private var widebandAGCMinGainDB: Float
+    private var widebandAGCAttackMS: Float
+    private var widebandAGCReleaseMS: Float
     private var widebandAGC = WidebandAGCRider()
 
     private let hpfHz: Float
@@ -2565,14 +2615,14 @@ final class MPXGenerator {
     private let limitLookaheadMS: Float
     private var lookaheadLimiter = LookaheadLimiter()
 
-    private let orbassEnabled: Bool
-    private let orbassAmount: Float
-    private let orbassHarmonics: Float
-    private let orbassDrive: Float
-    private let orbassDensity: Float
-    private let orbassSubharmonicsEnabled: Bool
-    private let orbassSubharmonicsAmount: Float
-    private let orbassFreqHz: Float
+    private var orbassEnabled: Bool
+    private var orbassAmount: Float
+    private var orbassHarmonics: Float
+    private var orbassDrive: Float
+    private var orbassDensity: Float
+    private var orbassSubharmonicsEnabled: Bool
+    private var orbassSubharmonicsAmount: Float
+    private var orbassFreqHz: Float
     private var orbassLP = OnePoleLP()
     private var orbassSubLP = OnePoleLP()
     private var orbassHarmHPF = Biquad()
@@ -2589,28 +2639,28 @@ final class MPXGenerator {
     private var orbassHoldRemaining: Float = 0.0
     private var orbassMakeupGain: Float = 1.0
 
-    private let multibandEnabled: Bool
-    private let multibandMode: Int
-    private let multibandMakeup: Float
-    private let multibandKneeDB: Float
-    private let multibandLinkStrength: Float
-    private let multibandReleaseProgramDependent: Bool
-    private let multibandX1Hz: Float
-    private let multibandX2Hz: Float
-    private let multibandX3Hz: Float
-    private let multibandX4Hz: Float
-    private let multibandLowThresholdDB: Float
-    private let multibandMidThresholdDB: Float
-    private let multibandHighThresholdDB: Float
-    private let multibandLowRatio: Float
-    private let multibandMidRatio: Float
-    private let multibandHighRatio: Float
-    private let multibandLowAttackMS: Float
-    private let multibandMidAttackMS: Float
-    private let multibandHighAttackMS: Float
-    private let multibandLowReleaseMS: Float
-    private let multibandMidReleaseMS: Float
-    private let multibandHighReleaseMS: Float
+    private var multibandEnabled: Bool
+    private var multibandMode: Int
+    private var multibandMakeup: Float
+    private var multibandKneeDB: Float
+    private var multibandLinkStrength: Float
+    private var multibandReleaseProgramDependent: Bool
+    private var multibandX1Hz: Float
+    private var multibandX2Hz: Float
+    private var multibandX3Hz: Float
+    private var multibandX4Hz: Float
+    private var multibandLowThresholdDB: Float
+    private var multibandMidThresholdDB: Float
+    private var multibandHighThresholdDB: Float
+    private var multibandLowRatio: Float
+    private var multibandMidRatio: Float
+    private var multibandHighRatio: Float
+    private var multibandLowAttackMS: Float
+    private var multibandMidAttackMS: Float
+    private var multibandHighAttackMS: Float
+    private var multibandLowReleaseMS: Float
+    private var multibandMidReleaseMS: Float
+    private var multibandHighReleaseMS: Float
 
     private var mb3Split1 = StereoLinkwitzRiley4()
     private var mb3Split2 = StereoLinkwitzRiley4()
@@ -2636,12 +2686,12 @@ final class MPXGenerator {
     private var mb5Comp5L = MonoCompressor()
     private var mb5Comp5R = MonoCompressor()
 
-    private let stereoWidenEnabled: Bool
-    private let monoBassEnabled: Bool
-    private let monoBassFreqHz: Float
-    private let widenWidth: Float
-    private let widenCenter: Float
-    private let widenMix: Float
+    private var stereoWidenEnabled: Bool
+    private var monoBassEnabled: Bool
+    private var monoBassFreqHz: Float
+    private var widenWidth: Float
+    private var widenCenter: Float
+    private var widenMix: Float
     private var monoBassSideLP = Biquad()
     private var widenSideHP = Biquad()
     private var stereoProtectInputMidEnv: Float = 0.0
@@ -2653,7 +2703,7 @@ final class MPXGenerator {
     private var stereoProtectReleaseCoeff: Float = 0.0
     private var rdsCoder: BasicRDSCoder?
 
-    private let compositeLimiterEnabled: Bool
+    private var compositeLimiterEnabled: Bool
     private var compositeLimiter = CompositeTruePeakLimiter()
 
     private var toneStep: Float
@@ -2883,6 +2933,130 @@ final class MPXGenerator {
         rdsCoder?.setSampleRate(sampleRate)
         updateDerivedRates()
         configureMonitorDemod()
+    }
+
+    func applyRuntimeConfig(_ config: RuntimeConfig) {
+        inputGain = powf(10.0, config.inputGainDB / 20.0)
+        outputGain = powf(10.0, config.outputGainDB / 20.0)
+        finalDrive = powf(10.0, config.finalDriveDB / 20.0)
+        deviationScale = config.mpxDeviationKHz / 75.0
+        compositeLimiterEnabled = config.compositeLimiterEnabled
+
+        let agcChanged =
+            widebandAGCEnabled != config.widebandAGCEnabled
+            || fabsf(widebandAGCTargetDB - config.widebandAGCTargetDB) > 0.0001
+            || fabsf(widebandAGCMaxGainDB - config.widebandAGCMaxGainDB) > 0.0001
+            || fabsf(widebandAGCMinGainDB - config.widebandAGCMinGainDB) > 0.0001
+            || fabsf(widebandAGCAttackMS - config.widebandAGCAttackMS) > 0.0001
+            || fabsf(widebandAGCReleaseMS - config.widebandAGCReleaseMS) > 0.0001
+
+        widebandAGCEnabled = config.widebandAGCEnabled
+        widebandAGCTargetDB = config.widebandAGCTargetDB
+        widebandAGCMaxGainDB = config.widebandAGCMaxGainDB
+        widebandAGCMinGainDB = config.widebandAGCMinGainDB
+        widebandAGCAttackMS = config.widebandAGCAttackMS
+        widebandAGCReleaseMS = config.widebandAGCReleaseMS
+
+        if agcChanged {
+            widebandAGC.configure(
+                sampleRate: sampleRate,
+                targetDB: widebandAGCTargetDB,
+                attackMS: widebandAGCAttackMS,
+                releaseMS: widebandAGCReleaseMS,
+                minGainDB: widebandAGCMinGainDB,
+                maxGainDB: widebandAGCMaxGainDB
+            )
+        }
+
+        let orbassFiltersChanged =
+            orbassEnabled != config.orbassEnabled
+            || fabsf(orbassFreqHz - config.orbassFreqHz) > 0.0001
+        orbassEnabled = config.orbassEnabled
+        orbassAmount = clampf(config.orbassAmount, 0.0, 1.0)
+        orbassHarmonics = clampf(config.orbassHarmonics, 0.0, 1.0)
+        orbassDrive = clampf(config.orbassDrive, 0.0, 2.5)
+        orbassDensity = clampf(config.orbassDensity, 0.0, 1.0)
+        orbassSubharmonicsEnabled = config.orbassSubharmonicsEnabled
+        orbassSubharmonicsAmount = clampf(config.orbassSubharmonicsAmount, 0.0, 1.0)
+        orbassFreqHz = clampf(config.orbassFreqHz, 45.0, 220.0)
+        if orbassFiltersChanged {
+            configureOrbassFilters()
+        }
+
+        let stereoImageChanged =
+            stereoWidenEnabled != config.stereoWidenEnabled
+            || monoBassEnabled != config.monoBassEnabled
+            || fabsf(monoBassFreqHz - config.monoBassFreqHz) > 0.0001
+            || fabsf(widenWidth - config.widenWidth) > 0.0001
+            || fabsf(widenCenter - config.widenCenter) > 0.0001
+            || fabsf(widenMix - config.widenMix) > 0.0001
+        stereoWidenEnabled = config.stereoWidenEnabled
+        monoBassEnabled = config.monoBassEnabled
+        monoBassFreqHz = clampf(config.monoBassFreqHz, 60.0, 250.0)
+        widenWidth = clampf(config.widenWidth, 0.0, 1.0)
+        widenCenter = clampf(config.widenCenter, 0.0, 1.0)
+        widenMix = clampf(config.widenMix, 0.0, 1.0)
+        if stereoImageChanged {
+            configureStereoWidener()
+        }
+
+        let resolvedCrossovers = Self.resolveMultibandCrossovers(
+            sampleRate: sampleRate,
+            x1: config.multibandX1Hz,
+            x2: config.multibandX2Hz,
+            x3: config.multibandX3Hz,
+            x4: config.multibandX4Hz
+        )
+        let multibandStructureChanged =
+            multibandEnabled != config.multibandEnabled
+            || multibandMode != (config.multibandMode == 5 ? 5 : 3)
+            || fabsf(multibandX1Hz - resolvedCrossovers.x1) > 0.0001
+            || fabsf(multibandX2Hz - resolvedCrossovers.x2) > 0.0001
+            || fabsf(multibandX3Hz - resolvedCrossovers.x3) > 0.0001
+            || fabsf(multibandX4Hz - resolvedCrossovers.x4) > 0.0001
+        let multibandCompressorChanged =
+            fabsf(multibandKneeDB - config.multibandKneeDB) > 0.0001
+            || multibandReleaseProgramDependent != config.multibandReleaseProgramDependent
+            || fabsf(multibandLowThresholdDB - config.multibandLowThresholdDB) > 0.0001
+            || fabsf(multibandMidThresholdDB - config.multibandMidThresholdDB) > 0.0001
+            || fabsf(multibandHighThresholdDB - config.multibandHighThresholdDB) > 0.0001
+            || fabsf(multibandLowRatio - config.multibandLowRatio) > 0.0001
+            || fabsf(multibandMidRatio - config.multibandMidRatio) > 0.0001
+            || fabsf(multibandHighRatio - config.multibandHighRatio) > 0.0001
+            || fabsf(multibandLowAttackMS - config.multibandLowAttackMS) > 0.0001
+            || fabsf(multibandMidAttackMS - config.multibandMidAttackMS) > 0.0001
+            || fabsf(multibandHighAttackMS - config.multibandHighAttackMS) > 0.0001
+            || fabsf(multibandLowReleaseMS - config.multibandLowReleaseMS) > 0.0001
+            || fabsf(multibandMidReleaseMS - config.multibandMidReleaseMS) > 0.0001
+            || fabsf(multibandHighReleaseMS - config.multibandHighReleaseMS) > 0.0001
+        multibandEnabled = config.multibandEnabled
+        multibandMode = (config.multibandMode == 5) ? 5 : 3
+        multibandMakeup = powf(10.0, config.multibandMakeupDB / 20.0)
+        multibandKneeDB = clampf(config.multibandKneeDB, 0.0, 12.0)
+        multibandLinkStrength = clampf(config.multibandLinkStrength, 0.0, 1.0)
+        multibandReleaseProgramDependent = config.multibandReleaseProgramDependent
+        multibandX1Hz = resolvedCrossovers.x1
+        multibandX2Hz = resolvedCrossovers.x2
+        multibandX3Hz = resolvedCrossovers.x3
+        multibandX4Hz = resolvedCrossovers.x4
+        multibandLowThresholdDB = config.multibandLowThresholdDB
+        multibandMidThresholdDB = config.multibandMidThresholdDB
+        multibandHighThresholdDB = config.multibandHighThresholdDB
+        multibandLowRatio = config.multibandLowRatio
+        multibandMidRatio = config.multibandMidRatio
+        multibandHighRatio = config.multibandHighRatio
+        multibandLowAttackMS = config.multibandLowAttackMS
+        multibandMidAttackMS = config.multibandMidAttackMS
+        multibandHighAttackMS = config.multibandHighAttackMS
+        multibandLowReleaseMS = config.multibandLowReleaseMS
+        multibandMidReleaseMS = config.multibandMidReleaseMS
+        multibandHighReleaseMS = config.multibandHighReleaseMS
+        if multibandStructureChanged {
+            configureMultibandFilters()
+        }
+        if multibandStructureChanged || multibandCompressorChanged {
+            configureMultibandCompressors()
+        }
     }
 
     private func makeEncoderComplianceConfig() -> EncoderComplianceConfig {

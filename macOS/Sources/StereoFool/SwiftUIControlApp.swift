@@ -12,6 +12,10 @@ private let kWindowWidth: CGFloat = 860
 private let kWindowHeight: CGFloat = 440
 private let kWindowMinWidth: CGFloat = 760
 private let kWindowMinHeight: CGFloat = 380
+private let kLevelsWindowWidth: CGFloat = 860
+private let kLevelsWindowHeight: CGFloat = 560
+private let kLevelsWindowMinWidth: CGFloat = 760
+private let kLevelsWindowMinHeight: CGFloat = 500
 private let kStereoFoolIconSymbol = "\u{1F3A7}"
 private let kMainWindowAutosaveName = "StereoFool.MainWindow"
 private let kScopesWindowAutosaveName = "StereoFool.ScopesWindow"
@@ -20,6 +24,8 @@ private let kLevelsWindowAutosaveName = "StereoFool.LevelsWindow"
 private let kAboutWindowAutosaveName = "StereoFool.AboutWindow"
 private let kHelpWindowAutosaveName = "StereoFool.HelpWindow"
 private let kSettingsWindowAutosaveName = "StereoFool.SettingsWindow"
+private let kRestartRequiredSettingsListText =
+    "Restart required for sample rate, block size, source mode, monitor output routing, input/output/monitor device changes, mono mode, pre-emphasis, pilot/sum/diff levels, program lowpass, and other encoder-structure changes."
 
 private func makeStereoFoolAppIcon(size: CGFloat = 512) -> NSImage {
     let image = NSImage(size: NSSize(width: size, height: size))
@@ -320,6 +326,11 @@ struct MonitoringStreamHealth {
 
 private struct PeakHoldState {
     var value: Float = 0.0
+    var holdRemaining: Double = 0.0
+}
+
+private struct AudioPeakHoldState {
+    var db: Float = -120.0
     var holdRemaining: Double = 0.0
 }
 
@@ -663,6 +674,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(applyPendingChanges) {
+            menuItem.title = model?.runtimeApplyButtonTitle ?? "Apply Restart"
             return model?.runtimeApplyPending ?? false
         }
         return true
@@ -732,7 +744,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         resetPeaksItem.target = self
         transportMenu.addItem(NSMenuItem.separator())
         let applyItem = transportMenu.addItem(
-            withTitle: "Apply Pending Changes", action: #selector(applyPendingChanges), keyEquivalent: "A")
+            withTitle: "Apply Restart", action: #selector(applyPendingChanges), keyEquivalent: "A")
         applyItem.target = self
         applyItem.keyEquivalentModifierMask = [.command, .shift]
 
@@ -951,8 +963,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let w = NSWindow(contentViewController: hostingController)
         w.title = "Levels"
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
-        w.setContentSize(NSSize(width: kWindowWidth, height: kWindowHeight))
-        w.minSize = NSSize(width: kWindowMinWidth, height: kWindowMinHeight)
+        w.setContentSize(NSSize(width: kLevelsWindowWidth, height: kLevelsWindowHeight))
+        w.minSize = NSSize(width: kLevelsWindowMinWidth, height: kLevelsWindowMinHeight)
         w.isReleasedWhenClosed = false
         w.delegate = self
         restoreFrame(for: w, autosaveName: kLevelsWindowAutosaveName)
@@ -991,6 +1003,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
 @MainActor
 final class StereoFoolViewModel: ObservableObject {
+    private struct RuntimeSnapshot {
+        var config: AppConfig
+        var sourceMode: String
+        var monitorEnabled: Bool
+        var processingBypass: Bool
+        var inputGainDB: Double
+        var selectedInputUID: String
+        var selectedOutputUID: String
+        var selectedMonitorUID: String
+    }
+
+    private static let monitoringRefreshHz: Double = 30.0
+    private static let meterAttackMS: Float = 18.0
+    private static let meterReleaseMS: Float = 110.0
+    private static let audioPeakMeterAttackMS: Float = 1.0
+    private static let audioPeakMeterReleaseMS: Float = 180.0
+
     @Published var selectedSection: AppSection = .monitoring
     @Published var selectedProcessingTab: ProcessingTab = .core
     @Published var selectedRDSTab: RDSTab = .program
@@ -1034,6 +1063,11 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var inputRText: String = "-inf dBFS"
     @Published var outputText: String = "-inf dBFS"
     @Published var modulationText: String = "0.0 kHz"
+    @Published var loudnessAvailable: Bool = false
+    @Published var loudnessMomentaryText: String = "—"
+    @Published var loudnessShortTermText: String = "—"
+    @Published var loudnessIntegratedText: String = "—"
+    @Published var loudnessStatusText: String = "Enable Monitor Output to measure decoded-program loudness."
 
     @Published var limiterStateText: String = "Off"
     @Published var limiterDetailText: String = "Drive 0.0 dB • GR 0.0 dB • Safe 0.0 dB • Peak -inf dBFS"
@@ -1069,6 +1103,7 @@ final class StereoFoolViewModel: ObservableObject {
     private let nowPlayingRunner: NowPlayingScriptRunner
     var config: AppConfig
     private var runningEngine: AudioOutputEngine?
+    private var activeRuntimeSnapshot: RuntimeSnapshot?
     private var monitorTimer: Timer?
     private var lastMonitorRefreshTime: TimeInterval?
     private var engineStartReference: TimeInterval?
@@ -1077,9 +1112,9 @@ final class StereoFoolViewModel: ObservableObject {
     private var vuInputR: Float = 0.0
     private var vuOutput: Float = 0.0
     private var vuModulation: Float = 0.0
-    private var peakHoldInputL = PeakHoldState()
-    private var peakHoldInputR = PeakHoldState()
-    private var peakHoldOutput = PeakHoldState()
+    private var peakHoldInputL = AudioPeakHoldState()
+    private var peakHoldInputR = AudioPeakHoldState()
+    private var peakHoldOutput = AudioPeakHoldState()
     private var peakHoldModulation = PeakHoldState()
     private var limiterGRPeakHoldDB: Float = 0.0
     private var limiterGRPeakHoldRemaining: Double = 0.0
@@ -1141,6 +1176,14 @@ final class StereoFoolViewModel: ObservableObject {
 
     var runtimeApplyPending: Bool { isRunning && pendingRuntimeApply }
 
+    var runtimeApplyButtonTitle: String { "Apply Restart" }
+
+    var runtimeApplyHintText: String {
+        "Pending changes affect engine, routing, or encoder structure and require a restart to take effect."
+    }
+
+    var restartRequiredSettingsListText: String { kRestartRequiredSettingsListText }
+
     var ptyChoices: [(Int, String)] {
         Self.ptyNames.enumerated().map { ($0.offset, $0.element) }
     }
@@ -1172,7 +1215,7 @@ final class StereoFoolViewModel: ObservableObject {
 
     func startMonitoringTimer() {
         monitorTimer?.invalidate()
-        let timer = Timer(timeInterval: (1.0 / 60.0), repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: (1.0 / Self.monitoringRefreshHz), repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.refreshMonitoringSnapshot()
             }
@@ -1233,28 +1276,31 @@ final class StereoFoolViewModel: ObservableObject {
     func setConfigValue<T>(
         _ keyPath: WritableKeyPath<AppConfig, T>,
         _ value: T,
-        restartRequired: Bool = true
+        runtimeDisposition: RuntimeChangeDisposition = .restart
     ) {
         publishConfigChange()
         config[keyPath: keyPath] = value
-        saveConfig(restartRequired: restartRequired)
+        saveConfig(restartRequired: runtimeDisposition == .restart)
+        if runtimeDisposition == .live {
+            applyLiveRuntimeConfigIfRunning()
+        }
         updateNowPlayingRunner()
     }
 
     func configBinding<T>(
         _ keyPath: WritableKeyPath<AppConfig, T>,
-        restartRequired: Bool = true
+        runtimeDisposition: RuntimeChangeDisposition = .restart
     ) -> Binding<T> {
         Binding(
             get: { self.config[keyPath: keyPath] },
-            set: { self.setConfigValue(keyPath, $0, restartRequired: restartRequired) }
+            set: { self.setConfigValue(keyPath, $0, runtimeDisposition: runtimeDisposition) }
         )
     }
 
     func ptyBinding() -> Binding<Int> {
         Binding(
             get: { self.config.rdsPTY },
-            set: { self.setConfigValue(\.rdsPTY, max(0, min(31, $0)), restartRequired: true) }
+            set: { self.setConfigValue(\.rdsPTY, max(0, min(31, $0)), runtimeDisposition: .restart) }
         )
     }
 
@@ -1262,7 +1308,7 @@ final class StereoFoolViewModel: ObservableObject {
         Binding(
             get: { self.config.rdsPI },
             set: {
-                self.setConfigValue(\.rdsPI, Self.sanitizeHex($0, width: 4), restartRequired: true)
+                self.setConfigValue(\.rdsPI, Self.sanitizeHex($0, width: 4), runtimeDisposition: .restart)
             }
         )
     }
@@ -1271,7 +1317,7 @@ final class StereoFoolViewModel: ObservableObject {
         Binding(
             get: { self.config[keyPath: keyPath] },
             set: {
-                self.setConfigValue(keyPath, Self.sanitizeHex($0, width: 2), restartRequired: true)
+                self.setConfigValue(keyPath, Self.sanitizeHex($0, width: 2), runtimeDisposition: .restart)
             }
         )
     }
@@ -1283,7 +1329,7 @@ final class StereoFoolViewModel: ObservableObject {
                 let clamped = max(9, min(401, raw))
                 let odd =
                     (clamped % 2 == 0) ? (clamped + 1 <= 401 ? clamped + 1 : clamped - 1) : clamped
-                self.setConfigValue(\.rdsGaussianTaps, odd, restartRequired: true)
+                self.setConfigValue(\.rdsGaussianTaps, odd, runtimeDisposition: .restart)
             }
         )
     }
@@ -1300,10 +1346,11 @@ final class StereoFoolViewModel: ObservableObject {
         config.orbassDensity = preset.density
         config.orbassSubharmonicsEnabled = preset.subharmonicsEnabled
         config.orbassSubharmonicsAmount = preset.subharmonicsAmount
-        saveConfig(restartRequired: true)
+        saveConfig(restartRequired: false)
+        applyLiveRuntimeConfigIfRunning()
         statusText =
             isRunning
-            ? "Loaded Orbass preset \(preset.title). Press Apply to hear changes."
+            ? "Loaded Orbass preset \(preset.title) live."
             : "Loaded Orbass preset \(preset.title)."
     }
 
@@ -1378,10 +1425,11 @@ final class StereoFoolViewModel: ObservableObject {
         config.multibandLinkStrength = preset.linkStrength
         config.multibandReleaseProgramDependent = preset.releaseProgramDependent
 
-        saveConfig(restartRequired: true)
+        saveConfig(restartRequired: false)
+        applyLiveRuntimeConfigIfRunning()
         statusText =
             isRunning
-            ? "Loaded Multiband preset \(preset.title) (\(intensity.title)). Press Apply to hear changes."
+            ? "Loaded Multiband preset \(preset.title) (\(intensity.title)) live."
             : "Loaded Multiband preset \(preset.title) (\(intensity.title))."
     }
 
@@ -1397,10 +1445,11 @@ final class StereoFoolViewModel: ObservableObject {
         config.widebandAGCMinGainDB = preset.agcMinGainDB
         config.finalDriveDB = preset.finalDriveDB
         config.compositeLimiterEnabled = preset.compositeLimiterEnabled
-        saveConfig(restartRequired: true)
+        saveConfig(restartRequired: false)
+        applyLiveRuntimeConfigIfRunning()
         statusText =
             isRunning
-            ? "Loaded final-stage preset \(preset.title). Press Apply to hear changes."
+            ? "Loaded final-stage preset \(preset.title) live."
             : "Loaded final-stage preset \(preset.title)."
     }
 
@@ -1511,8 +1560,20 @@ final class StereoFoolViewModel: ObservableObject {
             config.mpxDeviationKHz = defaults.mpxDeviationKHz
         }
 
-        saveConfig(restartRequired: true)
-        applyPendingRuntimeChanges()
+        let runtimeDisposition: RuntimeChangeDisposition
+        switch selectedProcessingTab {
+        case .core:
+            runtimeDisposition = .restart
+        case .agc, .orbass, .multiband, .widener, .limiter:
+            runtimeDisposition = .live
+        }
+
+        saveConfig(restartRequired: runtimeDisposition == .restart)
+        if runtimeDisposition == .restart {
+            applyPendingRuntimeChanges()
+        } else {
+            applyLiveRuntimeConfigIfRunning()
+        }
         statusText = selectedProcessingTab.resetStatusText
     }
 
@@ -1635,7 +1696,7 @@ final class StereoFoolViewModel: ObservableObject {
         openPanel.begin { [weak self] response in
             guard response == .OK, let url = openPanel.url else { return }
             Task { @MainActor in
-                self?.setConfigValue(\.rdsNowPlayingScript, url.path, restartRequired: false)
+                self?.setConfigValue(\.rdsNowPlayingScript, url.path, runtimeDisposition: .none)
             }
         }
     }
@@ -1662,14 +1723,73 @@ final class StereoFoolViewModel: ObservableObject {
         statusText = "Monitoring peaks reset"
     }
 
+    func setInputGainLive(_ value: Double) {
+        inputGainDB = value
+        config.inputGainDB = value
+        saveConfig(restartRequired: false)
+        applyLiveRuntimeConfigIfRunning()
+    }
+
+    private func applyLiveRuntimeConfigIfRunning() {
+        guard isRunning, let runningEngine else { return }
+        var runtimeConfig = config
+        runtimeConfig.sourceMode = sourceMode
+        runtimeConfig.monitorEnabled = monitorEnabled
+        runtimeConfig.processingBypass = processingBypass
+        runtimeConfig.inputGainDB = inputGainDB
+        runningEngine.applyRuntimeConfig(runtimeConfig)
+        pendingRuntimeApply = false
+        statusText = "Live DSP parameters applied"
+    }
+
+    private func captureRuntimeSnapshot() -> RuntimeSnapshot {
+        RuntimeSnapshot(
+            config: config,
+            sourceMode: sourceMode,
+            monitorEnabled: monitorEnabled,
+            processingBypass: processingBypass,
+            inputGainDB: inputGainDB,
+            selectedInputUID: selectedInputUID,
+            selectedOutputUID: selectedOutputUID,
+            selectedMonitorUID: selectedMonitorUID
+        )
+    }
+
+    private func restoreRuntimeSnapshot(_ snapshot: RuntimeSnapshot) {
+        config = snapshot.config
+        sourceMode = snapshot.sourceMode
+        monitorEnabled = snapshot.monitorEnabled
+        processingBypass = snapshot.processingBypass
+        inputGainDB = snapshot.inputGainDB
+        selectedInputUID = snapshot.selectedInputUID
+        selectedOutputUID = snapshot.selectedOutputUID
+        selectedMonitorUID = snapshot.selectedMonitorUID
+        updateNowPlayingRunner()
+    }
+
     private func restartEngineWithStatus(_ status: String) {
         let wasRunning = isRunning
+        let desiredSnapshot = captureRuntimeSnapshot()
+        let fallbackSnapshot = activeRuntimeSnapshot
         stopEngine()
         if wasRunning {
             startEngine()
             if isRunning {
                 statusText = "\(status) and applied"
+                return
             }
+            if let fallbackSnapshot {
+                restoreRuntimeSnapshot(fallbackSnapshot)
+                startEngine()
+                if isRunning {
+                    activeRuntimeSnapshot = fallbackSnapshot
+                    restoreRuntimeSnapshot(desiredSnapshot)
+                    pendingRuntimeApply = true
+                    statusText = "\(status) failed; previous runtime restored. Pending changes kept."
+                    return
+                }
+            }
+            statusText = "\(status) failed; output remains stopped."
         }
     }
 
@@ -1718,6 +1838,7 @@ final class StereoFoolViewModel: ObservableObject {
             runningEngine = engine
             isRunning = true
             pendingRuntimeApply = false
+            activeRuntimeSnapshot = captureRuntimeSnapshot()
             engineStartReference = Date().timeIntervalSinceReferenceDate
             let mode = monitorEnabled ? "monitor" : "output"
             var line =
@@ -1759,22 +1880,28 @@ final class StereoFoolViewModel: ObservableObject {
 
     private func refreshMonitoringSnapshot() {
         let now = Date().timeIntervalSinceReferenceDate
-        let minRefreshInterval = 1.0 / 60.0
+        let minRefreshInterval = 1.0 / Self.monitoringRefreshHz
         if let last = lastMonitorRefreshTime, (now - last) < minRefreshInterval {
             return
         }
 
-        let dt = max(1.0 / 120.0, min(0.25, now - (lastMonitorRefreshTime ?? (now - (1.0 / 30.0)))))
+        let dt = max(
+            1.0 / (Self.monitoringRefreshHz * 2.0),
+            min(0.25, now - (lastMonitorRefreshTime ?? (now - (1.0 / Self.monitoringRefreshHz))))
+        )
         lastMonitorRefreshTime = now
 
         var inputPeak: Float = 0.0
-        var inputLeftPeak: Float = 0.0
-        var inputRightPeak: Float = 0.0
-        var inputLeftRMS: Float = 0.0
-        var inputRightRMS: Float = 0.0
-        var outputRMS: Float = 0.0
         var outputPeak: Float = 0.0
         var deviationKHz: Float = 0.0
+        var currentInputLeftPeak: Float = 0.0
+        var currentInputRightPeak: Float = 0.0
+        var currentOutputPeak: Float = 0.0
+        var liveInputLeftPeak: Float = 0.0
+        var liveInputRightPeak: Float = 0.0
+        var liveOutputPeak: Float = 0.0
+        var liveDeviationKHz: Float = 0.0
+        var hasCapture = false
         var agcDetectorDB: Float = -120.0
         var agcGainDB: Float = 0.0
         var agcGateActive: Bool = false
@@ -1786,6 +1913,10 @@ final class StereoFoolViewModel: ObservableObject {
         var compositeBudgetMarginDB: Float = 0.0
         var outputStereoCorrelation: Float = 1.0
         var outputSideToMidRatio: Float = 0.0
+        var loudnessAvailable: Bool = false
+        var loudnessMomentaryLUFS: Float = -120.0
+        var loudnessShortTermLUFS: Float = -120.0
+        var loudnessIntegratedLUFS: Float = -120.0
         var health = MonitoringStreamHealth.stopped
 
         if let engine = runningEngine {
@@ -1849,15 +1980,17 @@ final class StereoFoolViewModel: ObservableObject {
             }
 
             let meters = engine.meters
-            let hasCapture = cap.callbacks > 0
+            hasCapture = cap.callbacks > 0
             inputPeak = hasCapture ? meters.inputPeak : meters.outputPeak
-            inputLeftPeak = hasCapture ? meters.inputLeftPeak : meters.outputPeak
-            inputRightPeak = hasCapture ? meters.inputRightPeak : meters.outputPeak
-            inputLeftRMS = hasCapture ? meters.inputLeftRMS : meters.outputRMS
-            inputRightRMS = hasCapture ? meters.inputRightRMS : meters.outputRMS
-            outputRMS = meters.outputRMS
             outputPeak = meters.outputPeak
             deviationKHz = meters.deviationKHzPeak
+            currentInputLeftPeak = hasCapture ? meters.inputLeftPeak : meters.outputPeak
+            currentInputRightPeak = hasCapture ? meters.inputRightPeak : meters.outputPeak
+            currentOutputPeak = meters.outputPeak
+            liveInputLeftPeak = hasCapture ? meters.liveInputLeftPeak : meters.liveOutputPeak
+            liveInputRightPeak = hasCapture ? meters.liveInputRightPeak : meters.liveOutputPeak
+            liveOutputPeak = meters.liveOutputPeak
+            liveDeviationKHz = meters.liveDeviationKHzPeak
             agcDetectorDB = meters.agcDetectorDB
             agcGainDB = meters.agcGainDB
             agcGateActive = meters.agcGateActive
@@ -1869,6 +2002,10 @@ final class StereoFoolViewModel: ObservableObject {
             compositeBudgetMarginDB = meters.compositeBudgetMarginDB
             outputStereoCorrelation = meters.outputStereoCorrelation
             outputSideToMidRatio = meters.outputSideToMidRatio
+            loudnessAvailable = meters.loudnessAvailable
+            loudnessMomentaryLUFS = meters.loudnessMomentaryLUFS
+            loudnessShortTermLUFS = meters.loudnessShortTermLUFS
+            loudnessIntegratedLUFS = meters.loudnessIntegratedLUFS
 
             if engineStartReference == nil {
                 engineStartReference = now
@@ -1903,6 +2040,10 @@ final class StereoFoolViewModel: ObservableObject {
             vuOutput = 0.0
             vuModulation = 0.0
             clearPeakHolds()
+            loudnessAvailable = false
+            loudnessMomentaryLUFS = -120.0
+            loudnessShortTermLUFS = -120.0
+            loudnessIntegratedLUFS = -120.0
             limiterDetailText = String(
                 format: "Drive %.1f dB • GR 0.0 dB • Max 0.0 dB • Safe 0.0 dB • Peak %@",
                 config.finalDriveDB,
@@ -1918,50 +2059,80 @@ final class StereoFoolViewModel: ObservableObject {
         }
         streamHealth = health
 
+        self.loudnessAvailable = monitorEnabled && loudnessAvailable
+        if self.loudnessAvailable {
+            loudnessMomentaryText = Self.lufsString(loudnessMomentaryLUFS)
+            loudnessShortTermText = Self.lufsString(loudnessShortTermLUFS)
+            loudnessIntegratedText = Self.lufsString(loudnessIntegratedLUFS)
+            loudnessStatusText = "Decoded monitor loudness in EBU-style M / S / I windows."
+        } else {
+            loudnessMomentaryText = "—"
+            loudnessShortTermText = "—"
+            loudnessIntegratedText = "—"
+            loudnessStatusText =
+                monitorEnabled
+                ? "Waiting for decoded monitor audio to accumulate loudness windows."
+                : "Enable Monitor Output to measure decoded-program loudness."
+        }
+
         let modulationNorm = max(0.0, min(1.0, deviationKHz / 100.0))
-        let inputLTarget = Self.levelMeterScale(inputLeftRMS)
-        let inputRTarget = Self.levelMeterScale(inputRightRMS)
-        let outputTarget = Self.levelMeterScale(outputRMS)
+        let inputLTarget = Self.levelMeterScale(currentInputLeftPeak)
+        let inputRTarget = Self.levelMeterScale(currentInputRightPeak)
+        let outputTarget = Self.levelMeterScale(currentOutputPeak)
         let modulationTarget = modulationNorm
 
-        vuInputL = smoothMeter(
-            current: vuInputL, target: inputLTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
-        vuInputR = smoothMeter(
-            current: vuInputR, target: inputRTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
-        vuOutput = smoothMeter(
-            current: vuOutput, target: outputTarget, dt: dt, attackMS: 18.0, releaseMS: 110.0)
+        vuInputL = smoothPeakProgramMeter(
+            current: vuInputL,
+            target: inputLTarget,
+            dt: dt,
+            releaseMS: Self.audioPeakMeterReleaseMS
+        )
+        vuInputR = smoothPeakProgramMeter(
+            current: vuInputR,
+            target: inputRTarget,
+            dt: dt,
+            releaseMS: Self.audioPeakMeterReleaseMS
+        )
+        vuOutput = smoothPeakProgramMeter(
+            current: vuOutput,
+            target: outputTarget,
+            dt: dt,
+            releaseMS: Self.audioPeakMeterReleaseMS
+        )
         vuModulation = smoothMeter(
-            current: vuModulation, target: modulationTarget, dt: dt, attackMS: 18.0,
-            releaseMS: 110.0)
+            current: vuModulation,
+            target: modulationTarget,
+            dt: dt,
+            attackMS: Self.meterAttackMS,
+            releaseMS: Self.meterReleaseMS
+        )
 
         inputLLevel = Double(max(0.0, min(1.0, vuInputL)))
         inputRLevel = Double(max(0.0, min(1.0, vuInputR)))
         outputLevel = Double(max(0.0, min(1.0, vuOutput)))
         modulationLevel = Double(max(0.0, min(1.0, vuModulation)))
 
-        // Bar fill remains RMS/VU oriented, but the white marker now follows the
-        // actual peak value mapped onto the same display scale.
-        inputLPeakHoldLevel = Double(
-            updatePeakHold(
-                livePeak: Self.levelMeterScale(inputLeftPeak),
-                state: &peakHoldInputL,
-                dt: dt
-            ))
-        inputRPeakHoldLevel = Double(
-            updatePeakHold(
-                livePeak: Self.levelMeterScale(inputRightPeak),
-                state: &peakHoldInputR,
-                dt: dt
-            ))
-        outputPeakHoldLevel = Double(
-            updatePeakHold(
-                livePeak: Self.levelMeterScale(outputPeak),
-                state: &peakHoldOutput,
-                dt: dt
-            ))
+        let inputLPeakHoldDB = updateAudioPeakHold(
+            livePeakLinear: liveInputLeftPeak,
+            state: &peakHoldInputL,
+            dt: dt
+        )
+        let inputRPeakHoldDB = updateAudioPeakHold(
+            livePeakLinear: liveInputRightPeak,
+            state: &peakHoldInputR,
+            dt: dt
+        )
+        let outputPeakHoldDB = updateAudioPeakHold(
+            livePeakLinear: liveOutputPeak,
+            state: &peakHoldOutput,
+            dt: dt
+        )
+        inputLPeakHoldLevel = Double(Self.levelMeterScale(dbfs: inputLPeakHoldDB))
+        inputRPeakHoldLevel = Double(Self.levelMeterScale(dbfs: inputRPeakHoldDB))
+        outputPeakHoldLevel = Double(Self.levelMeterScale(dbfs: outputPeakHoldDB))
         modulationPeakHoldLevel = Double(
             updatePeakHold(
-                livePeak: max(0.0, min(1.0, deviationKHz / 100.0)),
+                livePeak: max(0.0, min(1.0, liveDeviationKHz / 100.0)),
                 state: &peakHoldModulation,
                 dt: dt
             ))
@@ -1970,9 +2141,9 @@ final class StereoFoolViewModel: ObservableObject {
             dt: dt
         )
 
-        inputLText = Self.dbfsString(inputLeftRMS)
-        inputRText = Self.dbfsString(inputRightRMS)
-        outputText = Self.meterMetaString(rms: outputRMS, peak: outputPeak)
+        inputLText = Self.peakMeterString(currentPeak: currentInputLeftPeak, peakHoldDB: inputLPeakHoldDB)
+        inputRText = Self.peakMeterString(currentPeak: currentInputRightPeak, peakHoldDB: inputRPeakHoldDB)
+        outputText = Self.peakMeterString(currentPeak: currentOutputPeak, peakHoldDB: outputPeakHoldDB)
         modulationText = String(format: "%.1f kHz", deviationKHz)
 
         let limiterState =
@@ -2494,7 +2665,7 @@ final class StereoFoolViewModel: ObservableObject {
         enqueueConfigSave(snapshot: config)
         if restartRequired && isRunning {
             if !pendingRuntimeApply {
-                statusText = "Config updated. Press Apply in Monitoring to hear changes."
+                statusText = "Restart required for engine, routing, or encoder-structure changes. Use Apply Restart in Monitoring."
             }
             pendingRuntimeApply = true
         }
@@ -2507,6 +2678,12 @@ final class StereoFoolViewModel: ObservableObject {
     private enum ConfigReloadOrigin {
         case manual
         case external
+    }
+
+    enum RuntimeChangeDisposition {
+        case restart
+        case live
+        case none
     }
 
     private func applyLoadedConfig(_ loadedConfig: AppConfig, origin: ConfigReloadOrigin) {
@@ -2522,8 +2699,8 @@ final class StereoFoolViewModel: ObservableObject {
             pendingRuntimeApply = true
             statusText =
                 origin == .external
-                ? "Config changed on disk. Press Apply in Monitoring to hear changes."
-                : "Config reloaded. Press Apply in Monitoring to hear changes."
+                ? "Config changed on disk. Restart-required changes are pending; use Apply Restart in Monitoring."
+                : "Config reloaded. Restart-required changes are pending; use Apply Restart in Monitoring."
         } else {
             pendingRuntimeApply = false
             statusText = origin == .external ? "Config reloaded from disk" : "Config reloaded"
@@ -2643,9 +2820,9 @@ final class StereoFoolViewModel: ObservableObject {
     }
 
     private func clearPeakHolds() {
-        peakHoldInputL = PeakHoldState()
-        peakHoldInputR = PeakHoldState()
-        peakHoldOutput = PeakHoldState()
+        peakHoldInputL = AudioPeakHoldState()
+        peakHoldInputR = AudioPeakHoldState()
+        peakHoldOutput = AudioPeakHoldState()
         peakHoldModulation = PeakHoldState()
         limiterGRPeakHoldDB = 0.0
         limiterGRPeakHoldRemaining = 0.0
@@ -2678,6 +2855,31 @@ final class StereoFoolViewModel: ObservableObject {
             state.value = 0.0
         }
         return state.value
+    }
+
+    private func updateAudioPeakHold(
+        livePeakLinear: Float,
+        state: inout AudioPeakHoldState,
+        dt: Double
+    ) -> Float {
+        let liveDB = Self.dbfsValue(livePeakLinear)
+        if !stickyPeaksEnabled {
+            state.db = liveDB
+            state.holdRemaining = 0.0
+            return liveDB
+        }
+        if liveDB >= state.db {
+            state.db = liveDB
+            state.holdRemaining = max(0.0, meterPeakHoldSeconds)
+            return state.db
+        }
+        if state.holdRemaining > 0.0 {
+            state.holdRemaining = max(0.0, state.holdRemaining - dt)
+            return state.db
+        }
+        let fallRate = max(1.0, meterPeakFallDBPerSecond)
+        state.db = max(liveDB, state.db - Float(fallRate * dt))
+        return state.db
     }
 
     private func updateLimiterGRPeakHold(liveValueDB: Float, dt: Double) -> Float {
@@ -2713,13 +2915,44 @@ final class StereoFoolViewModel: ObservableObject {
         return current + ((clampedTarget - current) * Float(alpha))
     }
 
-    private static func levelMeterScale(_ linear: Float) -> Float {
-        let safeLinear = max(1e-9, linear.isFinite ? linear : 0.0)
-        let db = 20.0 * log10f(safeLinear)
+    private func smoothPeakProgramMeter(
+        current: Float,
+        target: Float,
+        dt: Double,
+        releaseMS: Float
+    ) -> Float {
+        let clampedTarget = max(0.0, min(1.0, target.isFinite ? target : 0.0))
+        if clampedTarget >= current {
+            return smoothMeter(
+                current: current,
+                target: clampedTarget,
+                dt: dt,
+                attackMS: Self.audioPeakMeterAttackMS,
+                releaseMS: releaseMS
+            )
+        }
+        return smoothMeter(
+            current: current,
+            target: clampedTarget,
+            dt: dt,
+            attackMS: Self.audioPeakMeterAttackMS,
+            releaseMS: releaseMS
+        )
+    }
+
+    private static func dbfsValue(_ linear: Float) -> Float {
+        guard linear.isFinite, linear > 1e-9 else { return -120.0 }
+        return 20.0 * log10f(linear)
+    }
+
+    private static func levelMeterScale(dbfs db: Float) -> Float {
         let floorDB: Float = -36.0
-        let curve: Float = 0.88
         let norm = max(0.0, min(1.0, (db - floorDB) / -floorDB))
-        return powf(norm, curve)
+        return norm
+    }
+
+    private static func levelMeterScale(_ linear: Float) -> Float {
+        levelMeterScale(dbfs: dbfsValue(linear))
     }
 
     private static func dbfsString(_ linear: Float) -> String {
@@ -2728,10 +2961,26 @@ final class StereoFoolViewModel: ObservableObject {
         return String(format: "%.1f dBFS", db)
     }
 
-    private static func meterMetaString(rms: Float, peak: Float) -> String {
+    private static func meterMetaString(rms: Float, peak: Float, peakHoldDB: Float? = nil) -> String {
         let rmsString = dbfsString(rms)
-        let peakDB = peak > 1e-9 ? (20.0 * log10(Double(peak))) : -120.0
-        return "\(rmsString)   \(String(format: "%.1f", peakDB)) pk"
+        let displayPeakDB: Double
+        if let peakHold = peakHoldDB {
+            displayPeakDB = Double(peakHold)
+        } else {
+            displayPeakDB = peak > 1e-9 ? (20.0 * log10(Double(peak))) : -120.0
+        }
+        return "\(rmsString)   \(String(format: "%.1f", displayPeakDB)) pk"
+    }
+
+    private static func peakMeterString(currentPeak: Float, peakHoldDB: Float? = nil) -> String {
+        let currentString = dbfsString(currentPeak)
+        guard let peakHoldDB else { return currentString }
+        return "\(currentString)   \(String(format: "%.1f", peakHoldDB)) pk"
+    }
+
+    private static func lufsString(_ value: Float) -> String {
+        guard value.isFinite, value > -119.5 else { return "—" }
+        return String(format: "%.1f LUFS", value)
     }
 }
 
@@ -2901,27 +3150,34 @@ private struct MonitoringTransportHeader: View {
     @ObservedObject var model: StereoFoolViewModel
 
     var body: some View {
-        HStack(spacing: 12) {
-            Spacer()
+        VStack(alignment: .trailing, spacing: 8) {
+            HStack(spacing: 12) {
+                Spacer()
 
-            if model.runtimeApplyPending {
-                Button("Apply") {
-                    model.applyPendingRuntimeChanges()
+                if model.runtimeApplyPending {
+                    Button(model.runtimeApplyButtonTitle) {
+                        model.applyPendingRuntimeChanges()
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
+                Button(model.processingBypass ? "Bypass On" : "Bypass") {
+                    model.toggleBypass()
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.isBusy)
+
+                Button(model.isRunning ? "Stop" : "Start") {
+                    model.startOrStopTransport()
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(model.isBusy)
             }
-
-            Button(model.processingBypass ? "Bypass On" : "Bypass") {
-                model.toggleBypass()
+            if model.runtimeApplyPending {
+                Text(model.runtimeApplyHintText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.bordered)
-            .disabled(model.isBusy)
-
-            Button(model.isRunning ? "Stop" : "Start") {
-                model.startOrStopTransport()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(model.isBusy)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
@@ -3742,24 +3998,6 @@ private struct LevelsCardView: View {
     var body: some View {
         Card(title: "Levels") {
             VStack(alignment: .leading, spacing: 12) {
-                LabeledContent("Input Gain") {
-                    HStack(spacing: 12) {
-                        Slider(
-                            value: Binding(
-                                get: { model.inputGainDB },
-                                set: {
-                                    model.inputGainDB = $0
-                                    model.persistBasicConfig()
-                                }
-                            ), in: -24...24)
-                        Text(String(format: "%.1f dB", model.inputGainDB))
-                            .font(.system(.callout, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 72, alignment: .trailing)
-                    }
-                }
-
-                Divider()
                 MeterRow(
                     label: "Stereo Input L", valueText: model.inputLText, level: model.inputLLevel,
                     peakLevel: model.inputLPeakHoldLevel, showsDBScale: true)
@@ -3775,6 +4013,26 @@ private struct LevelsCardView: View {
                     scaleStyle: .modulation100kHz(limitKHz: model.config.mpxDeviationKHz))
             }
             .controlSize(.regular)
+        }
+    }
+}
+
+private struct LoudnessCardView: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        Card(title: "Loudness") {
+            VStack(alignment: .leading, spacing: 12) {
+                KeyValueGrid(rows: [
+                    ("Momentary", model.loudnessMomentaryText),
+                    ("Short-term", model.loudnessShortTermText),
+                    ("Integrated", model.loudnessIntegratedText),
+                ])
+
+                Text(model.loudnessStatusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 }
@@ -3828,23 +4086,39 @@ private struct MeterBar: View {
     let peakLevel: Double?
     let scaleStyle: MeterRow.ScaleStyle
 
-    private var scaleTicks: [Double] {
-        switch scaleStyle {
-        case .dbfs:
-            return [0.0, 0.33, 0.66, 0.83, 0.92, 1.0]
-        case .modulation100kHz:
-            return [0.0, 0.25, 0.5, 0.75, 1.0]
-        case .none:
-            return [0.0, 0.5, 1.0]
-        }
+    private struct ScaleTick: Identifiable {
+        let position: Double
+        let label: String
+
+        var id: String { "\(label)-\(position)" }
     }
 
-    private var scaleLabels: [String] {
+    private static func dbfsScalePosition(_ db: Double) -> Double {
+        let floorDB = -36.0
+        let clampedDB = min(0.0, max(floorDB, db))
+        let norm = max(0.0, min(1.0, (clampedDB - floorDB) / -floorDB))
+        return norm
+    }
+
+    private var scaleTicks: [ScaleTick] {
         switch scaleStyle {
         case .dbfs:
-            return ["-36", "-24", "-12", "-6", "-3", "0 dBFS"]
+            return [
+                ScaleTick(position: Self.dbfsScalePosition(-36.0), label: "-36"),
+                ScaleTick(position: Self.dbfsScalePosition(-24.0), label: "-24"),
+                ScaleTick(position: Self.dbfsScalePosition(-12.0), label: "-12"),
+                ScaleTick(position: Self.dbfsScalePosition(-6.0), label: "-6"),
+                ScaleTick(position: Self.dbfsScalePosition(-3.0), label: "-3"),
+                ScaleTick(position: Self.dbfsScalePosition(0.0), label: "0 dBFS"),
+            ]
         case .modulation100kHz:
-            return ["0", "25", "50", "75", "100 kHz"]
+            return [
+                ScaleTick(position: 0.0, label: "0"),
+                ScaleTick(position: 0.25, label: "25"),
+                ScaleTick(position: 0.5, label: "50"),
+                ScaleTick(position: 0.75, label: "75"),
+                ScaleTick(position: 1.0, label: "100 kHz"),
+            ]
         case .none:
             return []
         }
@@ -3884,11 +4158,11 @@ private struct MeterBar: View {
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
                         .fill(Color.secondary.opacity(0.18))
-                    ForEach(scaleTicks, id: \.self) { tick in
+                    ForEach(scaleTicks) { tick in
                         Rectangle()
                             .fill(Color.primary.opacity(0.15))
                             .frame(width: 1)
-                            .offset(x: (tick * geo.size.width) - 0.5)
+                            .offset(x: (tick.position * geo.size.width) - 0.5)
                     }
                     RoundedRectangle(cornerRadius: 3, style: .continuous)
                         .fill(meterTint.opacity(0.75))
@@ -3914,16 +4188,24 @@ private struct MeterBar: View {
             }
             .frame(height: 14)
             if scaleStyle != .none {
-                HStack {
-                    ForEach(Array(scaleLabels.enumerated()), id: \.offset) { idx, title in
-                        Text(title)
-                            .font(.system(size: 9, weight: .regular, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                        if idx < scaleLabels.count - 1 {
-                            Spacer(minLength: 0)
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        ForEach(scaleTicks) { tick in
+                            Text(tick.label)
+                                .font(.system(size: 9, weight: .regular, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .fixedSize()
+                                .position(
+                                    x: min(
+                                        max(12.0, tick.position * geo.size.width),
+                                        max(12.0, geo.size.width - 24.0)
+                                    ),
+                                    y: 7.0
+                                )
                         }
                     }
                 }
+                .frame(height: 14)
             }
         }
         .transaction { txn in
@@ -4303,13 +4585,12 @@ private struct ProcessingCoreTab: View {
             DoubleSliderRow(title: "Input Gain", value: Binding(
                 get: { model.inputGainDB },
                 set: {
-                    model.inputGainDB = $0
-                    model.persistBasicConfig()
+                    model.setInputGainLive($0)
                 }
             ), range: -24...24, format: "%.1f dB")
             DoubleSliderRow(
                 title: "MPX Output Level",
-                value: model.configBinding(\.outputGainDB),
+                value: model.configBinding(\.outputGainDB, runtimeDisposition: .live),
                 range: -18...18,
                 format: "%.1f dB"
             )
@@ -4329,12 +4610,12 @@ private struct ProcessingAGCTab: View {
 
     var body: some View {
         Card(title: "Wideband AGC") {
-            Toggle("Enable Wideband AGC", isOn: model.configBinding(\.widebandAGCEnabled))
-            DoubleSliderRow(title: "Platform Target", value: model.configBinding(\.widebandAGCTargetDB), range: -36 ... -6, format: "%.1f dB")
-            DoubleSliderRow(title: "Attack", value: model.configBinding(\.widebandAGCAttackMS), range: 1...150, format: "%.1f ms")
-            DoubleSliderRow(title: "Release", value: model.configBinding(\.widebandAGCReleaseMS), range: 40...1200, format: "%.1f ms")
-            DoubleSliderRow(title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB), range: 0...24, format: "%.1f dB")
-            DoubleSliderRow(title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB), range: -24...0, format: "%.1f dB")
+            Toggle("Enable Wideband AGC", isOn: model.configBinding(\.widebandAGCEnabled, runtimeDisposition: .live))
+            DoubleSliderRow(title: "Platform Target", value: model.configBinding(\.widebandAGCTargetDB, runtimeDisposition: .live), range: -36 ... -6, format: "%.1f dB")
+            DoubleSliderRow(title: "Attack", value: model.configBinding(\.widebandAGCAttackMS, runtimeDisposition: .live), range: 1...150, format: "%.1f ms")
+            DoubleSliderRow(title: "Release", value: model.configBinding(\.widebandAGCReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.1f ms")
+            DoubleSliderRow(title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB, runtimeDisposition: .live), range: 0...24, format: "%.1f dB")
+            DoubleSliderRow(title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB, runtimeDisposition: .live), range: -24...0, format: "%.1f dB")
             Text("Wideband AGC should establish a stable average level platform. It is not the final loudness stage.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -4359,14 +4640,14 @@ private struct ProcessingOrbassTab: View {
                 }
             }
             .pickerStyle(.menu)
-            Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled))
-            DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount), range: 0...1.0, format: "%.2f")
-            DoubleSliderRow(title: "Frequency", value: model.configBinding(\.orbassFreqHz), range: 40...180, format: "%.1f Hz")
-            DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics), range: 0...1.0, format: "%.2f")
-            DoubleSliderRow(title: "Drive", value: model.configBinding(\.orbassDrive), range: 0.2...2.0, format: "%.2f")
-            DoubleSliderRow(title: "Density", value: model.configBinding(\.orbassDensity), range: 0...1.0, format: "%.2f")
-            Toggle("Enable Subharmonics", isOn: model.configBinding(\.orbassSubharmonicsEnabled))
-            DoubleSliderRow(title: "Subharmonics", value: model.configBinding(\.orbassSubharmonicsAmount), range: 0...1.0, format: "%.2f")
+            Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled, runtimeDisposition: .live))
+            DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount, runtimeDisposition: .live), range: 0...1.0, format: "%.2f")
+            DoubleSliderRow(title: "Frequency", value: model.configBinding(\.orbassFreqHz, runtimeDisposition: .live), range: 40...180, format: "%.1f Hz")
+            DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics, runtimeDisposition: .live), range: 0...1.0, format: "%.2f")
+            DoubleSliderRow(title: "Drive", value: model.configBinding(\.orbassDrive, runtimeDisposition: .live), range: 0.2...2.0, format: "%.2f")
+            DoubleSliderRow(title: "Density", value: model.configBinding(\.orbassDensity, runtimeDisposition: .live), range: 0...1.0, format: "%.2f")
+            Toggle("Enable Subharmonics", isOn: model.configBinding(\.orbassSubharmonicsEnabled, runtimeDisposition: .live))
+            DoubleSliderRow(title: "Subharmonics", value: model.configBinding(\.orbassSubharmonicsAmount, runtimeDisposition: .live), range: 0...1.0, format: "%.2f")
                 .disabled(!model.config.orbassSubharmonicsEnabled)
         }
     }
@@ -4401,32 +4682,32 @@ private struct ProcessingMultibandTab: View {
                 }
             }
             .pickerStyle(.segmented)
-            Toggle("Enable Multiband", isOn: model.configBinding(\.multibandEnabled))
-            Picker("Mode", selection: model.configBinding(\.multibandMode)) {
+            Toggle("Enable Multiband", isOn: model.configBinding(\.multibandEnabled, runtimeDisposition: .live))
+            Picker("Mode", selection: model.configBinding(\.multibandMode, runtimeDisposition: .live)) {
                 Text("2-band").tag(2)
                 Text("3-band").tag(3)
                 Text("5-band").tag(5)
             }
-            DoubleSliderRow(title: "Knee", value: model.configBinding(\.multibandKneeDB), range: 0...12, format: "%.1f dB")
-            DoubleSliderRow(title: "Link", value: model.configBinding(\.multibandLinkStrength), range: 0...1, format: "%.2f")
-            Toggle("Program-dependent Release", isOn: model.configBinding(\.multibandReleaseProgramDependent))
-            DoubleSliderRow(title: "X1", value: model.configBinding(\.multibandX1Hz), range: 30...300, format: "%.0f Hz")
-            DoubleSliderRow(title: "X2", value: model.configBinding(\.multibandX2Hz), range: 120...1200, format: "%.0f Hz")
-            DoubleSliderRow(title: "X3", value: model.configBinding(\.multibandX3Hz), range: 600...4000, format: "%.0f Hz")
-            DoubleSliderRow(title: "X4", value: model.configBinding(\.multibandX4Hz), range: 2500...12000, format: "%.0f Hz")
-            DoubleSliderRow(title: "Low Threshold", value: model.configBinding(\.multibandLowThresholdDB), range: (-40)...(-6), format: "%.1f dB")
-            DoubleSliderRow(title: "Mid Threshold", value: model.configBinding(\.multibandMidThresholdDB), range: (-40)...(-6), format: "%.1f dB")
-            DoubleSliderRow(title: "High Threshold", value: model.configBinding(\.multibandHighThresholdDB), range: (-40)...(-6), format: "%.1f dB")
-            DoubleSliderRow(title: "Low Ratio", value: model.configBinding(\.multibandLowRatio), range: 1...8, format: "%.2f")
-            DoubleSliderRow(title: "Mid Ratio", value: model.configBinding(\.multibandMidRatio), range: 1...8, format: "%.2f")
-            DoubleSliderRow(title: "High Ratio", value: model.configBinding(\.multibandHighRatio), range: 1...8, format: "%.2f")
-            DoubleSliderRow(title: "Low Attack", value: model.configBinding(\.multibandLowAttackMS), range: 1...120, format: "%.1f")
-            DoubleSliderRow(title: "Mid Attack", value: model.configBinding(\.multibandMidAttackMS), range: 1...120, format: "%.1f")
-            DoubleSliderRow(title: "High Attack", value: model.configBinding(\.multibandHighAttackMS), range: 1...120, format: "%.1f")
-            DoubleSliderRow(title: "Low Release", value: model.configBinding(\.multibandLowReleaseMS), range: 40...1200, format: "%.0f")
-            DoubleSliderRow(title: "Mid Release", value: model.configBinding(\.multibandMidReleaseMS), range: 40...1200, format: "%.0f")
-            DoubleSliderRow(title: "High Release", value: model.configBinding(\.multibandHighReleaseMS), range: 40...1200, format: "%.0f")
-            DoubleSliderRow(title: "Makeup", value: model.configBinding(\.multibandMakeupDB), range: -12...18, format: "%.1f dB")
+            DoubleSliderRow(title: "Knee", value: model.configBinding(\.multibandKneeDB, runtimeDisposition: .live), range: 0...12, format: "%.1f dB")
+            DoubleSliderRow(title: "Link", value: model.configBinding(\.multibandLinkStrength, runtimeDisposition: .live), range: 0...1, format: "%.2f")
+            Toggle("Program-dependent Release", isOn: model.configBinding(\.multibandReleaseProgramDependent, runtimeDisposition: .live))
+            DoubleSliderRow(title: "X1", value: model.configBinding(\.multibandX1Hz, runtimeDisposition: .live), range: 30...300, format: "%.0f Hz")
+            DoubleSliderRow(title: "X2", value: model.configBinding(\.multibandX2Hz, runtimeDisposition: .live), range: 120...1200, format: "%.0f Hz")
+            DoubleSliderRow(title: "X3", value: model.configBinding(\.multibandX3Hz, runtimeDisposition: .live), range: 600...4000, format: "%.0f Hz")
+            DoubleSliderRow(title: "X4", value: model.configBinding(\.multibandX4Hz, runtimeDisposition: .live), range: 2500...12000, format: "%.0f Hz")
+            DoubleSliderRow(title: "Low Threshold", value: model.configBinding(\.multibandLowThresholdDB, runtimeDisposition: .live), range: (-40)...(-6), format: "%.1f dB")
+            DoubleSliderRow(title: "Mid Threshold", value: model.configBinding(\.multibandMidThresholdDB, runtimeDisposition: .live), range: (-40)...(-6), format: "%.1f dB")
+            DoubleSliderRow(title: "High Threshold", value: model.configBinding(\.multibandHighThresholdDB, runtimeDisposition: .live), range: (-40)...(-6), format: "%.1f dB")
+            DoubleSliderRow(title: "Low Ratio", value: model.configBinding(\.multibandLowRatio, runtimeDisposition: .live), range: 1...8, format: "%.2f")
+            DoubleSliderRow(title: "Mid Ratio", value: model.configBinding(\.multibandMidRatio, runtimeDisposition: .live), range: 1...8, format: "%.2f")
+            DoubleSliderRow(title: "High Ratio", value: model.configBinding(\.multibandHighRatio, runtimeDisposition: .live), range: 1...8, format: "%.2f")
+            DoubleSliderRow(title: "Low Attack", value: model.configBinding(\.multibandLowAttackMS, runtimeDisposition: .live), range: 1...120, format: "%.1f")
+            DoubleSliderRow(title: "Mid Attack", value: model.configBinding(\.multibandMidAttackMS, runtimeDisposition: .live), range: 1...120, format: "%.1f")
+            DoubleSliderRow(title: "High Attack", value: model.configBinding(\.multibandHighAttackMS, runtimeDisposition: .live), range: 1...120, format: "%.1f")
+            DoubleSliderRow(title: "Low Release", value: model.configBinding(\.multibandLowReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.0f")
+            DoubleSliderRow(title: "Mid Release", value: model.configBinding(\.multibandMidReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.0f")
+            DoubleSliderRow(title: "High Release", value: model.configBinding(\.multibandHighReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.0f")
+            DoubleSliderRow(title: "Makeup", value: model.configBinding(\.multibandMakeupDB, runtimeDisposition: .live), range: -12...18, format: "%.1f dB")
         }
     }
 }
@@ -4436,18 +4717,18 @@ private struct ProcessingWidenerTab: View {
 
     var body: some View {
         Card(title: "Stereo Widener") {
-            Toggle("Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled))
-            Toggle("Mono Bass", isOn: model.configBinding(\.monoBassEnabled))
+            Toggle("Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled, runtimeDisposition: .live))
+            Toggle("Mono Bass", isOn: model.configBinding(\.monoBassEnabled, runtimeDisposition: .live))
             DoubleSliderRow(
                 title: "Bass Mono Freq",
-                value: model.configBinding(\.monoBassFreqHz),
+                value: model.configBinding(\.monoBassFreqHz, runtimeDisposition: .live),
                 range: 70...220,
                 format: "%.0f Hz"
             )
             .disabled(!model.config.monoBassEnabled)
-            DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth), range: 0...1, format: "%.2f")
-            DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter), range: 0...1, format: "%.2f")
-            DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix), range: 0...1, format: "%.2f")
+            DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth, runtimeDisposition: .live), range: 0...1, format: "%.2f")
+            DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter, runtimeDisposition: .live), range: 0...1, format: "%.2f")
+            DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix, runtimeDisposition: .live), range: 0...1, format: "%.2f")
         }
     }
 }
@@ -4469,17 +4750,17 @@ private struct ProcessingLimiterTab: View {
                 }
             }
             .pickerStyle(.menu)
-            Toggle("Enable Composite Limiter", isOn: model.configBinding(\.compositeLimiterEnabled))
+            Toggle("Enable Composite Limiter", isOn: model.configBinding(\.compositeLimiterEnabled, runtimeDisposition: .live))
             DoubleSliderRow(
                 title: "Final Drive",
-                value: model.configBinding(\.finalDriveDB),
+                value: model.configBinding(\.finalDriveDB, runtimeDisposition: .live),
                 range: 0...12,
                 format: "%.1f dB"
             )
             Text("Broadcast Preset updates AGC platform and final-stage drive together. Final Drive feeds the final composite protection stage before MPX Output Level calibration.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz), range: 40...90, format: "%.1f kHz")
+            DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz, runtimeDisposition: .live), range: 40...90, format: "%.1f kHz")
         }
     }
 }
@@ -4491,6 +4772,7 @@ private struct LevelsOnlyView: View {
         ScrollView {
             VStack(spacing: 16) {
                 LevelsCardView(model: model)
+                LoudnessCardView(model: model)
             }
             .padding(20)
         }
@@ -4522,7 +4804,7 @@ private struct SystemSettingsSectionContent: View {
 
             Toggle(
                 "Auto Start at Launch",
-                isOn: model.configBinding(\.rdsAutoStart, restartRequired: false))
+                isOn: model.configBinding(\.rdsAutoStart, runtimeDisposition: .none))
 
             Toggle("Mono Mode", isOn: model.configBinding(\.monoMode))
             Text("Mono Mode transmits true mono composite only. Pilot and RDS are suppressed while it is enabled.")
@@ -4540,6 +4822,10 @@ private struct SystemSettingsSectionContent: View {
                 title: "Diff Level", value: model.configBinding(\.diffLevel),
                 range: 0...1.5, format: "%.2f")
             .disabled(model.config.monoMode)
+
+            InlineRestartRequiredNote(
+                text: "Sample rate, block size, mono mode, pre-emphasis, pilot/sum/diff levels, program lowpass, and other encoder-structure changes."
+            )
         }
     }
 }
@@ -4622,6 +4908,10 @@ private struct InterfacesSettingsSectionContent: View {
             Text("When Enable Monitor Output is on, this device is used for decoded MPX monitoring.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            InlineRestartRequiredNote(
+                text: "Source mode, monitor output routing, and input/output/monitor device changes."
+            )
         }
     }
 }
@@ -4751,12 +5041,12 @@ private struct RDSRadiotextTab: View {
             Divider()
             Toggle(
                 "Enable Now Playing Script",
-                isOn: model.configBinding(\.rdsNowPlayingEnabled, restartRequired: false))
+                isOn: model.configBinding(\.rdsNowPlayingEnabled, runtimeDisposition: .none))
             LabeledContent("Script Path") {
                 HStack(spacing: 8) {
                     TextField(
                         "",
-                        text: model.configBinding(\.rdsNowPlayingScript, restartRequired: false)
+                        text: model.configBinding(\.rdsNowPlayingScript, runtimeDisposition: .none)
                     )
                     Button("Browse") {
                         model.chooseNowPlayingScript()
@@ -4766,13 +5056,13 @@ private struct RDSRadiotextTab: View {
             }
             DoubleSliderRow(
                 title: "Poll Interval",
-                value: model.configBinding(\.rdsNowPlayingPollSeconds, restartRequired: false),
+                value: model.configBinding(\.rdsNowPlayingPollSeconds, runtimeDisposition: .none),
                 range: 1...60,
                 format: "%.1f s"
             )
             DoubleSliderRow(
                 title: "Script Timeout",
-                value: model.configBinding(\.rdsNowPlayingTimeoutSeconds, restartRequired: false),
+                value: model.configBinding(\.rdsNowPlayingTimeoutSeconds, runtimeDisposition: .none),
                 range: 0.2...10,
                 format: "%.1f s"
             )
@@ -5008,28 +5298,51 @@ private func CodeBlock(_ text: String) -> some View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
 }
 
+private struct InlineRestartRequiredNote: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "arrow.clockwise.circle")
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Restart Required")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Text(text)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.top, 2)
+    }
+}
+
 private struct HelpInputLevelsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recommended operating targets for the current StereoFool FM chain.")
+            Text("Recommended operating targets for the current StereoFool FM chain. Feed it clean, consistent program audio and let the processor create the final density.")
                 .foregroundStyle(.secondary)
                 .font(.callout)
 
             GroupBox {
                 HStack(spacing: 18) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Peak")
+                        Text("Normal Peaks")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("-18 to -6 dBFS")
+                        Text("-6 to -3 dBFS")
                             .font(.body.weight(.semibold))
                     }
                     Divider().frame(height: 28)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Average (RMS)")
+                        Text("Occasional Peaks")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Text("-24 to -20 dBFS")
+                        Text("up to -2 dBFS")
                             .font(.body.weight(.semibold))
                     }
                     Spacer()
@@ -5044,14 +5357,22 @@ private struct HelpInputLevelsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("• US nominal input alignment: around -20 dBFS")
                 Text("• Europe (EBU R68) style alignment: around -18 dBFS")
-                Text("• Very hot chains may peak near -6 dBFS")
+                Text("• Do not hold the source at -2 dBFS all the time")
+                Text("• If the input already looks slammed, back it down and let the chain work")
                 Text("• Wideband AGC is a platform leveler, not the final loudness stage")
                 Text("• Final Drive is the main loudness control before the composite limiter")
                 Text("• MPX Output Level is for final exciter or interface calibration")
+                Text("• Levels are peak safety meters; use Loudness only when Monitor Output is enabled")
                 Text("If you hit 0 dBFS, reduce input gain or Final Drive and re-check pre-emphasis behavior.")
             }
             .foregroundStyle(.secondary)
             .font(.callout)
+
+            Text("Restart-Required Settings")
+                .font(.headline)
+                .padding(.top, 4)
+
+            InlineRestartRequiredNote(text: kRestartRequiredSettingsListText)
 
             Spacer(minLength: 0)
         }

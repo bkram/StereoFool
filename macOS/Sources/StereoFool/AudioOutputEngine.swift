@@ -30,6 +30,11 @@ final class AudioOutputEngine {
         var outputRMS: Float
         var outputPeak: Float
         var deviationKHzPeak: Float
+        var liveInputPeak: Float
+        var liveInputLeftPeak: Float
+        var liveInputRightPeak: Float
+        var liveOutputPeak: Float
+        var liveDeviationKHzPeak: Float
         var agcDetectorDB: Float
         var agcGainDB: Float
         var agcGateActive: Bool
@@ -41,6 +46,121 @@ final class AudioOutputEngine {
         var compositeBudgetMarginDB: Float
         var outputStereoCorrelation: Float
         var outputSideToMidRatio: Float
+        var loudnessAvailable: Bool
+        var loudnessMomentaryLUFS: Float
+        var loudnessShortTermLUFS: Float
+        var loudnessIntegratedLUFS: Float
+    }
+
+    private struct LoudnessSnapshot {
+        var available: Bool = false
+        var momentaryLUFS: Float = -120.0
+        var shortTermLUFS: Float = -120.0
+        var integratedLUFS: Float = -120.0
+    }
+
+    private final class MonitorLoudnessAnalyzer {
+        private static let blockDurationSeconds: Double = 0.1
+        private static let momentaryBlockCount = 4
+        private static let shortTermBlockCount = 30
+        private static let silenceGateLUFS: Float = -70.0
+        private static let relativeGateOffsetLU: Float = -10.0
+
+        private let sampleRate: Float
+        private let blockFrameTarget: Int
+        private var kWeightHP = StereoBiquad()
+        private var kWeightShelf = StereoBiquad()
+        private var partialBlockEnergy: Double = 0.0
+        private var partialBlockFrames: Int = 0
+        private var completedBlockMeanSquares: [Double] = []
+
+        init(sampleRate: Float) {
+            self.sampleRate = max(8_000.0, sampleRate)
+            self.blockFrameTarget = max(
+                1,
+                Int((Self.blockDurationSeconds * Double(self.sampleRate)).rounded())
+            )
+            reset()
+        }
+
+        func reset() {
+            partialBlockEnergy = 0.0
+            partialBlockFrames = 0
+            completedBlockMeanSquares.removeAll(keepingCapacity: false)
+            kWeightHP.configureHighpass(cutoffHz: 38.0, sampleRate: sampleRate)
+            kWeightShelf.configureHighShelf(gainDB: 4.0, cutoffHz: 1_680.0, sampleRate: sampleRate)
+        }
+
+        func process(left: UnsafePointer<Float>, right: UnsafePointer<Float>, frameCount: Int) {
+            guard frameCount > 0 else { return }
+            for i in 0..<frameCount {
+                let highPassed = kWeightHP.process(left: left[i], right: right[i])
+                let weighted = kWeightShelf.process(left: highPassed.0, right: highPassed.1)
+                partialBlockEnergy += Double((weighted.0 * weighted.0) + (weighted.1 * weighted.1))
+                partialBlockFrames += 1
+                if partialBlockFrames >= blockFrameTarget {
+                    completedBlockMeanSquares.append(partialBlockEnergy / Double(partialBlockFrames))
+                    partialBlockEnergy = 0.0
+                    partialBlockFrames = 0
+                }
+            }
+        }
+
+        func snapshot() -> LoudnessSnapshot {
+            guard completedBlockMeanSquares.count >= Self.momentaryBlockCount else {
+                return LoudnessSnapshot()
+            }
+            let momentary = rollingLufs(lastBlocks: Self.momentaryBlockCount)
+            let shortTerm = rollingLufs(lastBlocks: Self.shortTermBlockCount)
+            let integrated = integratedLufs()
+            return LoudnessSnapshot(
+                available: true,
+                momentaryLUFS: momentary,
+                shortTermLUFS: shortTerm,
+                integratedLUFS: integrated
+            )
+        }
+
+        private func rollingLufs(lastBlocks: Int) -> Float {
+            let blocks = min(lastBlocks, completedBlockMeanSquares.count)
+            guard blocks > 0 else { return -120.0 }
+            let slice = completedBlockMeanSquares.suffix(blocks)
+            let meanSquare = slice.reduce(0.0, +) / Double(blocks)
+            return Self.lufs(meanSquare: meanSquare)
+        }
+
+        private func integratedLufs() -> Float {
+            let gatingBlocks = overlapping400msBlocks()
+            guard !gatingBlocks.isEmpty else { return -120.0 }
+
+            let absoluteGated = gatingBlocks.filter { Self.lufs(meanSquare: $0) >= Self.silenceGateLUFS }
+            guard !absoluteGated.isEmpty else { return -120.0 }
+
+            let absoluteMeanSquare = absoluteGated.reduce(0.0, +) / Double(absoluteGated.count)
+            let absoluteLufs = Self.lufs(meanSquare: absoluteMeanSquare)
+            let relativeGate = absoluteLufs + Self.relativeGateOffsetLU
+            let relativeGated = absoluteGated.filter { Self.lufs(meanSquare: $0) >= relativeGate }
+            guard !relativeGated.isEmpty else { return absoluteLufs }
+
+            let integratedMeanSquare = relativeGated.reduce(0.0, +) / Double(relativeGated.count)
+            return Self.lufs(meanSquare: integratedMeanSquare)
+        }
+
+        private func overlapping400msBlocks() -> [Double] {
+            guard completedBlockMeanSquares.count >= Self.momentaryBlockCount else { return [] }
+            var blocks: [Double] = []
+            blocks.reserveCapacity(completedBlockMeanSquares.count - Self.momentaryBlockCount + 1)
+            for start in 0...(completedBlockMeanSquares.count - Self.momentaryBlockCount) {
+                let window = completedBlockMeanSquares[start..<(start + Self.momentaryBlockCount)]
+                blocks.append(window.reduce(0.0, +) / Double(Self.momentaryBlockCount))
+            }
+            return blocks
+        }
+
+        private static func lufs(meanSquare: Double) -> Float {
+            guard meanSquare.isFinite, meanSquare > 1e-12 else { return -120.0 }
+            return Float(-0.691 + (10.0 * log10(meanSquare)))
+        }
     }
 
     private let engine = AVAudioEngine()
@@ -68,6 +188,7 @@ final class AudioOutputEngine {
     private var captureFrameCount: UInt64 = 0
     private var captureFrameCounter: Int = 0
     private let meterLock = NSLock()
+    private let runtimeConfigLock = NSLock()
     private var meterSnapshot = MeterSnapshot(
         inputRMS: 0.0,
         inputPeak: 0.0,
@@ -78,6 +199,11 @@ final class AudioOutputEngine {
         outputRMS: 0.0,
         outputPeak: 0.0,
         deviationKHzPeak: 0.0,
+        liveInputPeak: 0.0,
+        liveInputLeftPeak: 0.0,
+        liveInputRightPeak: 0.0,
+        liveOutputPeak: 0.0,
+        liveDeviationKHzPeak: 0.0,
         agcDetectorDB: -120.0,
         agcGainDB: 0.0,
         agcGateActive: false,
@@ -88,8 +214,13 @@ final class AudioOutputEngine {
         audioCompositePeak: 0.0,
         compositeBudgetMarginDB: 0.0,
         outputStereoCorrelation: 1.0,
-        outputSideToMidRatio: 0.0
+        outputSideToMidRatio: 0.0,
+        loudnessAvailable: false,
+        loudnessMomentaryLUFS: -120.0,
+        loudnessShortTermLUFS: -120.0,
+        loudnessIntegratedLUFS: -120.0
     )
+    private var loudnessAnalyzer: MonitorLoudnessAnalyzer?
     private var pendingInputPeak: Float = 0.0
     private var pendingInputLeftPeak: Float = 0.0
     private var pendingInputRightPeak: Float = 0.0
@@ -111,6 +242,7 @@ final class AudioOutputEngine {
     private var inputConversionBuffer: [Float] = []
     private var inputConversionBufferStereoL: [Float] = []
     private var inputConversionBufferStereoR: [Float] = []
+    private var pendingRuntimeConfig: MPXGenerator.RuntimeConfig?
 
     init(
         generator: MPXGenerator,
@@ -151,6 +283,7 @@ final class AudioOutputEngine {
         }
         configuredRenderSampleRate = renderRate
         generator.setSampleRate(renderRate)
+        loudnessAnalyzer = MonitorLoudnessAnalyzer(sampleRate: Float(renderRate))
         configureScopeHistory(renderRate: renderRate, inputRate: configuredInputSampleRate)
         preAllocateBuffers(maxFrames: Int(max(renderRate, 192000.0) * 0.1))
 
@@ -173,6 +306,7 @@ final class AudioOutputEngine {
                 Self.clearBuffers(audioBufferList, frameCount: Int(frameCount))
                 return noErr
             }
+            self.applyPendingRuntimeConfigIfNeeded()
             let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
             let frames = Int(frameCount)
             self.frameCounter += frames
@@ -211,6 +345,7 @@ final class AudioOutputEngine {
                                 left: leftData,
                                 right: rightData
                             )
+                            self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
                             let outMeter = Self.computeStereoMeter(
                                 left: leftData, right: rightData, frameCount: frames)
                             if throttled {
@@ -237,6 +372,7 @@ final class AudioOutputEngine {
                                         mpxLeft: mpxLeft,
                                         mpxRight: mpxRight
                                     )
+                                    self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
                                     let outMeter = Self.computeStereoMeter(
                                         left: mpxLeft, right: mpxRight, frameCount: frames)
                                     if throttled {
@@ -282,6 +418,7 @@ final class AudioOutputEngine {
                                 left: leftData,
                                 right: rightData
                             )
+                            self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
                             let outMeter = Self.computeStereoMeter(
                                 left: leftData, right: rightData, frameCount: frames)
                             if throttled {
@@ -308,6 +445,7 @@ final class AudioOutputEngine {
                                         mpxLeft: mpxLeft,
                                         mpxRight: mpxRight
                                     )
+                                    self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
                                     let outMeter = Self.computeStereoMeter(
                                         left: mpxLeft, right: mpxRight, frameCount: frames)
                                     if throttled {
@@ -399,6 +537,9 @@ final class AudioOutputEngine {
         pendingInputRightPeak = 0.0
         pendingOutputPeak = 0.0
         lastMeterReadUptime = nil
+        runtimeConfigLock.lock()
+        pendingRuntimeConfig = nil
+        runtimeConfigLock.unlock()
         meterSnapshot.inputRMS = 0.0
         meterSnapshot.inputPeak = 0.0
         meterSnapshot.inputLeftRMS = 0.0
@@ -419,6 +560,16 @@ final class AudioOutputEngine {
         meterSnapshot.compositeBudgetMarginDB = 0.0
         meterSnapshot.outputStereoCorrelation = 1.0
         meterSnapshot.outputSideToMidRatio = 0.0
+        meterSnapshot.liveInputPeak = 0.0
+        meterSnapshot.liveInputLeftPeak = 0.0
+        meterSnapshot.liveInputRightPeak = 0.0
+        meterSnapshot.liveOutputPeak = 0.0
+        meterSnapshot.liveDeviationKHzPeak = 0.0
+        meterSnapshot.loudnessAvailable = false
+        meterSnapshot.loudnessMomentaryLUFS = -120.0
+        meterSnapshot.loudnessShortTermLUFS = -120.0
+        meterSnapshot.loudnessIntegratedLUFS = -120.0
+        loudnessAnalyzer?.reset()
         inputScopeHistory = []
         outputScopeHistory = []
         inputScopeWriteIndex = 0
@@ -774,6 +925,61 @@ final class AudioOutputEngine {
         meteringEnabled = enabled
     }
 
+    func applyRuntimeConfig(_ config: AppConfig) {
+        let runtime = MPXGenerator.RuntimeConfig(
+            inputGainDB: Float(config.inputGainDB),
+            outputGainDB: Float(config.outputGainDB),
+            finalDriveDB: Float(config.finalDriveDB),
+            widebandAGCEnabled: config.widebandAGCEnabled,
+            widebandAGCTargetDB: Float(config.widebandAGCTargetDB),
+            widebandAGCMaxGainDB: Float(config.widebandAGCMaxGainDB),
+            widebandAGCMinGainDB: Float(config.widebandAGCMinGainDB),
+            widebandAGCAttackMS: Float(config.widebandAGCAttackMS),
+            widebandAGCReleaseMS: Float(config.widebandAGCReleaseMS),
+            compositeLimiterEnabled: config.compositeLimiterEnabled,
+            mpxDeviationKHz: Float(config.mpxDeviationKHz),
+            orbassEnabled: config.orbassEnabled,
+            orbassAmount: Float(config.orbassAmount),
+            orbassHarmonics: Float(config.orbassHarmonics),
+            orbassDrive: Float(config.orbassDrive),
+            orbassDensity: Float(config.orbassDensity),
+            orbassSubharmonicsEnabled: config.orbassSubharmonicsEnabled,
+            orbassSubharmonicsAmount: Float(config.orbassSubharmonicsAmount),
+            orbassFreqHz: Float(config.orbassFreqHz),
+            stereoWidenEnabled: config.stereoWidenEnabled,
+            monoBassEnabled: config.monoBassEnabled,
+            monoBassFreqHz: Float(config.monoBassFreqHz),
+            widenWidth: Float(config.stereoWidenWidth),
+            widenCenter: Float(config.stereoWidenCenter),
+            widenMix: Float(config.stereoWidenMix),
+            multibandEnabled: config.multibandEnabled,
+            multibandMode: config.multibandMode,
+            multibandMakeupDB: Float(config.multibandMakeupDB),
+            multibandKneeDB: Float(config.multibandKneeDB),
+            multibandLinkStrength: Float(config.multibandLinkStrength),
+            multibandReleaseProgramDependent: config.multibandReleaseProgramDependent,
+            multibandX1Hz: Float(config.multibandX1Hz),
+            multibandX2Hz: Float(config.multibandX2Hz),
+            multibandX3Hz: Float(config.multibandX3Hz),
+            multibandX4Hz: Float(config.multibandX4Hz),
+            multibandLowThresholdDB: Float(config.multibandLowThresholdDB),
+            multibandMidThresholdDB: Float(config.multibandMidThresholdDB),
+            multibandHighThresholdDB: Float(config.multibandHighThresholdDB),
+            multibandLowRatio: Float(config.multibandLowRatio),
+            multibandMidRatio: Float(config.multibandMidRatio),
+            multibandHighRatio: Float(config.multibandHighRatio),
+            multibandLowAttackMS: Float(config.multibandLowAttackMS),
+            multibandMidAttackMS: Float(config.multibandMidAttackMS),
+            multibandHighAttackMS: Float(config.multibandHighAttackMS),
+            multibandLowReleaseMS: Float(config.multibandLowReleaseMS),
+            multibandMidReleaseMS: Float(config.multibandMidReleaseMS),
+            multibandHighReleaseMS: Float(config.multibandHighReleaseMS)
+        )
+        runtimeConfigLock.lock()
+        pendingRuntimeConfig = runtime
+        runtimeConfigLock.unlock()
+    }
+
     var meters: MeterSnapshot {
         meterLock.lock()
         let nowUptime = ProcessInfo.processInfo.systemUptime
@@ -815,6 +1021,22 @@ final class AudioOutputEngine {
         meterSnapshot.inputRightPeak = inputRightPeak
         meterSnapshot.outputPeak = outputPeak
         meterSnapshot.deviationKHzPeak = outputPeak * targetDeviationKHz
+        meterSnapshot.liveInputPeak = pendingInput
+        meterSnapshot.liveInputLeftPeak = pendingInputLeft
+        meterSnapshot.liveInputRightPeak = pendingInputRight
+        meterSnapshot.liveOutputPeak = pendingOutput
+        meterSnapshot.liveDeviationKHzPeak = pendingOutput * targetDeviationKHz
+        if let loudness = loudnessAnalyzer?.snapshot() {
+            meterSnapshot.loudnessAvailable = loudness.available
+            meterSnapshot.loudnessMomentaryLUFS = loudness.momentaryLUFS
+            meterSnapshot.loudnessShortTermLUFS = loudness.shortTermLUFS
+            meterSnapshot.loudnessIntegratedLUFS = loudness.integratedLUFS
+        } else {
+            meterSnapshot.loudnessAvailable = false
+            meterSnapshot.loudnessMomentaryLUFS = -120.0
+            meterSnapshot.loudnessShortTermLUFS = -120.0
+            meterSnapshot.loudnessIntegratedLUFS = -120.0
+        }
         pendingInputPeak = 0.0
         pendingInputLeftPeak = 0.0
         pendingInputRightPeak = 0.0
@@ -893,6 +1115,11 @@ final class AudioOutputEngine {
             outputRMS: outputRMS,
             outputPeak: outputPeak,
             deviationKHzPeak: outputPeak * targetDeviationKHz,
+            liveInputPeak: inputPeak,
+            liveInputLeftPeak: inputPeak,
+            liveInputRightPeak: inputPeak,
+            liveOutputPeak: outputPeak,
+            liveDeviationKHzPeak: outputPeak * targetDeviationKHz,
             agcDetectorDB: agc.detectorDB,
             agcGainDB: agc.gainDB,
             agcGateActive: agc.gateActive,
@@ -904,6 +1131,11 @@ final class AudioOutputEngine {
             compositeBudgetMarginDB: calibration.budgetMarginDB,
             outputStereoCorrelation: 1.0,
             outputSideToMidRatio: 0.0
+            ,
+            loudnessAvailable: false,
+            loudnessMomentaryLUFS: -120.0,
+            loudnessShortTermLUFS: -120.0,
+            loudnessIntegratedLUFS: -120.0
         )
     }
 
@@ -948,6 +1180,24 @@ final class AudioOutputEngine {
         meterSnapshot.compositeBudgetMarginDB = calibration.budgetMarginDB
         if outputPeak > pendingOutputPeak {
             pendingOutputPeak = outputPeak
+        }
+    }
+
+    private func updateMonitorLoudness(
+        left: UnsafePointer<Float>,
+        right: UnsafePointer<Float>,
+        frameCount: Int
+    ) {
+        loudnessAnalyzer?.process(left: left, right: right, frameCount: frameCount)
+    }
+
+    private func applyPendingRuntimeConfigIfNeeded() {
+        runtimeConfigLock.lock()
+        let runtime = pendingRuntimeConfig
+        pendingRuntimeConfig = nil
+        runtimeConfigLock.unlock()
+        if let runtime {
+            generator.applyRuntimeConfig(runtime)
         }
     }
 
