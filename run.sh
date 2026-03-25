@@ -1,9 +1,8 @@
 #!/bin/bash
-# Run StereoFool in release mode optimized for Apple Silicon
+# Compatibility wrapper: default to the optimized release launcher.
 
 set -e
 
 cd "$(dirname "$0")"
 
-echo "Running StereoFool (arm64 optimized)..."
-swift run --package-path macOS -c debug --arch arm64 StereoFool "$@"
+exec ./run-build.sh "$@"

@@ -474,6 +474,17 @@ private struct OrbassPreset {
     let subharmonicsAmount: Double
 }
 
+private struct WidenerPreset {
+    let id: String
+    let title: String
+    let stereoWidenEnabled: Bool
+    let monoBassEnabled: Bool
+    let monoBassFreqHz: Double
+    let width: Double
+    let center: Double
+    let mix: Double
+}
+
 private struct MultibandPreset {
     let id: String
     let title: String
@@ -1015,6 +1026,8 @@ final class StereoFoolViewModel: ObservableObject {
     }
 
     private static let monitoringRefreshHz: Double = 30.0
+    private static let stereoHistorySampleSeconds: Double = 0.25
+    private static let stereoHistoryCapacity: Int = 120
     private static let meterAttackMS: Float = 18.0
     private static let meterReleaseMS: Float = 110.0
     private static let audioPeakMeterAttackMS: Float = 1.0
@@ -1073,7 +1086,17 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var limiterDetailText: String = "Drive 0.0 dB • GR 0.0 dB • Safe 0.0 dB • Peak -inf dBFS"
     @Published var compositeBudgetStateText: String = "Off"
     @Published var compositeCalibrationText: String = "Pilot 0.0% • RDS 0.0% • Audio -inf dBFS • Margin 0.0 dB"
+    @Published var estimatedDeviationPeakKHz: Float = 0.0
+    @Published var pilotInjectionPercentValue: Float = 0.0
+    @Published var rdsInjectionPercentValue: Float = 0.0
+    @Published var audioCompositePeakLinear: Float = 0.0
+    @Published var compositeBudgetMarginDBValue: Float = 0.0
+    @Published var compositeLimiterGainReductionDBValue: Float = 0.0
+    @Published var safetyLimiterGainReductionDBValue: Float = 0.0
     @Published var stereoImageText: String = "Corr +1.00 • Side 0.00x"
+    @Published var stereoCorrelationHistory: [Float] = []
+    @Published var stereoSideRatioHistory: [Float] = []
+    @Published var stereoRiskHistory: [Float] = []
     @Published var agcStateText: String = "Off"
     @Published var agcDetailText: String = "Detector -inf dB • Gain 0.0 dB"
     @Published var multibandStateText: String = "Off"
@@ -1106,6 +1129,7 @@ final class StereoFoolViewModel: ObservableObject {
     private var activeRuntimeSnapshot: RuntimeSnapshot?
     private var monitorTimer: Timer?
     private var lastMonitorRefreshTime: TimeInterval?
+    private var lastStereoHistorySampleTime: TimeInterval?
     private var engineStartReference: TimeInterval?
 
     private var vuInputL: Float = 0.0
@@ -1190,6 +1214,11 @@ final class StereoFoolViewModel: ObservableObject {
 
     var orbassPresetChoices: [PresetChoice] {
         Self.orbassPresets.map { PresetChoice(id: $0.id, title: $0.title) }
+    }
+
+    var widenerPresetChoices: [PresetChoice] {
+        [PresetChoice(id: "custom", title: "Custom")]
+            + Self.widenerPresets.map { PresetChoice(id: $0.id, title: $0.title) }
     }
 
     var multibandPresetChoices: [PresetChoice] {
@@ -1352,6 +1381,37 @@ final class StereoFoolViewModel: ObservableObject {
             isRunning
             ? "Loaded Orbass preset \(preset.title) live."
             : "Loaded Orbass preset \(preset.title)."
+    }
+
+    var currentWidenerPresetID: String {
+        guard let preset = Self.widenerPresets.first(where: {
+            $0.stereoWidenEnabled == config.stereoWidenEnabled
+                && $0.monoBassEnabled == config.monoBassEnabled
+                && Self.approxEqual($0.monoBassFreqHz, config.monoBassFreqHz)
+                && Self.approxEqual($0.width, config.stereoWidenWidth)
+                && Self.approxEqual($0.center, config.stereoWidenCenter)
+                && Self.approxEqual($0.mix, config.stereoWidenMix)
+        }) else {
+            return "custom"
+        }
+        return preset.id
+    }
+
+    func applyWidenerPreset(id: String) {
+        guard let preset = Self.widenerPresets.first(where: { $0.id == id }) else { return }
+        publishConfigChange()
+        config.stereoWidenEnabled = preset.stereoWidenEnabled
+        config.monoBassEnabled = preset.monoBassEnabled
+        config.monoBassFreqHz = preset.monoBassFreqHz
+        config.stereoWidenWidth = preset.width
+        config.stereoWidenCenter = preset.center
+        config.stereoWidenMix = preset.mix
+        saveConfig(restartRequired: false)
+        applyLiveRuntimeConfigIfRunning()
+        statusText =
+            isRunning
+            ? "Loaded image preset \(preset.title) live."
+            : "Loaded image preset \(preset.title)."
     }
 
     func applyMultibandPreset(id: String, intensity: MultibandPresetIntensity) {
@@ -2051,7 +2111,18 @@ final class StereoFoolViewModel: ObservableObject {
             )
             compositeBudgetStateText = "Off"
             compositeCalibrationText = "Pilot 0.0% • RDS 0.0% • Audio -inf dBFS • Margin 0.0 dB"
+            estimatedDeviationPeakKHz = 0.0
+            pilotInjectionPercentValue = 0.0
+            rdsInjectionPercentValue = 0.0
+            audioCompositePeakLinear = 0.0
+            compositeBudgetMarginDBValue = 0.0
+            compositeLimiterGainReductionDBValue = 0.0
+            safetyLimiterGainReductionDBValue = 0.0
             stereoImageText = "Corr +1.00 • Side 0.00x"
+            stereoCorrelationHistory.removeAll(keepingCapacity: true)
+            stereoSideRatioHistory.removeAll(keepingCapacity: true)
+            stereoRiskHistory.removeAll(keepingCapacity: true)
+            lastStereoHistorySampleTime = nil
             widenerStateText = "Off"
             overflowHistory.removeAll(keepingCapacity: true)
             lastOverflowTotal = 0
@@ -2145,6 +2216,13 @@ final class StereoFoolViewModel: ObservableObject {
         inputRText = Self.peakMeterString(currentPeak: currentInputRightPeak, peakHoldDB: inputRPeakHoldDB)
         outputText = Self.peakMeterString(currentPeak: currentOutputPeak, peakHoldDB: outputPeakHoldDB)
         modulationText = String(format: "%.1f kHz", deviationKHz)
+        estimatedDeviationPeakKHz = deviationKHz
+        pilotInjectionPercentValue = pilotInjectionPercent
+        rdsInjectionPercentValue = rdsInjectionPercent
+        audioCompositePeakLinear = audioCompositePeak
+        compositeBudgetMarginDBValue = compositeBudgetMarginDB
+        compositeLimiterGainReductionDBValue = compositeLimiterGainReductionDB
+        safetyLimiterGainReductionDBValue = mpxSafetyLimiterGainReductionDB
 
         let limiterState =
             config.compositeLimiterEnabled
@@ -2202,8 +2280,56 @@ final class StereoFoolViewModel: ObservableObject {
             widenerStateText = "Safe"
         }
 
+        updateStereoHistory(
+            now: now,
+            correlation: outputStereoCorrelation,
+            sideRatio: outputSideToMidRatio,
+            riskState: widenerStateText
+        )
+
         let elapsed = max(0.0, now - (engineStartReference ?? now))
         updateRDSFields(elapsed: elapsed)
+    }
+
+    private func updateStereoHistory(
+        now: TimeInterval,
+        correlation: Float,
+        sideRatio: Float,
+        riskState: String
+    ) {
+        if let last = lastStereoHistorySampleTime,
+            (now - last) < Self.stereoHistorySampleSeconds
+        {
+            return
+        }
+        lastStereoHistorySampleTime = now
+
+        stereoCorrelationHistory.append(correlation)
+        stereoSideRatioHistory.append(sideRatio)
+        stereoRiskHistory.append(stereoRiskValue(for: riskState))
+
+        if stereoCorrelationHistory.count > Self.stereoHistoryCapacity {
+            stereoCorrelationHistory.removeFirst(stereoCorrelationHistory.count - Self.stereoHistoryCapacity)
+        }
+        if stereoSideRatioHistory.count > Self.stereoHistoryCapacity {
+            stereoSideRatioHistory.removeFirst(stereoSideRatioHistory.count - Self.stereoHistoryCapacity)
+        }
+        if stereoRiskHistory.count > Self.stereoHistoryCapacity {
+            stereoRiskHistory.removeFirst(stereoRiskHistory.count - Self.stereoHistoryCapacity)
+        }
+    }
+
+    private func stereoRiskValue(for state: String) -> Float {
+        if state.caseInsensitiveCompare("Off") == .orderedSame {
+            return 0.0
+        }
+        if state.caseInsensitiveCompare("Safe") == .orderedSame {
+            return 0.25
+        }
+        if state.caseInsensitiveCompare("Wide") == .orderedSame {
+            return 0.65
+        }
+        return 1.0
     }
 
     private func updateScopes(engine: AudioOutputEngine, inputPeak: Float, outputPeak: Float) {
@@ -2457,6 +2583,39 @@ final class StereoFoolViewModel: ObservableObject {
             drive: 0.48, density: 0.22, subharmonicsEnabled: false, subharmonicsAmount: 0.0),
     ]
 
+    private static let widenerPresets: [WidenerPreset] = [
+        .init(
+            id: "safe_fm",
+            title: "Safe FM",
+            stereoWidenEnabled: false,
+            monoBassEnabled: true,
+            monoBassFreqHz: 140.0,
+            width: 0.30,
+            center: 0.50,
+            mix: 0.60
+        ),
+        .init(
+            id: "open_music",
+            title: "Open Music",
+            stereoWidenEnabled: true,
+            monoBassEnabled: true,
+            monoBassFreqHz: 125.0,
+            width: 0.46,
+            center: 0.50,
+            mix: 0.76
+        ),
+        .init(
+            id: "wide_chr",
+            title: "Wide CHR",
+            stereoWidenEnabled: true,
+            monoBassEnabled: true,
+            monoBassFreqHz: 115.0,
+            width: 0.46,
+            center: 0.50,
+            mix: 0.76
+        ),
+    ]
+
     private static let multibandPresets: [MultibandPreset] = [
         .init(
             id: "3_chr", title: "3B CHR/EDM", mode: 3, lowHz: 290, highHz: 2500, x1Hz: nil,
@@ -2640,6 +2799,10 @@ final class StereoFoolViewModel: ObservableObject {
 
     private static func clamp(_ value: Double, min: Double, max: Double) -> Double {
         Swift.max(min, Swift.min(max, value))
+    }
+
+    private static func approxEqual(_ lhs: Double, _ rhs: Double, tolerance: Double = 0.0001) -> Bool {
+        abs(lhs - rhs) <= tolerance
     }
 
     private static func sanitizeHex(_ raw: String, width: Int) -> String {
@@ -3119,6 +3282,14 @@ private struct MonitoringDashboardView: View {
 
                 Card(title: "DSP") {
                     MonitoringDSPStatusSectionView(model: model)
+                }
+
+                Card(title: "Stereo History") {
+                    StereoImageHistoryPanel(model: model)
+                }
+
+                Card(title: "Calibration") {
+                    MonitoringCalibrationSectionView(model: model)
                 }
 
                 Card(title: "RDS") {
@@ -3724,6 +3895,365 @@ private struct DSPOverviewPanel: View {
             return String(trimmed.dropFirst(key.count + 1))
         }
         return nil
+    }
+}
+
+private struct MonitoringCalibrationSectionView: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Calibration Workflow")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            FlowStatusRow(items: [
+                ("Mode", modeState.value, modeState.color),
+                ("Pilot", pilotState.value, pilotState.color),
+                ("RDS", rdsState.value, rdsState.color),
+                ("Budget", budgetState.value, budgetState.color),
+                ("Safety", safetyState.value, safetyState.color),
+            ])
+
+            DashboardMetricGrid {
+                DSPMetricGroupCard(
+                    title: "Stereo Services",
+                    subtitle: "Pilot and RDS should be calibrated before final loudness alignment",
+                    rows: [
+                        ("Pilot Target", "8-10%"),
+                        ("Pilot Current", String(format: "%.1f %%", model.pilotInjectionPercentValue)),
+                        ("RDS Target", "2-4%"),
+                        ("RDS Current", String(format: "%.1f %%", model.rdsInjectionPercentValue)),
+                    ]
+                )
+                DSPMetricGroupCard(
+                    title: "Deviation & Headroom",
+                    subtitle: "Use deviation peak and composite margin as the main calibration gates",
+                    rows: [
+                        ("Deviation Peak", String(format: "%.1f kHz", model.estimatedDeviationPeakKHz)),
+                        ("Deviation Target", String(format: "%.1f kHz", model.config.mpxDeviationKHz)),
+                        ("Audio Composite", Self.dbfsString(model.audioCompositePeakLinear)),
+                        ("Budget Margin", String(format: "%.1f dB", model.compositeBudgetMarginDBValue)),
+                    ]
+                )
+                DSPMetricGroupCard(
+                    title: "Protection",
+                    subtitle: "Composite limiter may work; full-MPX safety limiting should stay minimal",
+                    rows: [
+                        ("Final Drive", String(format: "%.1f dB", model.config.finalDriveDB)),
+                        ("Limiter GR", String(format: "%.1f dB", model.compositeLimiterGainReductionDBValue)),
+                        ("Safety GR", String(format: "%.1f dB", model.safetyLimiterGainReductionDBValue)),
+                        ("MPX Output", String(format: "%.1f dB", model.config.outputGainDB)),
+                    ]
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(calibrationSteps, id: \.self) { step in
+                    Text("• \(step)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var stereoServicesActive: Bool {
+        model.isRunning && !model.config.monoMode
+    }
+
+    private var modeState: (value: String, color: Color) {
+        if !model.isRunning {
+            return ("Stopped", .secondary.opacity(0.45))
+        }
+        if model.config.monoMode {
+            return ("Mono", .orange)
+        }
+        return ("Stereo", .green)
+    }
+
+    private var pilotState: (value: String, color: Color) {
+        guard stereoServicesActive else { return ("Off", .secondary.opacity(0.45)) }
+        let value = model.pilotInjectionPercentValue
+        if (8.0...10.0).contains(value) {
+            return ("On Target", .green)
+        }
+        if (6.0...12.0).contains(value) {
+            return ("Adjust", .orange)
+        }
+        return ("Risk", .red)
+    }
+
+    private var rdsState: (value: String, color: Color) {
+        guard stereoServicesActive && model.config.enRDS else {
+            return ("Off", .secondary.opacity(0.45))
+        }
+        let value = model.rdsInjectionPercentValue
+        if (2.0...4.0).contains(value) {
+            return ("On Target", .green)
+        }
+        if (1.5...5.0).contains(value) {
+            return ("Adjust", .orange)
+        }
+        return ("Risk", .red)
+    }
+
+    private var budgetState: (value: String, color: Color) {
+        if !model.isRunning {
+            return ("Off", .secondary.opacity(0.45))
+        }
+        if model.compositeBudgetMarginDBValue >= 3.0 {
+            return ("Safe", .green)
+        }
+        if model.compositeBudgetMarginDBValue >= 1.0 {
+            return ("Tight", .orange)
+        }
+        return ("Risk", .red)
+    }
+
+    private var safetyState: (value: String, color: Color) {
+        if !model.isRunning {
+            return ("Off", .secondary.opacity(0.45))
+        }
+        if model.safetyLimiterGainReductionDBValue <= 0.05 {
+            return ("Idle", .green)
+        }
+        if model.safetyLimiterGainReductionDBValue <= 0.30 {
+            return ("Touching", .orange)
+        }
+        return ("Active", .red)
+    }
+
+    private var calibrationSteps: [String] {
+        if !model.isRunning {
+            return ["Start the engine, then calibrate with normal program audio in stereo mode."]
+        }
+
+        var steps: [String] = []
+        if model.config.monoMode {
+            steps.append("Disable Mono Mode before calibrating. Pilot and RDS are suppressed while mono is active.")
+        } else {
+            steps.append("Set Pilot near 8-10% and RDS near 2-4%, then leave them fixed while you align loudness and output.")
+        }
+
+        let deviationTarget = Float(model.config.mpxDeviationKHz)
+        if model.estimatedDeviationPeakKHz > (deviationTarget + 0.5) {
+            steps.append("Estimated deviation peak is over target. Reduce Final Drive first, then use MPX Output Level only for final exciter or interface alignment.")
+        } else {
+            steps.append("Use Final Drive for loudness and MPX Output Level for final calibration. Do not use AGC target as the main loudness control.")
+        }
+
+        if model.compositeBudgetMarginDBValue < 1.0 {
+            steps.append("Composite budget margin is at risk. Lower Final Drive, pilot, or RDS injection before pushing loudness harder.")
+        } else if model.compositeBudgetMarginDBValue < 3.0 {
+            steps.append("Composite budget is usable but tight. Prefer at least 3 dB margin when you want safer exciter headroom.")
+        } else {
+            steps.append("Composite budget margin is healthy. Keep that margin before reintroducing more stereo width or bass enhancement.")
+        }
+
+        if model.safetyLimiterGainReductionDBValue > 0.05 {
+            steps.append("Safety limiter should stay mostly idle during calibration. If it moves, back down Final Drive and re-check deviation.")
+        } else {
+            steps.append("Safety limiter is idle. That is the desired operating state during ordinary alignment.")
+        }
+
+        return steps
+    }
+
+    private static func dbfsString(_ linear: Float) -> String {
+        guard linear > 0.0 else { return "-inf dBFS" }
+        return String(format: "%.1f dBFS", 20.0 * log10(linear))
+    }
+}
+
+private struct StereoImageHistoryPanel: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            FlowStatusRow(items: [
+                ("Current", model.widenerStateText, MonitoringDSPStatusSectionView.stereoImageDotColor(for: model.widenerStateText)),
+                ("Corr", correlationSummary, correlationColor),
+                ("Side", sideSummary, sideColor),
+            ])
+
+            DashboardMetricGrid {
+                StereoHistoryChartCard(
+                    title: "Correlation",
+                    subtitle: "Recent output stereo correlation",
+                    currentValue: correlationSummary,
+                    samples: model.stereoCorrelationHistory,
+                    minY: -1.0,
+                    maxY: 1.0,
+                    lineColor: .cyan,
+                    thresholdLines: [
+                        (0.0, .red.opacity(0.4)),
+                        (0.30, .orange.opacity(0.4)),
+                    ]
+                )
+
+                StereoHistoryChartCard(
+                    title: "Side / Mid",
+                    subtitle: "Recent side-energy balance",
+                    currentValue: sideSummary,
+                    samples: model.stereoSideRatioHistory,
+                    minY: 0.0,
+                    maxY: 1.2,
+                    lineColor: .green,
+                    thresholdLines: [
+                        (0.55, .orange.opacity(0.4)),
+                        (0.85, .red.opacity(0.4)),
+                    ]
+                )
+
+                StereoHistoryChartCard(
+                    title: "Image State",
+                    subtitle: "Off, Safe, Wide, or Risk over time",
+                    currentValue: model.widenerStateText,
+                    samples: model.stereoRiskHistory,
+                    minY: 0.0,
+                    maxY: 1.0,
+                    lineColor: .orange,
+                    thresholdLines: [
+                        (0.25, .green.opacity(0.35)),
+                        (0.65, .orange.opacity(0.35)),
+                        (1.0, .red.opacity(0.35)),
+                    ],
+                    labels: [
+                        (0.0, "Off"),
+                        (0.25, "Safe"),
+                        (0.65, "Wide"),
+                        (1.0, "Risk"),
+                    ]
+                )
+            }
+
+            Text("History is sampled every 0.25 s so you can see stereo drift and pumping over time instead of relying only on the current meter.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var latestCorrelation: Float {
+        model.stereoCorrelationHistory.last ?? 1.0
+    }
+
+    private var latestSideRatio: Float {
+        model.stereoSideRatioHistory.last ?? 0.0
+    }
+
+    private var correlationSummary: String {
+        String(
+            format: "%@%.2f",
+            latestCorrelation >= 0 ? "+" : "",
+            latestCorrelation
+        )
+    }
+
+    private var sideSummary: String {
+        String(format: "%.2fx", latestSideRatio)
+    }
+
+    private var correlationColor: Color {
+        if latestCorrelation < 0.0 {
+            return .red
+        }
+        if latestCorrelation < 0.30 {
+            return .orange
+        }
+        return .green
+    }
+
+    private var sideColor: Color {
+        if latestSideRatio > 0.85 {
+            return .red
+        }
+        if latestSideRatio > 0.55 {
+            return .orange
+        }
+        return .green
+    }
+}
+
+private struct StereoHistoryChartCard: View {
+    let title: String
+    let subtitle: String
+    let currentValue: String
+    let samples: [Float]
+    let minY: Float
+    let maxY: Float
+    let lineColor: Color
+    let thresholdLines: [(Float, Color)]
+    var labels: [(Float, String)] = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text(currentValue)
+                    .font(.caption.monospaced().weight(.semibold))
+            }
+
+            Canvas { context, size in
+                let rect = CGRect(origin: .zero, size: size)
+                context.fill(
+                    Path(roundedRect: rect, cornerRadius: 8),
+                    with: .color(.black.opacity(0.18))
+                )
+
+                for (value, color) in thresholdLines {
+                    let y = yPosition(for: value, in: rect)
+                    var line = Path()
+                    line.move(to: CGPoint(x: rect.minX, y: y))
+                    line.addLine(to: CGPoint(x: rect.maxX, y: y))
+                    context.stroke(line, with: .color(color), lineWidth: 1)
+                }
+
+                guard samples.count > 1 else { return }
+                let stepX = rect.width / CGFloat(max(1, samples.count - 1))
+                var trace = Path()
+                for (idx, sample) in samples.enumerated() {
+                    let x = CGFloat(idx) * stepX
+                    let y = yPosition(for: sample, in: rect)
+                    if idx == 0 {
+                        trace.move(to: CGPoint(x: x, y: y))
+                    } else {
+                        trace.addLine(to: CGPoint(x: x, y: y))
+                    }
+                }
+                context.stroke(trace, with: .color(lineColor), lineWidth: 1.6)
+            }
+            .frame(height: 86)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            if !labels.isEmpty {
+                HStack {
+                    ForEach(Array(labels.enumerated()), id: \.offset) { _, item in
+                        Text(item.1)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .windowBackgroundColor).opacity(0.35))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func yPosition(for value: Float, in rect: CGRect) -> CGFloat {
+        let clamped = max(minY, min(maxY, value))
+        let norm = (clamped - minY) / max(0.0001, maxY - minY)
+        return rect.maxY - (CGFloat(norm) * rect.height)
     }
 }
 
@@ -4597,6 +5127,9 @@ private struct ProcessingCoreTab: View {
             Text("Use MPX Output Level for final transmit/output calibration. Do not use AGC target as the main loudness knob.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            Text("Use Monitoring > Calibration to align pilot, RDS, deviation peak, composite margin, and safety-limiter headroom.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             DoubleSliderRow(title: "HPF", value: model.configBinding(\.hpfHz), range: 10...180, format: "%.0f Hz")
             DoubleSliderRow(title: "HF Trim", value: model.configBinding(\.hfTrimDB), range: -12...12, format: "%.1f dB")
             DoubleSliderRow(title: "HF Trim Freq", value: model.configBinding(\.hfTrimHz), range: 1_000...12_000, format: "%.0f Hz")
@@ -4717,6 +5250,18 @@ private struct ProcessingWidenerTab: View {
 
     var body: some View {
         Card(title: "Stereo Widener") {
+            Picker("Preset", selection: Binding(
+                get: { self.model.currentWidenerPresetID },
+                set: { newValue in
+                    guard newValue != "custom" else { return }
+                    self.model.applyWidenerPreset(id: newValue)
+                }
+            )) {
+                ForEach(model.widenerPresetChoices) { preset in
+                    Text(preset.title).tag(preset.id)
+                }
+            }
+            .pickerStyle(.menu)
             Toggle("Enable Stereo Widener", isOn: model.configBinding(\.stereoWidenEnabled, runtimeDisposition: .live))
             Toggle("Mono Bass", isOn: model.configBinding(\.monoBassEnabled, runtimeDisposition: .live))
             DoubleSliderRow(
@@ -4729,6 +5274,9 @@ private struct ProcessingWidenerTab: View {
             DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth, runtimeDisposition: .live), range: 0...1, format: "%.2f")
             DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter, runtimeDisposition: .live), range: 0...1, format: "%.2f")
             DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix, runtimeDisposition: .live), range: 0...1, format: "%.2f")
+            Text("Start with Safe FM, then move to Open Music only if mono compatibility and verifier output stay clean.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }

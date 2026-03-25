@@ -24,6 +24,17 @@ struct CLIOptions {
     var verifyLong: Bool = false
 }
 
+func defaultVerificationConfigPath() -> String {
+    let launchDirectory =
+        ProcessInfo.processInfo.environment["PWD"] ?? FileManager.default.currentDirectoryPath
+    let candidate = ((launchDirectory as NSString).appendingPathComponent("macOS/Verification.ini")
+        as NSString).standardizingPath
+    if FileManager.default.fileExists(atPath: candidate) {
+        return candidate
+    }
+    return AppConfig.defaultINIPath
+}
+
 func normalizeConfigPath(_ rawPath: String) -> String {
     let expanded = (rawPath as NSString).expandingTildeInPath
     let expandedNSString = expanded as NSString
@@ -93,6 +104,7 @@ func printUsage() {
           --gui      Launch native SwiftUI macOS window (default)
           --nogui    Run headless
           --verify   Run the offline MPX verification harness
+                     Uses macOS/Verification.ini by default when available
           --verify-presets  Sweep key multiband presets through the offline verification harness
           --verify-long  Run the longer focused compliance/regression verifier
         """
@@ -127,7 +139,7 @@ if CommandLine.arguments.contains("--help") || CommandLine.arguments.contains("-
 }
 let configPath = options.configPathExplicit
     ? options.configPath
-    : AppConfig.defaultINIPath
+    : (options.verify ? defaultVerificationConfigPath() : AppConfig.defaultINIPath)
 
 do {
     if options.verify {

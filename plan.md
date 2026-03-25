@@ -62,14 +62,14 @@ Breakaway does not appear to publish the same level of public technical detail a
 
 ## Current open gaps
 
-### 1. Pilot/RDS calibration workflow is still too text-heavy
+### 1. Pilot/RDS calibration workflow exists, but still needs exciter-facing polish
 
-Monitoring now exposes pilot, RDS, audio-composite peak, budget margin, and a composite-budget state indicator, but calibration is still mostly presented as status text rather than a dedicated calibration workflow.
+Monitoring now has a dedicated calibration workflow with pilot, RDS, audio-composite peak, budget margin, deviation, and safety-limiter visibility. The remaining gap is making it even more explicit for real exciter alignment and longer operational use.
 
 Impact:
 
-- users can make the chain loud, but they still cannot see pilot and RDS contribution clearly
-- exciter alignment remains more trial-and-error than it should be
+- day-to-day calibration is much clearer than before
+- exciter integration and calibration guidance still need more hardening than a status card alone
 
 ### 2. AGC still needs more validation against the current final stage
 
@@ -77,15 +77,25 @@ Wideband AGC is now behaving more like a platform leveler, but its defaults and 
 
 ### 3. Stereo enhancement still needs deeper validation
 
-StereoFool now has a more professional stereo-image path than before, but it still needs deliberate listening and measurement work.
+StereoFool now has a more professional stereo-image path, image presets, and a history view, but it still needs deliberate listening and measurement work.
 
 Impact:
 
 - mono bass, widener, Orbass, and multiband interactions still need preset-level validation
-- stereo/correlation metering now exists, but there is still no stronger compliance-style validation workflow or history
+- stereo history now exists, but compliance-style validation on difficult real program is still limited
 - width behavior still needs broader validation on difficult real program
 
-### 4. Verification is strong, but coverage is still limited
+### 4. Runtime apply boundaries are much better, but still need validation discipline
+
+StereoFool now applies most ordinary DSP controls live and reserves restart-only handling for engine, routing, and encoder-structure changes. That is the right model, but it still needs stronger validation so live updates do not introduce transient artifacts and restart-only boundaries stay obvious.
+
+Impact:
+
+- live DSP updates are now usable during operation, which is a major workflow improvement
+- the remaining restart-required settings are much clearer in the UI, but still need broader smoke testing
+- parameter-apply behavior now deserves explicit testing instead of being treated as incidental UI plumbing
+
+### 5. Verification is strong, but coverage is still limited
 
 The offline verifier, preset sweep, width/compliance checks, and long-run mode now exist, but:
 
@@ -93,7 +103,7 @@ The offline verifier, preset sweep, width/compliance checks, and long-run mode n
 - there is no stored golden-baseline artifact beyond the current in-code signature
 - compliance-style analysis is still lighter than a true RF toolchain
 
-### 5. Swift DSP implementation still has cleanup debt
+### 6. Swift DSP implementation still has cleanup debt
 
 StereoFool's Swift DSP is now credible and effective, but there are still implementation-level loose ends that should be addressed before treating the chain as fully mature.
 
@@ -114,7 +124,7 @@ Practical implication:
 - the next quality gains come from cleanup, validation, and measurement discipline rather than from rewriting out of Swift
 - the final composite stage is sensitive enough that even a structural refactor can change output measurably, so all cleanup there must be verification-backed and incremental
 
-### 6. RDS text syntax is functional, but still behind established tooling
+### 7. RDS text syntax is functional, but still behind established tooling
 
 StereoFool already supports timed PS/RT sequences such as `10s:Text/10s:Other Text`, but it does not yet match the more mature public user-facing syntax that processors such as Stereo Tool expose.
 
@@ -130,6 +140,7 @@ Useful compatibility work that can be implemented clean-room from public documen
 - escape handling for literal separators and control characters
 - optional word-wrap control markers
 - a clearer documented grammar for timed/dynamic PS and RT text
+- keep RDS code-page handling deterministic for supported Latin characters and graceful for unsupported ones
 
 Constraints:
 
@@ -168,17 +179,17 @@ Users should not need to abuse AGC target to get acceptable loudness.
 
 ### Phase 1. Fix the gain structure
 
-Status: maintenance only
+Status: partially complete
 
 Still open:
 
-1. Decide whether monitor audio should use a separate monitor gain instead of reusing transmit output trim.
-2. Add one internal gain-structure note per stage in code comments so future tuning stays coherent.
+1. Add one internal gain-structure note per stage in code comments so future tuning stays coherent.
 
 Success criteria:
 
 - output trim measurably changes MPX output level
 - AGC target no longer has to be set unrealistically hot to get normal modulation
+- ordinary DSP controls can be changed live without forcing engine restarts
 
 ### Phase 2. Add a proper final composite stage
 
@@ -224,16 +235,9 @@ Next work:
    - pilot injection
    - RDS injection
    - composite headroom
-2. Add clearer calibration indicators and warning states for:
-   - pilot %
-   - RDS %
-   - audio-composite peak
-   - composite budget margin
-   - estimated deviation peak
-   - full-MPX safety limiter engagement
-3. Document expected exciter integration:
+2. Document expected exciter integration:
    - when StereoFool pre-emphasis is on, external pre-emphasis must be off
-4. Add a dedicated calibration panel or workflow instead of relying mainly on status cards.
+3. Keep refining the dedicated calibration workflow with clearer exciter-facing guidance and warning states if needed.
 
 Success criteria:
 
@@ -246,9 +250,8 @@ Status: in progress
 
 Next work:
 
-1. Add image presets such as `Safe FM`, `Open Music`, and `Wide CHR`.
-2. Validate mono compatibility and low-end stability on difficult program material.
-3. Add a stronger stereo-verification workflow or history view instead of relying only on instantaneous meters.
+1. Validate mono compatibility and low-end stability on difficult program material.
+2. Retune or expand image presets only when new listening or verifier evidence justifies it.
 
 Success criteria:
 
@@ -342,11 +345,42 @@ These are the current practical defaults after the recent gain-structure and fin
 
 The next quality improvement should be:
 
-1. continue only small state-safe DSP cleanups around the final stage
-2. then retune image-stage presets and interactions from measurements instead of intuition
-3. move from in-code long-run signatures toward stored baseline artifacts if they prove useful
+1. validate live-apply behavior and restart-required boundaries on difficult real material and ordinary operator edits
+2. continue only small verifier-backed final-stage cleanups
+3. keep validating stereo/image presets on difficult real material instead of expanding them blindly
 
 This keeps the plan focused on the actual remaining work instead of repeating steps that are already done.
+
+## Tactical backlog
+
+This section merges the actionable items that used to be split across `bugs.md` and `macOS/TODO.md`.
+
+### Release-blocking / first fixes
+
+1. Replace the lock-based input ring buffer with a lock-free single-producer/single-consumer design.
+2. Remove per-callback heap allocations from the capture/input conversion paths.
+3. Move RDS wall-clock and calendar work off the audio render path.
+4. Cache FFT/spectrum setup and scratch buffers instead of rebuilding them every refresh.
+5. Add stronger config/input validation in `AppConfig`.
+6. Add a smoke-test pass for live-apply vs restart-required settings so MPX does not stop unexpectedly during ordinary DSP edits.
+
+### Current sprint tasks
+
+1. Validate Orbass, mono bass, widener, and multiband interaction on difficult real material.
+2. Do a release smoke pass for the new live-update path and restart-only settings behavior.
+3. Keep refining the calibration workflow only where real operator friction still exists.
+
+### Medium-term maintainability
+
+1. Reduce duplicated filter configuration logic in the biquad/crossover helpers.
+2. Replace undocumented DSP magic numbers with named constants and brief references.
+3. Simplify and test the RDS group scheduler modes more deterministically.
+4. Add an XCTest suite for MPX generation, filters, config round-trip, and ring-buffer behavior.
+5. Split the monolithic SwiftUI view model into smaller focused view models over time.
+6. Loosen tight coupling between the audio engine and concrete generator types.
+7. Add basic dependency-injection seams for system-facing services such as now-playing and device discovery.
+8. Sanitize external now-playing script output before using it in RT/RT+ paths.
+9. Harden config file watching/reload behavior against race conditions.
 
 ## Design constraints
 
@@ -354,6 +388,21 @@ This keeps the plan focused on the actual remaining work instead of repeating st
 - do not move shell/file/network work into DSP paths
 - preserve current integrated RDS and monitoring workflow
 - keep monitor-output latency concerns separate from transmit-path quality concerns
+
+## Performance Optimization Opportunities
+
+The following items represent opportunities to improve CPU efficiency while maintaining or enhancing enterprise-grade MPX quality:
+
+1. **Further vDSP utilization** - Replace manual loops in MPXGenerator with vDSP operations where numerically equivalent and beneficial
+2. **Scope processing optimization** - Throttle scope updates more aggressively when monitoring view is not visible
+3. **RDS string preparation** - Cache RDS byte preparation and avoid repeated string allocations in RDS group generation
+4. **Stereo image processing** - Optimize mid/side calculations with vDSP operations
+5. **Memory access patterns** - Ensure cache-friendly access patterns in tight DSP loops
+6. **Conditional computation** - Skip expensive computations (scopes, spectrum) when corresponding views are hidden
+7. **Buffer reuse** - Expand buffer reuse beyond current implementation to eliminate all per-call allocations
+8. **Approximation where appropriate** - Use fast math approximations where precision loss is inaudible (e.g., reciprocal square root)
+
+These optimizations should be approached incrementally with verification using the offline verifier to ensure no regression in MPX quality or compliance.
 
 ## References
 

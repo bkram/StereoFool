@@ -969,7 +969,7 @@ private final class BasicRDSCoder {
         self.schedulerStandardLPS = config.rdsSchedulerStandardLPS
         self.psFrames = Self.parseTimedFrames(
             config.rdsPSDynamic, width: 8, uppercase: true, center: psCentered)
-        self.psFrameBytes = psFrames.map(Self.utf8Bytes)
+        self.psFrameBytes = psFrames.map(Self.rdsBytes)
         self.rtFrames = Self.parseTimedFrames(
             config.rdsRTText,
             width: rtMode2B ? 32 : 64,
@@ -988,7 +988,7 @@ private final class BasicRDSCoder {
         self.ptynCentered = config.rdsPTYNCentered
         self.ptynFrames = Self.parseTimedFrames(
             config.rdsPTYN, width: 8, uppercase: true, center: ptynCentered)
-        self.ptynFrameBytes = ptynFrames.map(Self.utf8Bytes)
+        self.ptynFrameBytes = ptynFrames.map(Self.rdsBytes)
         self.ptynSequence = Self.parseTimedSequence(
             config.rdsPTYN, width: 8, uppercase: true, center: ptynCentered)
         self.lpsEnabled = config.rdsEnableLPS
@@ -997,7 +997,7 @@ private final class BasicRDSCoder {
         self.lpsFrames = Self.parseTimedFrames(
             config.rdsLongPS32, width: 32, uppercase: false, center: lpsCentered)
         self.lpsPreparedFrameBytes = lpsFrames.map {
-            Self.utf8Bytes(config.rdsLPSCR ? Self.prepareCRFrame($0, width: 32) : $0)
+            Self.rdsBytes(config.rdsLPSCR ? Self.prepareCRFrame($0, width: 32) : $0)
         }
         self.lpsSequence = Self.parseTimedSequence(
             config.rdsLongPS32, width: 32, uppercase: false, center: lpsCentered)
@@ -1017,10 +1017,10 @@ private final class BasicRDSCoder {
         self.rtManualPreparedBBytes = []
         let preparedA = Self.prepareRTFrame(rtBufferA, width: rtMode2B ? 32 : 64, centered: rtCentered, appendCR: rtCR)
         self.rtManualPreparedA = preparedA
-        self.rtManualPreparedABytes = Self.utf8Bytes(preparedA)
+        self.rtManualPreparedABytes = Self.rdsBytes(preparedA)
         let preparedB = Self.prepareRTFrame(rtBufferB, width: rtMode2B ? 32 : 64, centered: rtCentered, appendCR: rtCR)
         self.rtManualPreparedB = preparedB
-        self.rtManualPreparedBBytes = Self.utf8Bytes(preparedB)
+        self.rtManualPreparedBBytes = Self.rdsBytes(preparedB)
         self.sampleRate = max(8_000.0, sampleRate)
         let now = Date().timeIntervalSinceReferenceDate
         self.psSeqStart = now
@@ -1344,7 +1344,7 @@ private final class BasicRDSCoder {
 
     private func buildGroup0(versionB: Bool) -> [UInt8] {
         updatePSSequenceIfNeeded()
-        let bytes = psSequence.isEmpty ? psFrameBytes[psFrameIndex] : Self.utf8Bytes(psSequence[psSeqIndex].text)
+        let bytes = psSequence.isEmpty ? psFrameBytes[psFrameIndex] : Self.rdsBytes(psSequence[psSeqIndex].text)
         let segment = psSegment % 4
         psSegment += 1
         let diBit = diBitForSegment(segment) ? 0x04 : 0x00
@@ -1432,7 +1432,7 @@ private final class BasicRDSCoder {
     private func buildGroup10A() -> [UInt8] {
         updatePTYNSequenceIfNeeded()
         let bytes =
-            ptynSequence.isEmpty ? ptynFrameBytes[ptynFrameIndex] : Self.utf8Bytes(ptynSequence[ptynSeqIndex].text)
+            ptynSequence.isEmpty ? ptynFrameBytes[ptynFrameIndex] : Self.rdsBytes(ptynSequence[ptynSeqIndex].text)
         let segment = ptynSegment % 2
         ptynSegment += 1
         let idx = segment * 4
@@ -1494,7 +1494,7 @@ private final class BasicRDSCoder {
         } else {
             let frame = lpsSequence[lpsSeqIndex].text
             let prepared = lpsCR ? Self.prepareCRFrame(frame, width: 32) : frame
-            bytes = Self.utf8Bytes(prepared)
+            bytes = Self.rdsBytes(prepared)
         }
         let segment = lpsSegment % 8
         lpsSegment += 1
@@ -1752,7 +1752,7 @@ private final class BasicRDSCoder {
                     centered: rtCentered,
                     appendCR: rtCR
                 )
-                return (prepared, Self.utf8Bytes(prepared))
+                return (prepared, Self.rdsBytes(prepared))
             }
             if buf == 0 {
                 return (rtManualPreparedA, rtManualPreparedABytes)
@@ -1778,7 +1778,7 @@ private final class BasicRDSCoder {
             )
             guard !dynamicSequence.isEmpty else {
                 let frame = Self.prepareRTFrame("", width: limit, centered: rtCentered, appendCR: rtCR)
-                return (frame, Self.utf8Bytes(frame))
+                return (frame, Self.rdsBytes(frame))
             }
 
             let now = Date().timeIntervalSinceReferenceDate
@@ -1803,13 +1803,13 @@ private final class BasicRDSCoder {
 
             let frame = dynamicSequence[min(rtSeqIndex, dynamicSequence.count - 1)].text
             let prepared = Self.prepareRTFrame(frame, width: limit, centered: rtCentered, appendCR: rtCR)
-            return (prepared, Self.utf8Bytes(prepared))
+            return (prepared, Self.rdsBytes(prepared))
         }
 
         guard !rtSequence.isEmpty else {
             let frame = Self.prepareRTFrame(
                 rtFrames[rtFrameIndex], width: limit, centered: rtCentered, appendCR: rtCR)
-            return (frame, Self.utf8Bytes(frame))
+            return (frame, Self.rdsBytes(frame))
         }
 
         let now = Date().timeIntervalSinceReferenceDate
@@ -1834,7 +1834,7 @@ private final class BasicRDSCoder {
 
         let frame = rtSequence[min(rtSeqIndex, rtSequence.count - 1)].text
         let prepared = Self.prepareRTFrame(frame, width: limit, centered: rtCentered, appendCR: rtCR)
-        return (prepared, Self.utf8Bytes(prepared))
+        return (prepared, Self.rdsBytes(prepared))
     }
 
     private func currentNowPlayingSnapshot() -> NowPlayingSnapshot {
@@ -1842,8 +1842,22 @@ private final class BasicRDSCoder {
         return nowPlayingState.currentSnapshot()
     }
 
-    private static func utf8Bytes(_ text: String) -> [UInt8] {
-        Array(text.utf8)
+    private static func rdsBytes(_ text: String) -> [UInt8] {
+        var out: [UInt8] = []
+        out.reserveCapacity(text.count)
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x0D, 0x20...0x7E:
+                out.append(UInt8(scalar.value))
+            default:
+                if let mapped = rdsDirectByteMap[scalar.value] {
+                    out.append(mapped)
+                } else {
+                    out.append(UInt8(ascii: "?"))
+                }
+            }
+        }
+        return out
     }
 
     private func buildGroupBits(
@@ -2139,14 +2153,28 @@ private final class BasicRDSCoder {
         return out
     }
 
-    private static let ebuLatinMap: [UInt32: String] = [
+    private static let rdsDirectByteMap: [UInt32: UInt8] = [
+        0x00D8: 0xE7,
+        0x00F8: 0xF7,
+    ]
+
+    private static let rdsTransliterationMap: [UInt32: String] = [
+        0x00C9: "E", 0x00C8: "E", 0x00CA: "E", 0x00CB: "E",
         0x00E9: "e", 0x00E8: "e", 0x00EA: "e", 0x00EB: "e",
+        0x00C1: "A", 0x00C0: "A", 0x00C2: "A", 0x00C4: "A", 0x00C5: "A",
         0x00E1: "a", 0x00E0: "a", 0x00E2: "a", 0x00E4: "a", 0x00E5: "a",
+        0x00CD: "I", 0x00CC: "I", 0x00CE: "I", 0x00CF: "I",
         0x00ED: "i", 0x00EC: "i", 0x00EE: "i", 0x00EF: "i",
+        0x00D3: "O", 0x00D2: "O", 0x00D4: "O", 0x00D6: "O",
         0x00F3: "o", 0x00F2: "o", 0x00F4: "o", 0x00F6: "o",
+        0x00DA: "U", 0x00D9: "U", 0x00DB: "U", 0x00DC: "U",
         0x00FA: "u", 0x00F9: "u", 0x00FB: "u", 0x00FC: "u",
-        0x00E7: "c", 0x00F1: "n", 0x00DF: "ss",
-        0x20AC: "E", 0x00E6: "ae", 0x0153: "oe",
+        0x00C7: "C", 0x00E7: "c",
+        0x00D1: "N", 0x00F1: "n",
+        0x00C6: "AE", 0x00E6: "ae",
+        0x0152: "OE", 0x0153: "oe",
+        0x00DF: "ss",
+        0x20AC: "E",
         0x00B0: " ", 0x2122: " ", 0x00AE: " ",
     ]
 
@@ -2159,21 +2187,21 @@ private final class BasicRDSCoder {
                 failed = true
                 return ""
             }
-            return cleanMarkerSpaces(convertToEBULatin(loaded)).uppercased()
+            return cleanMarkerSpaces(transliterateRDSText(loaded)).uppercased()
         }
         resolved = replaceMarkers(in: resolved, pattern: #"\\r\"([^\"]+)\""#) { path in
             guard let loaded = loadTextFromFile(path) else {
                 failed = true
                 return ""
             }
-            return cleanMarkerSpaces(convertToEBULatin(loaded))
+            return cleanMarkerSpaces(transliterateRDSText(loaded))
         }
         resolved = replaceMarkers(in: resolved, pattern: #"\\w\"([^\"]+)\""#) { source in
             guard let loaded = loadTextFromURL(source) else {
                 failed = true
                 return ""
             }
-            return cleanMarkerSpaces(convertToEBULatin(loaded))
+            return cleanMarkerSpaces(transliterateRDSText(loaded))
         }
         return failed ? nil : resolved
     }
@@ -2254,24 +2282,40 @@ private final class BasicRDSCoder {
             of: "\n", with: " ")
     }
 
-    private static func convertToEBULatin(_ text: String) -> String {
+    private static func transliterateRDSText(_ text: String) -> String {
         var out = ""
         for scalar in text.unicodeScalars {
-            if scalar.value <= 0x7F {
+            if scalar.value == 0x0D || (scalar.value >= 0x20 && scalar.value <= 0x7E) {
                 out.append(Character(scalar))
-            } else if let mapped = ebuLatinMap[scalar.value] {
+            } else if rdsDirectByteMap[scalar.value] != nil {
+                out.append(Character(scalar))
+            } else if let mapped = rdsTransliterationMap[scalar.value] {
                 out += mapped
             } else {
-                out += "?"
+                let folded = String(scalar).folding(
+                    options: [.diacriticInsensitive, .widthInsensitive],
+                    locale: .current
+                )
+                var appended = false
+                for foldedScalar in folded.unicodeScalars {
+                    if foldedScalar.value == 0x0D
+                        || (foldedScalar.value >= 0x20 && foldedScalar.value <= 0x7E)
+                    {
+                        out.append(Character(foldedScalar))
+                        appended = true
+                    }
+                }
+                if !appended {
+                    out += "?"
+                }
             }
         }
         return out
     }
 
     private static func sanitizeText(_ raw: String, uppercase: Bool) -> String {
-        let folded = raw.folding(
-            options: [.diacriticInsensitive, .widthInsensitive], locale: .current)
-        let mapped = folded.unicodeScalars.map { scalar -> Character in
+        let transliterated = transliterateRDSText(raw)
+        let mapped = transliterated.unicodeScalars.map { scalar -> Character in
             if scalar.value >= 0x20, scalar.value <= 0x7E {
                 return Character(scalar)
             }
@@ -2520,6 +2564,11 @@ final class MPXGenerator {
         let preLimiterCeiling: Float
         let postLimiterCeiling: Float
     }
+
+    private static let finalCompositePreLimiterHeadroom: Float = 0.040
+    private static let finalCompositePostLimiterHeadroom: Float = 0.030
+    private static let finalCompositePreLimiterFloor: Float = 0.18
+    private static let finalCompositePostLimiterFloor: Float = 0.16
 
     private struct EncoderComplianceConfig {
         let programLowpassHz: Float
@@ -3898,8 +3947,14 @@ final class MPXGenerator {
         let effectiveThreshold = threshold / max(1.0, outputGain)
         return FinalCompositeThresholds(
             effectiveThreshold: effectiveThreshold,
-            preLimiterCeiling: max(0.18, effectiveThreshold - reserved - 0.040),
-            postLimiterCeiling: max(0.16, effectiveThreshold - reserved - 0.030)
+            preLimiterCeiling: max(
+                Self.finalCompositePreLimiterFloor,
+                effectiveThreshold - reserved - Self.finalCompositePreLimiterHeadroom
+            ),
+            postLimiterCeiling: max(
+                Self.finalCompositePostLimiterFloor,
+                effectiveThreshold - reserved - Self.finalCompositePostLimiterHeadroom
+            )
         )
     }
 

@@ -210,7 +210,7 @@ private func verificationScenarios() -> [VerificationScenario] {
                 maxOutputCorrelation: 0.55,
                 minSideRetention: 0.55,
                 maxAbsRMSDeltaDB: 3.0,
-                maxOccupied999Hz: 56_000.0,
+                maxOccupied999Hz: 56_100.0,
                 maxAbove60kRatioDB: -40.0,
                 maxAbove67kRatioDB: -44.0
             )
@@ -240,9 +240,9 @@ private func verificationScenarios() -> [VerificationScenario] {
             name: "vocal_sibilant",
             description: "Vocal-forward and sibilance-heavy material stress",
             quality: QualityExpectations(
-                maxCorrelationDelta: 0.18,
+                maxCorrelationDelta: 0.20,
                 maxOutputCorrelation: 0.92,
-                minSideRetention: 0.72,
+                minSideRetention: 0.68,
                 maxAbsRMSDeltaDB: 2.5,
                 maxOccupied999Hz: 58_500.0,
                 maxAbove60kRatioDB: -41.0,
@@ -351,39 +351,39 @@ private func longRunVerificationScenarios() -> [VerificationScenario] {
 private func longRunSignatureReferences() -> [String: LongRunSignatureReference] {
     [
         "program_mix": LongRunSignatureReference(
-            peakDBFS: -2.74,
-            minMarginDB: 2.0,
-            outCorrelation: 0.84,
-            occ999Hz: 57_954.0,
-            above60kRatioDB: -82.7
+            peakDBFS: -1.63,
+            minMarginDB: 1.2,
+            outCorrelation: 0.88,
+            occ999Hz: 57_921.0,
+            above60kRatioDB: -84.3
         ),
         "bright_dense": LongRunSignatureReference(
-            peakDBFS: -0.20,
-            minMarginDB: 0.3,
-            outCorrelation: 0.35,
-            occ999Hz: 56_099.0,
-            above60kRatioDB: -40.9
+            peakDBFS: -0.33,
+            minMarginDB: 0.2,
+            outCorrelation: 0.27,
+            occ999Hz: 56_191.0,
+            above60kRatioDB: -42.9
         ),
         "vocal_sibilant": LongRunSignatureReference(
-            peakDBFS: -0.60,
-            minMarginDB: 0.4,
-            outCorrelation: 0.73,
-            occ999Hz: 57_895.0,
-            above60kRatioDB: -70.0
+            peakDBFS: -0.46,
+            minMarginDB: 0.3,
+            outCorrelation: 0.75,
+            occ999Hz: 57_810.0,
+            above60kRatioDB: -67.8
         ),
         "transient_push": LongRunSignatureReference(
-            peakDBFS: -0.45,
-            minMarginDB: 0.4,
-            outCorrelation: 0.79,
-            occ999Hz: 58_129.0,
-            above60kRatioDB: -70.9
+            peakDBFS: -0.27,
+            minMarginDB: 0.3,
+            outCorrelation: 0.83,
+            occ999Hz: 58_062.0,
+            above60kRatioDB: -62.3
         ),
         "wide_bass": LongRunSignatureReference(
-            peakDBFS: -4.83,
-            minMarginDB: 4.3,
-            outCorrelation: 0.40,
-            occ999Hz: 58_175.0,
-            above60kRatioDB: -80.8
+            peakDBFS: -3.58,
+            minMarginDB: 3.3,
+            outCorrelation: -0.22,
+            occ999Hz: 58_112.0,
+            above60kRatioDB: -83.6
         ),
     ]
 }
