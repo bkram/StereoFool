@@ -2622,6 +2622,22 @@ private final class BasicRDSCoder {
 }
 
 final class MPXGenerator {
+    struct AnalysisBuffers {
+        let postAGCLeft: UnsafeMutablePointer<Float>?
+        let postAGCRight: UnsafeMutablePointer<Float>?
+        let preMPXLeft: UnsafeMutablePointer<Float>?
+        let preMPXRight: UnsafeMutablePointer<Float>?
+
+        static var none: AnalysisBuffers {
+            AnalysisBuffers(
+                postAGCLeft: nil,
+                postAGCRight: nil,
+                preMPXLeft: nil,
+                preMPXRight: nil
+            )
+        }
+    }
+
     struct AGCStatus {
         let enabled: Bool
         let detectorDB: Float
@@ -2883,6 +2899,8 @@ final class MPXGenerator {
         var right: Float
         var referenceLeft: Float
         var referenceRight: Float
+        var postAGCLeft: Float
+        var postAGCRight: Float
         var inputActivity: Float
     }
 
@@ -3592,7 +3610,8 @@ final class MPXGenerator {
     func renderNonInterleaved(
         frameCount: Int,
         left: UnsafeMutablePointer<Float>,
-        right: UnsafeMutablePointer<Float>
+        right: UnsafeMutablePointer<Float>,
+        analysis: AnalysisBuffers = .none
     ) {
         guard frameCount > 0 else { return }
         for i in 0..<frameCount {
@@ -3613,7 +3632,9 @@ final class MPXGenerator {
                 l = tone
                 r = tone
             }
-            let mpx = processSample(leftIn: l, rightIn: r)
+            let detail = processSampleDetailed(leftIn: l, rightIn: r)
+            writeAnalysisSample(index: i, stereo: detail.stereo, analysis: analysis)
+            let mpx = detail.mpx
             left[i] = mpx
             right[i] = mpx
         }
@@ -3627,11 +3648,14 @@ final class MPXGenerator {
     func renderFromInputInPlace(
         frameCount: Int,
         left: UnsafeMutablePointer<Float>,
-        right: UnsafeMutablePointer<Float>
+        right: UnsafeMutablePointer<Float>,
+        analysis: AnalysisBuffers = .none
     ) {
         guard frameCount > 0 else { return }
         for i in 0..<frameCount {
-            let mpx = processSample(leftIn: left[i], rightIn: right[i])
+            let detail = processSampleDetailed(leftIn: left[i], rightIn: right[i])
+            writeAnalysisSample(index: i, stereo: detail.stereo, analysis: analysis)
+            let mpx = detail.mpx
             left[i] = mpx
             right[i] = mpx
         }
@@ -3640,19 +3664,15 @@ final class MPXGenerator {
     func renderMonitorFromInputInPlace(
         frameCount: Int,
         left: UnsafeMutablePointer<Float>,
-        right: UnsafeMutablePointer<Float>
+        right: UnsafeMutablePointer<Float>,
+        analysis: AnalysisBuffers = .none
     ) {
         guard frameCount > 0 else { return }
         for i in 0..<frameCount {
-            var l = left[i] * inputGain
-            var r = right[i] * inputGain
-            if monoMode {
-                let m = (l + r) * 0.5
-                l = m
-                r = m
-            }
-            left[i] = l
-            right[i] = r
+            let direct = directMonitorStereo(leftIn: left[i], rightIn: right[i])
+            writeAnalysisSample(index: i, postAGCLeft: direct.0, postAGCRight: direct.1, preMPXLeft: direct.0, preMPXRight: direct.1, analysis: analysis)
+            left[i] = direct.0
+            right[i] = direct.1
         }
     }
 
@@ -3661,14 +3681,17 @@ final class MPXGenerator {
         left: UnsafeMutablePointer<Float>,
         right: UnsafeMutablePointer<Float>,
         mpxLeft: UnsafeMutablePointer<Float>,
-        mpxRight: UnsafeMutablePointer<Float>
+        mpxRight: UnsafeMutablePointer<Float>,
+        analysis: AnalysisBuffers = .none
     ) {
         guard frameCount > 0 else { return }
         for i in 0..<frameCount {
             let inputL = left[i]
             let inputR = right[i]
 
-            let mpx = processSample(leftIn: inputL, rightIn: inputR)
+            let detail = processSampleDetailed(leftIn: inputL, rightIn: inputR)
+            writeAnalysisSample(index: i, stereo: detail.stereo, analysis: analysis)
+            let mpx = detail.mpx
             mpxLeft[i] = mpx
             mpxRight[i] = mpx
 
@@ -3681,7 +3704,8 @@ final class MPXGenerator {
     func renderMonitorToneNonInterleaved(
         frameCount: Int,
         left: UnsafeMutablePointer<Float>,
-        right: UnsafeMutablePointer<Float>
+        right: UnsafeMutablePointer<Float>,
+        analysis: AnalysisBuffers = .none
     ) {
         guard frameCount > 0 else { return }
         for i in 0..<frameCount {
@@ -3702,13 +3726,10 @@ final class MPXGenerator {
                 l = tone
                 r = tone
             }
-            if monoMode {
-                let m = (l + r) * 0.5
-                l = m
-                r = m
-            }
-            left[i] = clampf(l * inputGain, -1.0, 1.0)
-            right[i] = clampf(r * inputGain, -1.0, 1.0)
+            let direct = directMonitorStereo(leftIn: l, rightIn: r)
+            writeAnalysisSample(index: i, postAGCLeft: direct.0, postAGCRight: direct.1, preMPXLeft: direct.0, preMPXRight: direct.1, analysis: analysis)
+            left[i] = direct.0
+            right[i] = direct.1
             tonePhase += toneStep
             if tonePhase >= twoPi { tonePhase -= twoPi }
         }
@@ -3719,7 +3740,8 @@ final class MPXGenerator {
         left: UnsafeMutablePointer<Float>,
         right: UnsafeMutablePointer<Float>,
         mpxLeft: UnsafeMutablePointer<Float>,
-        mpxRight: UnsafeMutablePointer<Float>
+        mpxRight: UnsafeMutablePointer<Float>,
+        analysis: AnalysisBuffers = .none
     ) {
         guard frameCount > 0 else { return }
         for i in 0..<frameCount {
@@ -3741,7 +3763,9 @@ final class MPXGenerator {
                 srcR = tone
             }
 
-            let mpx = processSample(leftIn: srcL, rightIn: srcR)
+            let detail = processSampleDetailed(leftIn: srcL, rightIn: srcR)
+            writeAnalysisSample(index: i, stereo: detail.stereo, analysis: analysis)
+            let mpx = detail.mpx
             mpxLeft[i] = mpx
             mpxRight[i] = mpx
 
@@ -3752,6 +3776,10 @@ final class MPXGenerator {
     }
 
     private func processSample(leftIn: Float, rightIn: Float) -> Float {
+        processSampleDetailed(leftIn: leftIn, rightIn: rightIn).mpx
+    }
+
+    private func processSampleDetailed(leftIn: Float, rightIn: Float) -> (mpx: Float, stereo: ProgramStereoState) {
         // High-level chain order:
         // 1. Program-domain stereo processing (AGC, filtering, enhancement, multiband)
         // 2. Stereo-image protection and monitoring
@@ -3778,13 +3806,14 @@ final class MPXGenerator {
             inputActivity: stereo.inputActivity
         )
 
-        return processFinalComposite(
+        let mpx = processFinalComposite(
             base: composite.base,
             diff: composite.diff,
             sub: composite.sub,
             pilot: composite.pilot,
             rds: composite.rds
         )
+        return (mpx, stereo)
     }
 
     private func processProgramStereo(leftIn: Float, rightIn: Float) -> ProgramStereoState {
@@ -3810,6 +3839,8 @@ final class MPXGenerator {
             right = filteredInput.1
         }
 
+        let postAGCLeft = left
+        let postAGCRight = right
         let programBand = programLP.process(left: left, right: right)
         left = programBand.0
         right = programBand.1
@@ -3856,8 +3887,49 @@ final class MPXGenerator {
             right: right,
             referenceLeft: referenceLeft,
             referenceRight: referenceRight,
+            postAGCLeft: postAGCLeft,
+            postAGCRight: postAGCRight,
             inputActivity: inputActivity
         )
+    }
+
+    @inline(__always)
+    private func directMonitorStereo(leftIn: Float, rightIn: Float) -> (Float, Float) {
+        var left = leftIn * inputGain
+        var right = rightIn * inputGain
+        if monoMode {
+            let mono = (left + right) * 0.5
+            left = mono
+            right = mono
+        }
+        return (clampf(left, -1.0, 1.0), clampf(right, -1.0, 1.0))
+    }
+
+    @inline(__always)
+    private func writeAnalysisSample(index: Int, stereo: ProgramStereoState, analysis: AnalysisBuffers) {
+        writeAnalysisSample(
+            index: index,
+            postAGCLeft: stereo.postAGCLeft,
+            postAGCRight: stereo.postAGCRight,
+            preMPXLeft: stereo.left,
+            preMPXRight: stereo.right,
+            analysis: analysis
+        )
+    }
+
+    @inline(__always)
+    private func writeAnalysisSample(
+        index: Int,
+        postAGCLeft: Float,
+        postAGCRight: Float,
+        preMPXLeft: Float,
+        preMPXRight: Float,
+        analysis: AnalysisBuffers
+    ) {
+        analysis.postAGCLeft?[index] = postAGCLeft
+        analysis.postAGCRight?[index] = postAGCRight
+        analysis.preMPXLeft?[index] = preMPXLeft
+        analysis.preMPXRight?[index] = preMPXRight
     }
 
     private func processEncoderHFGuard(left: Float, right: Float) -> (Float, Float) {

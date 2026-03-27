@@ -2,6 +2,15 @@ import Atomics
 import Foundation
 
 final class StereoInputRingBuffer {
+    struct TransportSnapshot {
+        let overflows: UInt64
+        let underflows: UInt64
+        let bufferedFrames: Int
+        let resampleMode: String
+        let ratioTrim: Double
+        let sampleStep: Double
+    }
+
     private let capacity: Int
     private let mask: Int
     private var left: [Float]
@@ -18,6 +27,9 @@ final class StereoInputRingBuffer {
     private let underflowCount = ManagedAtomic<UInt64>(0)
     private let consumerReadInProgress = ManagedAtomic<Bool>(false)
     private let producerWriteInProgress = ManagedAtomic<Bool>(false)
+    private let transportMode = ManagedAtomic<Int>(0)
+    private let transportRatioTrimMicrounits = ManagedAtomic<Int>(0)
+    private let transportSampleStepMicrounits = ManagedAtomic<Int>(1_000_000)
 
     init(capacityFrames: Int) {
         let requested = max(512, capacityFrames)
@@ -144,6 +156,7 @@ final class StereoInputRingBuffer {
             lastRight = 0.0
             resamplePhase = 0.0
             resampleRatioTrim = 0.0
+            updateTransportState(mode: 0, ratioTrim: 0.0, sampleStep: 1.0)
             underflowCount.wrappingIncrement(by: UInt64(frameCount), ordering: .relaxed)
             readCursor.store(startCursor, ordering: .releasing)
             return frameCount
@@ -181,6 +194,7 @@ final class StereoInputRingBuffer {
 
             resamplePhase = 0.0
             resampleRatioTrim = 0.0
+            updateTransportState(mode: 1, ratioTrim: 0.0, sampleStep: 1.0)
             readCursor.store(
                 startCursor &+ UInt64(availableFrames),
                 ordering: .releasing
@@ -196,12 +210,13 @@ final class StereoInputRingBuffer {
             trimTarget = 0.0
         } else {
             let normalized = errorFrames / Double(target)
-            trimTarget = max(-0.02, min(0.02, normalized * 0.06))
+            trimTarget = max(-0.006, min(0.006, normalized * 0.018))
         }
-        resampleRatioTrim += (trimTarget - resampleRatioTrim) * 0.025
+        resampleRatioTrim += (trimTarget - resampleRatioTrim) * 0.010
 
         let nominalRatio = Double(nominal) / Double(max(1, frameCount))
         let step = max(0.25, min(4.0, nominalRatio * (1.0 + resampleRatioTrim)))
+        updateTransportState(mode: 2, ratioTrim: resampleRatioTrim, sampleStep: step)
         let startPhase = resamplePhase
         let phaseEnd = startPhase + (step * Double(frameCount))
         let neededFrames = min(available, max(1, Int(ceil(phaseEnd)) + 1))
@@ -251,6 +266,17 @@ final class StereoInputRingBuffer {
         let under = underflowCount.load(ordering: .relaxed)
         let buffered = bufferedFrames()
         return (over, under, buffered)
+    }
+
+    func transportSnapshot() -> TransportSnapshot {
+        TransportSnapshot(
+            overflows: overflowCount.load(ordering: .relaxed),
+            underflows: underflowCount.load(ordering: .relaxed),
+            bufferedFrames: bufferedFrames(),
+            resampleMode: transportModeName(raw: transportMode.load(ordering: .relaxed)),
+            ratioTrim: Double(transportRatioTrimMicrounits.load(ordering: .relaxed)) / 1_000_000.0,
+            sampleStep: Double(transportSampleStepMicrounits.load(ordering: .relaxed)) / 1_000_000.0
+        )
     }
 
     private func planWrite(frameCount: Int) -> (startCursor: UInt64, sourceOffset: Int, framesToWrite: Int) {
@@ -441,13 +467,18 @@ final class StereoInputRingBuffer {
                 missing += 1
             } else {
                 let fraction = Float(localPhase - Double(base))
-                let next = min(base + 1, neededFrames - 1)
-                let l0 = readScratchLeft[base]
-                let l1 = readScratchLeft[next]
-                let r0 = readScratchRight[base]
-                let r1 = readScratchRight[next]
-                let leftValue = l0 + ((l1 - l0) * fraction)
-                let rightValue = r0 + ((r1 - r0) * fraction)
+                let leftValue = interpolatedSample(
+                    samples: readScratchLeft,
+                    baseIndex: base,
+                    fraction: fraction,
+                    validCount: neededFrames
+                )
+                let rightValue = interpolatedSample(
+                    samples: readScratchRight,
+                    baseIndex: base,
+                    fraction: fraction,
+                    validCount: neededFrames
+                )
                 outLeft[i] = leftValue
                 outRight[i] = rightValue
                 finalLeft = leftValue
@@ -476,6 +507,29 @@ final class StereoInputRingBuffer {
         }
     }
 
+    @inline(__always)
+    private func interpolatedSample(
+        samples: [Float],
+        baseIndex: Int,
+        fraction: Float,
+        validCount: Int
+    ) -> Float {
+        guard validCount > 0 else { return 0.0 }
+        let p0 = samples[max(0, baseIndex - 1)]
+        let p1 = samples[min(validCount - 1, baseIndex)]
+        let p2 = samples[min(validCount - 1, baseIndex + 1)]
+        let p3 = samples[min(validCount - 1, baseIndex + 2)]
+
+        let a0 = (-0.5 * p0) + (1.5 * p1) - (1.5 * p2) + (0.5 * p3)
+        let a1 = p0 - (2.5 * p1) + (2.0 * p2) - (0.5 * p3)
+        let a2 = (-0.5 * p0) + (0.5 * p2)
+        let a3 = p1
+        let x = fraction
+        let x2 = x * x
+        let x3 = x2 * x
+        return ((a0 * x3) + (a1 * x2) + (a2 * x) + a3)
+    }
+
     private func physicalIndex(for cursor: UInt64) -> Int {
         Int(cursor & UInt64(mask))
     }
@@ -486,6 +540,23 @@ final class StereoInputRingBuffer {
             return write &- UInt64(capacity)
         }
         return read
+    }
+
+    private func updateTransportState(mode: Int, ratioTrim: Double, sampleStep: Double) {
+        transportMode.store(mode, ordering: .relaxed)
+        transportRatioTrimMicrounits.store(Int((ratioTrim * 1_000_000.0).rounded()), ordering: .relaxed)
+        transportSampleStepMicrounits.store(Int((sampleStep * 1_000_000.0).rounded()), ordering: .relaxed)
+    }
+
+    private func transportModeName(raw: Int) -> String {
+        switch raw {
+        case 1:
+            return "direct"
+        case 2:
+            return "adaptive-cubic"
+        default:
+            return "idle"
+        }
     }
 
     private static func nextPowerOfTwo(_ value: Int) -> Int {

@@ -408,6 +408,126 @@ Current remaining performance focus:
 - additional RDS string preparation caching
 - ensuring cache-friendly access patterns in tight DSP loops
 
+## Real-Time Performance Plan
+
+This section turns the remaining performance work into an explicit execution plan. The priority order is:
+
+1. remove real-time safety hazards first
+2. reduce callback CPU in the hottest paths
+3. add measurement gates so future tuning stays disciplined
+
+### Phase P1. Make the callback safer under load
+
+Status: open
+
+Next work:
+
+1. Remove render-thread busy waiting from `StereoInputRingBuffer`:
+   - replace spin-based producer/consumer coordination with a lock-free read/write scheme that tolerates overlap
+   - prefer returning the latest stable readable region over waiting for a write to finish
+2. Remove audio-thread lock usage where practical:
+   - replace runtime-config handoff with an atomic or single-writer lock-free swap model
+   - keep meter publication one-way from audio thread to UI thread
+3. Ensure runtime apply never performs heavy filter or compressor reconfiguration directly inside the callback unless it is proven glitch-free and bounded.
+4. Re-audit all input fallback paths to confirm they stay allocation-free and non-blocking at callback time.
+
+Success criteria:
+
+- no spin waits on the render thread
+- no avoidable mutex acquisition on the render thread
+- live parameter edits do not introduce audible dropouts under stress
+
+### Phase P2. Cut obvious per-sample waste
+
+Status: open
+
+Next work:
+
+1. Precompute monitor-demod coefficients that currently depend only on sample rate or fixed timing constants.
+2. Precompute Orbass smoothing and adaptation coefficients that do not need to be recalculated every sample.
+3. Audit monitor mode for repeated transcendental math in hot loops:
+   - `expf`
+   - `powf`
+   - repeated coefficient derivation
+4. Keep stateful filter and compressor sample processing scalar unless profiling proves a safe vectorized alternative.
+
+Success criteria:
+
+- monitor mode CPU drops measurably in Instruments
+- no functional change in offline verification outputs beyond accepted tolerances
+
+### Phase P3. Consolidate analysis and metering work
+
+Status: open
+
+Next work:
+
+1. Reduce duplicate passes over the same render buffer:
+   - combine output metering, stereo-image metrics, and scope capture where that can be done without making the code opaque
+2. Make monitoring work more visibility-aware:
+   - skip or further throttle scope/history capture when the corresponding UI is hidden
+   - keep loudness analysis disabled when it is not being displayed or recorded
+3. Extend Accelerate use where the math is clearly equivalent and the code stays maintainable:
+   - side/mid energy
+   - scope downsampling helpers
+   - input format conversion where practical
+
+Success criteria:
+
+- fewer full-buffer passes per callback
+- metering and scope features scale down when not visible
+- callback CPU remains predictable with the monitoring window closed
+
+### Phase P4. Tighten memory and data movement
+
+Status: open
+
+Next work:
+
+1. Revisit ring-buffer copy strategy:
+   - reduce unnecessary scratch copying for adaptive reads if a stable two-segment read API can replace it safely
+2. Make mono-to-stereo duplication and interleaved-input conversion more cache-friendly and more vectorized where beneficial.
+3. Review history buffers and analysis buffers for write amplification:
+   - avoid storing data that is never rendered or inspected
+4. Keep all hot-path buffers long-lived and preallocated for worst-case block sizes already supported by the engine.
+
+Success criteria:
+
+- no remaining known per-callback heap allocation in audio or capture paths
+- lower memory bandwidth pressure in adaptive input mode
+
+### Phase P5. Make performance regressions visible
+
+Status: open
+
+Next work:
+
+1. Add a profiling checklist for every release candidate:
+   - tone mode
+   - live input mode
+   - monitor mode
+   - worst-case processing enabled
+2. Record baseline CPU measurements for representative configurations and keep them in project docs.
+3. Extend verification so performance-sensitive refactors are always checked against:
+   - MPX peak behavior
+   - safety limiter gain reduction
+   - pilot and RDS stability
+   - mono/stereo image behavior
+4. Add at least one long-run stress scenario aimed at catching callback overruns or transport instability.
+
+Success criteria:
+
+- CPU regressions are caught before release
+- DSP refactors are backed by both performance data and signal-quality verification
+
+### Recommended execution order
+
+1. Remove ring-buffer busy waiting and callback locks.
+2. Precompute monitor-demod and Orbass coefficients.
+3. Gate scope and loudness work by visibility and usage.
+4. Revisit adaptive-read scratch copying only after the safety work above is complete.
+5. Capture baseline Instruments data and keep it current.
+
 ## References
 
 ### Enterprise / hardware

@@ -276,6 +276,31 @@ private func verificationScenarios() -> [VerificationScenario] {
             return (left, right)
         },
         VerificationScenario(
+            name: "hf_edge_12k",
+            description: "High-frequency edge stress near the program low-pass limit",
+            quality: QualityExpectations(
+                maxCorrelationDelta: 0.12,
+                maxOutputCorrelation: 0.98,
+                minSideRetention: 0.80,
+                maxAbsRMSDeltaDB: 2.0,
+                maxOccupied999Hz: 58_500.0,
+                maxAbove60kRatioDB: -46.0,
+                maxAbove67kRatioDB: -58.0
+            )
+        ) { frame, sampleRate in
+            let t = Double(frame) / sampleRate
+            let envelope = 0.42 + (0.18 * (0.5 + 0.5 * sin(2.0 * Double.pi * 0.9 * t)))
+            let left = Float(envelope) * Float(
+                (0.34 * sin(2.0 * Double.pi * 12_200.0 * t))
+                    + (0.10 * sin(2.0 * Double.pi * 9_800.0 * t))
+            )
+            let right = Float(envelope) * Float(
+                (0.28 * sin(2.0 * Double.pi * 12_800.0 * t))
+                    - (0.12 * sin(2.0 * Double.pi * 10_400.0 * t))
+            )
+            return (left, right)
+        },
+        VerificationScenario(
             name: "transient_push",
             description: "Transient-heavy program to stress AGC, Orbass hold, and limiter feel",
             quality: QualityExpectations(

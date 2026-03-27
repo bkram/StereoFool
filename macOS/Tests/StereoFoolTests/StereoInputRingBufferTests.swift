@@ -237,6 +237,81 @@ final class StereoInputRingBufferTests: XCTestCase {
         XCTAssertGreaterThan(outRight[1], outRight[0])
     }
 
+    func testReadAdaptiveMatchedRateReportsDirectMode() {
+        let ring = StereoInputRingBuffer(capacityFrames: 32)
+        let left: [Float] = Array(0..<16).map(Float.init)
+        let right: [Float] = Array(100..<116).map(Float.init)
+        left.withUnsafeBufferPointer { leftBuffer in
+            right.withUnsafeBufferPointer { rightBuffer in
+                ring.write(left: leftBuffer.baseAddress!, right: rightBuffer.baseAddress!, frameCount: left.count)
+            }
+        }
+
+        var outLeft = [Float](repeating: 0, count: 16)
+        var outRight = [Float](repeating: 0, count: 16)
+        _ = outLeft.withUnsafeMutableBufferPointer { leftBuffer in
+            outRight.withUnsafeMutableBufferPointer { rightBuffer in
+                ring.readAdaptive(
+                    intoLeft: leftBuffer.baseAddress!,
+                    outRight: rightBuffer.baseAddress!,
+                    frameCount: 16,
+                    nominalConsume: 16,
+                    targetBuffered: 16,
+                    deadband: 0
+                )
+            }
+        }
+
+        let snapshot = ring.transportSnapshot()
+        XCTAssertEqual(snapshot.resampleMode, "direct")
+        XCTAssertEqual(snapshot.sampleStep, 1.0, accuracy: 0.000001)
+        XCTAssertEqual(snapshot.ratioTrim, 0.0, accuracy: 0.000001)
+        XCTAssertEqual(outLeft, left)
+        XCTAssertEqual(outRight, right)
+    }
+
+    func testAdaptiveCubicInterpolationBeatsLinearForHighFrequencySine() {
+        let ring = StereoInputRingBuffer(capacityFrames: 128)
+        let omega = 2.0 * Double.pi * 0.22
+        let sourceCount = 96
+        let source = (0..<sourceCount).map { Float(sin(Double($0) * omega)) }
+        source.withUnsafeBufferPointer { mono in
+            ring.writeMono(mono: mono.baseAddress!, frameCount: source.count)
+        }
+
+        var outLeft = [Float](repeating: 0, count: 32)
+        var outRight = [Float](repeating: 0, count: 32)
+        let missing = outLeft.withUnsafeMutableBufferPointer { leftBuffer in
+            outRight.withUnsafeMutableBufferPointer { rightBuffer in
+                ring.readAdaptive(
+                    intoLeft: leftBuffer.baseAddress!,
+                    outRight: rightBuffer.baseAddress!,
+                    frameCount: 32,
+                    nominalConsume: 48,
+                    targetBuffered: sourceCount,
+                    deadband: 0
+                )
+            }
+        }
+
+        XCTAssertEqual(missing, 0)
+        let expected = (0..<32).map { Float(sin(Double($0) * 1.5 * omega)) }
+        let cubicError = rmsError(actual: outLeft, expected: expected)
+        let linearReference = (0..<32).map { index -> Float in
+            let position = Double(index) * 1.5
+            let base = Int(position.rounded(.down))
+            let frac = Float(position - Double(base))
+            let next = min(base + 1, source.count - 1)
+            let a = source[base]
+            let b = source[next]
+            return a + ((b - a) * frac)
+        }
+        let linearError = rmsError(actual: linearReference, expected: expected)
+
+        XCTAssertLessThan(cubicError, linearError)
+        XCTAssertEqual(ring.transportSnapshot().resampleMode, "adaptive-cubic")
+    }
+
     func testLargeWriteLargerThanCapacityKeepsNewestTail() {
         let ring = StereoInputRingBuffer(capacityFrames: 512)
         let left: [Float] = Array(0..<600).map(Float.init)
@@ -263,5 +338,15 @@ final class StereoInputRingBufferTests: XCTestCase {
         XCTAssertEqual(outLeft, Array(88..<600).map(Float.init))
         XCTAssertEqual(outRight, Array(288..<800).map(Float.init))
         XCTAssertEqual(ring.stats().overflows, 88)
+    }
+
+    private func rmsError(actual: [Float], expected: [Float]) -> Float {
+        let count = min(actual.count, expected.count)
+        guard count > 0 else { return 0.0 }
+        let sum = (0..<count).reduce(Float.zero) { partial, index in
+            let delta = actual[index] - expected[index]
+            return partial + (delta * delta)
+        }
+        return sqrt(sum / Float(count))
     }
 }

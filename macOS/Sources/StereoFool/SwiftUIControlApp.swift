@@ -17,9 +17,14 @@ private let kLevelsWindowHeight: CGFloat = 560
 private let kLevelsWindowMinWidth: CGFloat = 760
 private let kLevelsWindowMinHeight: CGFloat = 500
 private let kStereoFoolIconSymbol = "\u{1F3A7}"
+private let kScopesWindowTitle = "Scopes"
+private let kMPXSpectrumWindowTitle = "MPX Spectrum"
+private let kAudioSpectrumWindowTitle = "Audio Spectrum"
+private let kLevelsWindowTitle = "Levels"
 private let kMainWindowAutosaveName = "StereoFool.MainWindow"
 private let kScopesWindowAutosaveName = "StereoFool.ScopesWindow"
 private let kSpectrumWindowAutosaveName = "StereoFool.SpectrumWindow"
+private let kPreMPXSpectrumWindowAutosaveName = "StereoFool.PreMPXSpectrumWindow"
 private let kLevelsWindowAutosaveName = "StereoFool.LevelsWindow"
 private let kAboutWindowAutosaveName = "StereoFool.AboutWindow"
 private let kHelpWindowAutosaveName = "StereoFool.HelpWindow"
@@ -585,6 +590,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var model: StereoFoolViewModel?
     private var scopesWindow: NSWindow?
     private var spectrumWindow: NSWindow?
+    private var preMPXSpectrumWindow: NSWindow?
     private var levelsWindow: NSWindow?
     private var aboutWindow: NSWindow?
     private var helpWindow: NSWindow?
@@ -616,6 +622,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             return false
         } else if sender == spectrumWindow {
             model?.spectrumWindowVisible = false
+            sender.orderOut(nil)
+            return false
+        } else if sender == preMPXSpectrumWindow {
+            model?.preMPXSpectrumWindowVisible = false
             sender.orderOut(nil)
             return false
         } else if sender == levelsWindow {
@@ -772,11 +782,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         
         let mainWindowItem = windowMenu.addItem(withTitle: "Main", action: #selector(showMainWindow), keyEquivalent: "1")
         mainWindowItem.target = self
-        let spectrumItem = windowMenu.addItem(withTitle: "Spectrum", action: #selector(showSpectrumWindow), keyEquivalent: "8")
+        let preMPXSpectrumItem = windowMenu.addItem(withTitle: kAudioSpectrumWindowTitle, action: #selector(showPreMPXSpectrumWindow), keyEquivalent: "7")
+        preMPXSpectrumItem.target = self
+        let spectrumItem = windowMenu.addItem(withTitle: kMPXSpectrumWindowTitle, action: #selector(showSpectrumWindow), keyEquivalent: "8")
         spectrumItem.target = self
-        let levelsItem = windowMenu.addItem(withTitle: "Levels", action: #selector(showLevelsWindow), keyEquivalent: "9")
+        let levelsItem = windowMenu.addItem(withTitle: kLevelsWindowTitle, action: #selector(showLevelsWindow), keyEquivalent: "9")
         levelsItem.target = self
-        let scopesItem = windowMenu.addItem(withTitle: "Scopes", action: #selector(showScopesWindow), keyEquivalent: "0")
+        let scopesItem = windowMenu.addItem(withTitle: kScopesWindowTitle, action: #selector(showScopesWindow), keyEquivalent: "0")
         scopesItem.target = self
         
         windowMenu.addItem(NSMenuItem.separator())
@@ -932,7 +944,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let scopesView = ScopesOnlyView(model: vm)
         let hostingController = NSHostingController(rootView: scopesView)
         let w = NSWindow(contentViewController: hostingController)
-        w.title = "Scopes"
+        w.title = kScopesWindowTitle
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         w.setContentSize(NSSize(width: kWindowWidth, height: kWindowHeight))
         w.minSize = NSSize(width: kWindowMinWidth, height: kWindowMinHeight)
@@ -954,7 +966,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let spectrumView = SpectrumOnlyView(model: vm)
         let hostingController = NSHostingController(rootView: spectrumView)
         let w = NSWindow(contentViewController: hostingController)
-        w.title = "Spectrum"
+        w.title = kMPXSpectrumWindowTitle
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         w.setContentSize(NSSize(width: kWindowWidth, height: kWindowHeight))
         w.minSize = NSSize(width: kWindowMinWidth, height: kWindowMinHeight)
@@ -967,6 +979,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
+    @objc private func showPreMPXSpectrumWindow() {
+        if let existing = preMPXSpectrumWindow {
+            revealWindow(existing)
+            model?.preMPXSpectrumWindowVisible = true
+            return
+        }
+        guard let vm = model else { return }
+        let spectrumView = PreMPXSpectrumOnlyView(model: vm)
+        let hostingController = NSHostingController(rootView: spectrumView)
+        let w = NSWindow(contentViewController: hostingController)
+        w.title = kAudioSpectrumWindowTitle
+        w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        w.setContentSize(NSSize(width: kWindowWidth, height: kWindowHeight))
+        w.minSize = NSSize(width: kWindowMinWidth, height: kWindowMinHeight)
+        w.isReleasedWhenClosed = false
+        w.delegate = self
+        restoreFrame(for: w, autosaveName: kPreMPXSpectrumWindowAutosaveName)
+        w.makeKeyAndOrderFront(nil)
+        preMPXSpectrumWindow = w
+        model?.preMPXSpectrumWindowVisible = true
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
     @objc private func showLevelsWindow() {
         if let existing = levelsWindow {
             revealWindow(existing)
@@ -976,7 +1011,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let levelsView = LevelsOnlyView(model: vm)
         let hostingController = NSHostingController(rootView: levelsView)
         let w = NSWindow(contentViewController: hostingController)
-        w.title = "Levels"
+        w.title = kLevelsWindowTitle
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         w.setContentSize(NSSize(width: kLevelsWindowWidth, height: kLevelsWindowHeight))
         w.minSize = NSSize(width: kLevelsWindowMinWidth, height: kLevelsWindowMinHeight)
@@ -1064,10 +1099,14 @@ final class StereoFoolViewModel: ObservableObject {
 
     @Published var inputLLevel: Double = 0.0
     @Published var inputRLevel: Double = 0.0
+    @Published var agcOutputLLevel: Double = 0.0
+    @Published var agcOutputRLevel: Double = 0.0
     @Published var outputLevel: Double = 0.0
     @Published var modulationLevel: Double = 0.0
     @Published var inputLPeakHoldLevel: Double = 0.0
     @Published var inputRPeakHoldLevel: Double = 0.0
+    @Published var agcOutputLPeakHoldLevel: Double = 0.0
+    @Published var agcOutputRPeakHoldLevel: Double = 0.0
     @Published var outputPeakHoldLevel: Double = 0.0
     @Published var modulationPeakHoldLevel: Double = 0.0
     @Published var stickyPeaksEnabled: Bool = true
@@ -1076,6 +1115,8 @@ final class StereoFoolViewModel: ObservableObject {
 
     @Published var inputLText: String = "-inf dBFS"
     @Published var inputRText: String = "-inf dBFS"
+    @Published var agcOutputLText: String = "-inf dBFS"
+    @Published var agcOutputRText: String = "-inf dBFS"
     @Published var outputText: String = "-inf dBFS"
     @Published var modulationText: String = "0.0 kHz"
     @Published var loudnessAvailable: Bool = false
@@ -1119,6 +1160,11 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var mpxSpectrumMaxHz: Double = 92_000.0
     @Published var mpxSpectrumNyquistHz: Double = 0.0
     @Published var spectrumWindowVisible: Bool = false
+    @Published var preMPXSpectrumLeftDB: [Float] = Array(repeating: -100.0, count: 48)
+    @Published var preMPXSpectrumRightDB: [Float] = Array(repeating: -100.0, count: 48)
+    @Published var preMPXSpectrumMaxHz: Double = 16_000.0
+    @Published var preMPXSpectrumNyquistHz: Double = 0.0
+    @Published var preMPXSpectrumWindowVisible: Bool = false
 
     private let configPath: String
     private let nowPlayingState: NowPlayingState
@@ -1132,10 +1178,14 @@ final class StereoFoolViewModel: ObservableObject {
 
     private var vuInputL: Float = 0.0
     private var vuInputR: Float = 0.0
+    private var vuAGCOutputL: Float = 0.0
+    private var vuAGCOutputR: Float = 0.0
     private var vuOutput: Float = 0.0
     private var vuModulation: Float = 0.0
     private var peakHoldInputL = AudioPeakHoldState()
     private var peakHoldInputR = AudioPeakHoldState()
+    private var peakHoldAGCOutputL = AudioPeakHoldState()
+    private var peakHoldAGCOutputR = AudioPeakHoldState()
     private var peakHoldOutput = AudioPeakHoldState()
     private var peakHoldModulation = PeakHoldState()
     private var limiterGRPeakHoldDB: Float = 0.0
@@ -1156,9 +1206,14 @@ final class StereoFoolViewModel: ObservableObject {
     private var ignoreConfigReloadUntil: TimeInterval = 0.0
     private var lastSpectrumRefreshTime: TimeInterval?
     private var spectrumUpdateInFlight: Bool = false
+    private var lastPreMPXSpectrumRefreshTime: TimeInterval?
+    private var preMPXSpectrumUpdateInFlight: Bool = false
     private let spectrumQueue = DispatchQueue(label: "StereoFool.MPXSpectrum", qos: .userInitiated)
     private let spectrumAnalyzer = MPXSpectrumAnalyzer()
+    private let preMPXSpectrumAnalyzer = MPXSpectrumAnalyzer()
     private var spectrumInputScratch: [Float] = Array(repeating: 0.0, count: 4096)
+    private var preMPXSpectrumLeftScratch: [Float] = Array(repeating: 0.0, count: 4096)
+    private var preMPXSpectrumRightScratch: [Float] = Array(repeating: 0.0, count: 4096)
 
     init(configPath: String) {
         self.configPath = configPath
@@ -1955,9 +2010,13 @@ final class StereoFoolViewModel: ObservableObject {
         var deviationKHz: Float = 0.0
         var currentInputLeftPeak: Float = 0.0
         var currentInputRightPeak: Float = 0.0
+        var currentAGCOutputLeftPeak: Float = 0.0
+        var currentAGCOutputRightPeak: Float = 0.0
         var currentOutputPeak: Float = 0.0
         var liveInputLeftPeak: Float = 0.0
         var liveInputRightPeak: Float = 0.0
+        var liveAGCOutputLeftPeak: Float = 0.0
+        var liveAGCOutputRightPeak: Float = 0.0
         var liveOutputPeak: Float = 0.0
         var liveDeviationKHz: Float = 0.0
         var hasCapture = false
@@ -1986,6 +2045,14 @@ final class StereoFoolViewModel: ObservableObject {
                 runtime += " · Input \(Int(inRate)) Hz"
             }
             runtime += " · Source \(engine.sourceDescription)"
+            if let transport = engine.transportSnapshot {
+                runtime += String(
+                    format: " · Path %@ step %.4fx trim %.4f",
+                    transport.resampleMode,
+                    transport.sampleStep,
+                    transport.ratioTrim
+                )
+            }
             runtimeText = runtime
             health.isRunning = true
             health.inputName =
@@ -1998,8 +2065,20 @@ final class StereoFoolViewModel: ObservableObject {
             health.blockFrames = engine.blockSize
 
             if let stats = engine.inputStats {
-                inputRingText =
-                    "Input Ring: \(stats.bufferedFrames) frames buffered · Overflows \(stats.overflows) · Underflows \(stats.underflows)"
+                if let transport = engine.transportSnapshot {
+                    inputRingText = String(
+                        format: "Input Ring: %d frames buffered · Overflows %llu · Underflows %llu · %@ %.4fx trim %.4f",
+                        stats.bufferedFrames,
+                        stats.overflows,
+                        stats.underflows,
+                        transport.resampleMode,
+                        transport.sampleStep,
+                        transport.ratioTrim
+                    )
+                } else {
+                    inputRingText =
+                        "Input Ring: \(stats.bufferedFrames) frames buffered · Overflows \(stats.overflows) · Underflows \(stats.underflows)"
+                }
                 let target = max(1, engine.inputTargetFrames)
                 inputBufferMax = Double(target * 2)
                 inputBufferWarning = Double(target)
@@ -2045,9 +2124,13 @@ final class StereoFoolViewModel: ObservableObject {
             deviationKHz = meters.deviationKHzPeak
             currentInputLeftPeak = hasCapture ? meters.inputLeftPeak : meters.outputPeak
             currentInputRightPeak = hasCapture ? meters.inputRightPeak : meters.outputPeak
+            currentAGCOutputLeftPeak = meters.postAGCLeftPeak
+            currentAGCOutputRightPeak = meters.postAGCRightPeak
             currentOutputPeak = meters.outputPeak
             liveInputLeftPeak = hasCapture ? meters.liveInputLeftPeak : meters.liveOutputPeak
             liveInputRightPeak = hasCapture ? meters.liveInputRightPeak : meters.liveOutputPeak
+            liveAGCOutputLeftPeak = meters.livePostAGCLeftPeak
+            liveAGCOutputRightPeak = meters.livePostAGCRightPeak
             liveOutputPeak = meters.liveOutputPeak
             liveDeviationKHz = meters.liveDeviationKHzPeak
             agcDetectorDB = meters.agcDetectorDB
@@ -2074,6 +2157,9 @@ final class StereoFoolViewModel: ObservableObject {
             if selectedSection == .monitoring || spectrumWindowVisible {
                 updateMPXSpectrum(engine: engine, now: now)
             }
+            if preMPXSpectrumWindowVisible {
+                updatePreMPXSpectrum(engine: engine, now: now)
+            }
         } else {
             runtimeText = "Not running"
             inputRingText = "Input Ring: n/a"
@@ -2092,10 +2178,18 @@ final class StereoFoolViewModel: ObservableObject {
             mpxSpectrumDB = Array(repeating: -100.0, count: 640)
             mpxSpectrumMaxHz = 92_000.0
             mpxSpectrumNyquistHz = 0.0
+            preMPXSpectrumLeftDB = Array(repeating: -100.0, count: 48)
+            preMPXSpectrumRightDB = Array(repeating: -100.0, count: 48)
+            preMPXSpectrumMaxHz = 16_000.0
+            preMPXSpectrumNyquistHz = 0.0
             lastSpectrumRefreshTime = nil
             spectrumUpdateInFlight = false
+            lastPreMPXSpectrumRefreshTime = nil
+            preMPXSpectrumUpdateInFlight = false
             vuInputL = 0.0
             vuInputR = 0.0
+            vuAGCOutputL = 0.0
+            vuAGCOutputR = 0.0
             vuOutput = 0.0
             vuModulation = 0.0
             clearPeakHolds()
@@ -2144,6 +2238,8 @@ final class StereoFoolViewModel: ObservableObject {
         let modulationNorm = max(0.0, min(1.0, deviationKHz / 100.0))
         let inputLTarget = Self.levelMeterScale(currentInputLeftPeak)
         let inputRTarget = Self.levelMeterScale(currentInputRightPeak)
+        let agcOutputLTarget = Self.levelMeterScale(currentAGCOutputLeftPeak)
+        let agcOutputRTarget = Self.levelMeterScale(currentAGCOutputRightPeak)
         let outputTarget = Self.levelMeterScale(currentOutputPeak)
         let modulationTarget = modulationNorm
 
@@ -2156,6 +2252,18 @@ final class StereoFoolViewModel: ObservableObject {
         vuInputR = smoothPeakProgramMeter(
             current: vuInputR,
             target: inputRTarget,
+            dt: dt,
+            releaseMS: Self.audioPeakMeterReleaseMS
+        )
+        vuAGCOutputL = smoothPeakProgramMeter(
+            current: vuAGCOutputL,
+            target: agcOutputLTarget,
+            dt: dt,
+            releaseMS: Self.audioPeakMeterReleaseMS
+        )
+        vuAGCOutputR = smoothPeakProgramMeter(
+            current: vuAGCOutputR,
+            target: agcOutputRTarget,
             dt: dt,
             releaseMS: Self.audioPeakMeterReleaseMS
         )
@@ -2175,6 +2283,8 @@ final class StereoFoolViewModel: ObservableObject {
 
         inputLLevel = Double(max(0.0, min(1.0, vuInputL)))
         inputRLevel = Double(max(0.0, min(1.0, vuInputR)))
+        agcOutputLLevel = Double(max(0.0, min(1.0, vuAGCOutputL)))
+        agcOutputRLevel = Double(max(0.0, min(1.0, vuAGCOutputR)))
         outputLevel = Double(max(0.0, min(1.0, vuOutput)))
         modulationLevel = Double(max(0.0, min(1.0, vuModulation)))
 
@@ -2188,6 +2298,16 @@ final class StereoFoolViewModel: ObservableObject {
             state: &peakHoldInputR,
             dt: dt
         )
+        let agcOutputLPeakHoldDB = updateAudioPeakHold(
+            livePeakLinear: liveAGCOutputLeftPeak,
+            state: &peakHoldAGCOutputL,
+            dt: dt
+        )
+        let agcOutputRPeakHoldDB = updateAudioPeakHold(
+            livePeakLinear: liveAGCOutputRightPeak,
+            state: &peakHoldAGCOutputR,
+            dt: dt
+        )
         let outputPeakHoldDB = updateAudioPeakHold(
             livePeakLinear: liveOutputPeak,
             state: &peakHoldOutput,
@@ -2195,6 +2315,8 @@ final class StereoFoolViewModel: ObservableObject {
         )
         inputLPeakHoldLevel = Double(Self.levelMeterScale(dbfs: inputLPeakHoldDB))
         inputRPeakHoldLevel = Double(Self.levelMeterScale(dbfs: inputRPeakHoldDB))
+        agcOutputLPeakHoldLevel = Double(Self.levelMeterScale(dbfs: agcOutputLPeakHoldDB))
+        agcOutputRPeakHoldLevel = Double(Self.levelMeterScale(dbfs: agcOutputRPeakHoldDB))
         outputPeakHoldLevel = Double(Self.levelMeterScale(dbfs: outputPeakHoldDB))
         modulationPeakHoldLevel = Double(
             updatePeakHold(
@@ -2209,6 +2331,8 @@ final class StereoFoolViewModel: ObservableObject {
 
         inputLText = Self.peakMeterString(currentPeak: currentInputLeftPeak, peakHoldDB: inputLPeakHoldDB)
         inputRText = Self.peakMeterString(currentPeak: currentInputRightPeak, peakHoldDB: inputRPeakHoldDB)
+        agcOutputLText = Self.peakMeterString(currentPeak: currentAGCOutputLeftPeak, peakHoldDB: agcOutputLPeakHoldDB)
+        agcOutputRText = Self.peakMeterString(currentPeak: currentAGCOutputRightPeak, peakHoldDB: agcOutputRPeakHoldDB)
         outputText = Self.peakMeterString(currentPeak: currentOutputPeak, peakHoldDB: outputPeakHoldDB)
         modulationText = String(format: "%.1f kHz", deviationKHz)
         estimatedDeviationPeakKHz = deviationKHz
@@ -2336,6 +2460,51 @@ final class StereoFoolViewModel: ObservableObject {
                 self.mpxSpectrumMaxHz = spectrum.maxHz
                 self.mpxSpectrumNyquistHz = spectrum.nyquistHz
                 self.spectrumUpdateInFlight = false
+            }
+        }
+    }
+
+    private func updatePreMPXSpectrum(engine: AudioOutputEngine, now: TimeInterval) {
+        let refreshInterval = 1.0 / 10.0
+        if let last = lastPreMPXSpectrumRefreshTime, (now - last) < refreshInterval {
+            return
+        }
+        guard !preMPXSpectrumUpdateInFlight else { return }
+        lastPreMPXSpectrumRefreshTime = now
+        preMPXSpectrumUpdateInFlight = true
+        let raw = engine.preMPXStereoWindow(
+            intoLeft: &preMPXSpectrumLeftScratch,
+            right: &preMPXSpectrumRightScratch,
+            frameCount: 4096
+        )
+        let sampleRate = raw.sampleRate
+        let validCount = raw.count
+        let leftSamples = preMPXSpectrumLeftScratch
+        let rightSamples = preMPXSpectrumRightScratch
+        let analyzer = preMPXSpectrumAnalyzer
+        spectrumQueue.async { [weak self] in
+            let maxDisplayHz = min(16_000.0, sampleRate * 0.5)
+            let leftSpectrum = analyzer.compute(
+                samples: leftSamples,
+                validCount: validCount,
+                sampleRate: sampleRate,
+                displayBins: 48,
+                maxDisplayHz: maxDisplayHz
+            )
+            let rightSpectrum = analyzer.compute(
+                samples: rightSamples,
+                validCount: validCount,
+                sampleRate: sampleRate,
+                displayBins: 48,
+                maxDisplayHz: maxDisplayHz
+            )
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.preMPXSpectrumLeftDB = leftSpectrum.dbBins
+                self.preMPXSpectrumRightDB = rightSpectrum.dbBins
+                self.preMPXSpectrumMaxHz = leftSpectrum.maxHz
+                self.preMPXSpectrumNyquistHz = leftSpectrum.nyquistHz
+                self.preMPXSpectrumUpdateInFlight = false
             }
         }
     }
@@ -2934,12 +3103,16 @@ final class StereoFoolViewModel: ObservableObject {
     private func clearPeakHolds() {
         peakHoldInputL = AudioPeakHoldState()
         peakHoldInputR = AudioPeakHoldState()
+        peakHoldAGCOutputL = AudioPeakHoldState()
+        peakHoldAGCOutputR = AudioPeakHoldState()
         peakHoldOutput = AudioPeakHoldState()
         peakHoldModulation = PeakHoldState()
         limiterGRPeakHoldDB = 0.0
         limiterGRPeakHoldRemaining = 0.0
         inputLPeakHoldLevel = 0.0
         inputRPeakHoldLevel = 0.0
+        agcOutputLPeakHoldLevel = 0.0
+        agcOutputRPeakHoldLevel = 0.0
         outputPeakHoldLevel = 0.0
         modulationPeakHoldLevel = 0.0
     }
@@ -4289,6 +4462,12 @@ private struct LevelsCardView: View {
                     label: "Stereo Input R", valueText: model.inputRText, level: model.inputRLevel,
                     peakLevel: model.inputRPeakHoldLevel, showsDBScale: true)
                 MeterRow(
+                    label: "AGC Out L", valueText: model.agcOutputLText, level: model.agcOutputLLevel,
+                    peakLevel: model.agcOutputLPeakHoldLevel, showsDBScale: true)
+                MeterRow(
+                    label: "AGC Out R", valueText: model.agcOutputRText, level: model.agcOutputRLevel,
+                    peakLevel: model.agcOutputRPeakHoldLevel, showsDBScale: true)
+                MeterRow(
                     label: "MPX Output", valueText: model.outputText, level: model.outputLevel,
                     peakLevel: model.outputPeakHoldLevel, showsDBScale: true)
                 MeterRow(
@@ -4558,7 +4737,7 @@ private struct ScopesCardView: View {
                 .frame(maxWidth: .infinity)
 
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("MPX FFT Analyzer").font(.subheadline).foregroundStyle(.secondary)
+                    Text(kMPXSpectrumWindowTitle).font(.subheadline).foregroundStyle(.secondary)
                     MPXSpectrumView(
                         dbBins: model.mpxSpectrumDB,
                         maxHz: model.mpxSpectrumMaxHz,
@@ -4615,6 +4794,22 @@ private struct ScopeView: View {
         }
         .frame(minHeight: 130, idealHeight: 150)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct MonitoringWindowHeader: View {
+    let title: String
+    let subtitle: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.title2.weight(.semibold))
+            Text(subtitle)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -5072,9 +5267,12 @@ private struct LevelsOnlyView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 16) {
+                MonitoringWindowHeader(
+                    title: kLevelsWindowTitle,
+                    subtitle: "Input, post-AGC, and output meters."
+                )
                 LevelsCardView(model: model)
-                LoudnessCardView(model: model)
             }
             .padding(20)
         }
@@ -5959,10 +6157,12 @@ struct ScopesOnlyView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            HStack {
-                Text("Scopes")
-                    .font(.title2.weight(.semibold))
-                Spacer()
+            HStack(alignment: .top) {
+                MonitoringWindowHeader(
+                    title: kScopesWindowTitle,
+                    subtitle: "Stereo input and MPX output waveforms."
+                )
+                Spacer(minLength: 16)
                 LabeledContent("Window") {
                     Picker(
                         "",
@@ -6017,11 +6217,10 @@ struct SpectrumOnlyView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            HStack {
-                Text("MPX Spectrum")
-                    .font(.title2.weight(.semibold))
-                Spacer()
-            }
+            MonitoringWindowHeader(
+                title: kMPXSpectrumWindowTitle,
+                subtitle: "Composite spectrum after stereo encoding."
+            )
             .padding(.horizontal)
 
             VStack(alignment: .leading, spacing: 6) {
@@ -6035,5 +6234,68 @@ struct SpectrumOnlyView: View {
             .padding()
         }
         .frame(minWidth: 600, minHeight: 300)
+    }
+}
+
+struct PreMPXSpectrumOnlyView: View {
+    @ObservedObject var model: StereoFoolViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            MonitoringWindowHeader(
+                title: kAudioSpectrumWindowTitle,
+                subtitle: "Stereo program spectrum before MPX encoding."
+            )
+
+            StereoPreMPXSpectrumView(
+                leftBins: model.preMPXSpectrumLeftDB,
+                rightBins: model.preMPXSpectrumRightDB,
+                maxHz: model.preMPXSpectrumMaxHz,
+                nyquistHz: model.preMPXSpectrumNyquistHz
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .padding()
+        .frame(minWidth: 600, minHeight: 300)
+    }
+}
+
+private struct StereoPreMPXSpectrumView: View {
+    let leftBins: [Float]
+    let rightBins: [Float]
+    let maxHz: Double
+    let nyquistHz: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Left")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                MPXSpectrumView(
+                    dbBins: leftBins,
+                    maxHz: maxHz,
+                    nyquistHz: nyquistHz
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Right")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                MPXSpectrumView(
+                    dbBins: rightBins,
+                    maxHz: maxHz,
+                    nyquistHz: nyquistHz
+                )
+            }
+
+            HStack {
+                Spacer()
+                Text("Tap: stereo program before MPX assembly")
+            }
+            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .foregroundStyle(.secondary)
+        }
     }
 }

@@ -20,6 +20,15 @@ final class AudioOutputEngine {
     private static let scopeHistorySeconds: Double = 0.25
     private static let meterUpdateIntervalFrames: Int = 512
 
+    struct InputTransportSnapshot {
+        let overflows: UInt64
+        let underflows: UInt64
+        let bufferedFrames: Int
+        let resampleMode: String
+        let ratioTrim: Double
+        let sampleStep: Double
+    }
+
     struct MeterSnapshot {
         var inputRMS: Float
         var inputPeak: Float
@@ -27,12 +36,18 @@ final class AudioOutputEngine {
         var inputRightRMS: Float
         var inputLeftPeak: Float
         var inputRightPeak: Float
+        var postAGCLeftRMS: Float
+        var postAGCRightRMS: Float
+        var postAGCLeftPeak: Float
+        var postAGCRightPeak: Float
         var outputRMS: Float
         var outputPeak: Float
         var deviationKHzPeak: Float
         var liveInputPeak: Float
         var liveInputLeftPeak: Float
         var liveInputRightPeak: Float
+        var livePostAGCLeftPeak: Float
+        var livePostAGCRightPeak: Float
         var liveOutputPeak: Float
         var liveDeviationKHzPeak: Float
         var agcDetectorDB: Float
@@ -196,12 +211,18 @@ final class AudioOutputEngine {
         inputRightRMS: 0.0,
         inputLeftPeak: 0.0,
         inputRightPeak: 0.0,
+        postAGCLeftRMS: 0.0,
+        postAGCRightRMS: 0.0,
+        postAGCLeftPeak: 0.0,
+        postAGCRightPeak: 0.0,
         outputRMS: 0.0,
         outputPeak: 0.0,
         deviationKHzPeak: 0.0,
         liveInputPeak: 0.0,
         liveInputLeftPeak: 0.0,
         liveInputRightPeak: 0.0,
+        livePostAGCLeftPeak: 0.0,
+        livePostAGCRightPeak: 0.0,
         liveOutputPeak: 0.0,
         liveDeviationKHzPeak: 0.0,
         agcDetectorDB: -120.0,
@@ -224,18 +245,29 @@ final class AudioOutputEngine {
     private var pendingInputPeak: Float = 0.0
     private var pendingInputLeftPeak: Float = 0.0
     private var pendingInputRightPeak: Float = 0.0
+    private var pendingPostAGCLeftPeak: Float = 0.0
+    private var pendingPostAGCRightPeak: Float = 0.0
     private var pendingOutputPeak: Float = 0.0
     private var lastMeterReadUptime: TimeInterval?
     private var inputScopeHistory: [Float] = []
     private var outputScopeHistory: [Float] = []
+    private var preMPXLeftHistory: [Float] = []
+    private var preMPXRightHistory: [Float] = []
     private var inputScopeWriteIndex: Int = 0
     private var outputScopeWriteIndex: Int = 0
+    private var preMPXWriteIndex: Int = 0
     private var inputScopeValidFrames: Int = 0
     private var outputScopeValidFrames: Int = 0
+    private var preMPXValidFrames: Int = 0
     private var inputScopeSampleRate: Double = 0.0
     private var outputScopeSampleRate: Double = 0.0
+    private var preMPXSampleRate: Double = 0.0
     private var monitorMPXLeftScratch: [Float] = []
     private var monitorMPXRightScratch: [Float] = []
+    private var postAGCLeftScratch: [Float] = []
+    private var postAGCRightScratch: [Float] = []
+    private var preMPXLeftScratch: [Float] = []
+    private var preMPXRightScratch: [Float] = []
     private var isShuttingDown = false
     private var frameCounter: Int = 0
     private var meteringEnabled: Bool = true
@@ -338,72 +370,125 @@ final class AudioOutputEngine {
                     if missing >= max(1, frames / 4) {
                         self.inputPrimed = false
                     }
-                    if self.outputMode == .monitorAudio {
-                        if self.generator.isProcessingBypassEnabled {
-                            self.generator.renderMonitorFromInputInPlace(
+                    _ = self.withAnalysisBuffers(frames: frames) { analysis in
+                        if self.outputMode == .monitorAudio {
+                            if self.generator.isProcessingBypassEnabled {
+                                self.generator.renderMonitorFromInputInPlace(
+                                    frameCount: frames,
+                                    left: leftData,
+                                    right: rightData,
+                                    analysis: analysis
+                                )
+                                self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
+                                let outMeter = Self.computeStereoMeter(
+                                    left: leftData, right: rightData, frameCount: frames)
+                                if throttled {
+                                    let agcMeter = Self.computeStereoMeter(
+                                        left: analysis.postAGCLeft!,
+                                        right: analysis.postAGCRight!,
+                                        frameCount: frames
+                                    )
+                                    self.updatePostAGCMeters(
+                                        leftRMS: agcMeter.leftRMS,
+                                        rightRMS: agcMeter.rightRMS,
+                                        leftPeak: agcMeter.leftPeak,
+                                        rightPeak: agcMeter.rightPeak
+                                    )
+                                    self.updateOutputMeters(
+                                        outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                    self.updateOutputImageMetrics(
+                                        correlation: outMeter.correlation,
+                                        sideToMidRatio: outMeter.sideToMidRatio
+                                    )
+                                    self.updateOutputScopeSnapshot(
+                                        left: leftData, right: rightData, frameCount: frames)
+                                    self.updatePreMPXHistory(
+                                        left: analysis.preMPXLeft!,
+                                        right: analysis.preMPXRight!,
+                                        frameCount: frames
+                                    )
+                                }
+                            } else {
+                                self.ensureMonitorScratchCapacity(frames: frames)
+                                self.monitorMPXLeftScratch.withUnsafeMutableBufferPointer { mpxL in
+                                    self.monitorMPXRightScratch.withUnsafeMutableBufferPointer { mpxR in
+                                        guard let mpxLeft = mpxL.baseAddress,
+                                            let mpxRight = mpxR.baseAddress
+                                        else { return }
+                                        self.generator.renderFromInputAndMonitorInPlace(
+                                            frameCount: frames,
+                                            left: leftData,
+                                            right: rightData,
+                                            mpxLeft: mpxLeft,
+                                            mpxRight: mpxRight,
+                                            analysis: analysis
+                                        )
+                                        self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
+                                        let outMeter = Self.computeStereoMeter(
+                                            left: mpxLeft, right: mpxRight, frameCount: frames)
+                                        if throttled {
+                                            let agcMeter = Self.computeStereoMeter(
+                                                left: analysis.postAGCLeft!,
+                                                right: analysis.postAGCRight!,
+                                                frameCount: frames
+                                            )
+                                            self.updatePostAGCMeters(
+                                                leftRMS: agcMeter.leftRMS,
+                                                rightRMS: agcMeter.rightRMS,
+                                                leftPeak: agcMeter.leftPeak,
+                                                rightPeak: agcMeter.rightPeak
+                                            )
+                                            self.updateOutputMeters(
+                                                outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                            self.updateOutputImageMetrics(
+                                                correlation: outMeter.correlation,
+                                                sideToMidRatio: outMeter.sideToMidRatio
+                                            )
+                                            self.updateOutputScopeSnapshot(
+                                                left: mpxLeft, right: mpxRight, frameCount: frames)
+                                            self.updatePreMPXHistory(
+                                                left: analysis.preMPXLeft!,
+                                                right: analysis.preMPXRight!,
+                                                frameCount: frames
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            self.generator.renderFromInputInPlace(
                                 frameCount: frames,
                                 left: leftData,
-                                right: rightData
+                                right: rightData,
+                                analysis: analysis
                             )
-                            self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
                             let outMeter = Self.computeStereoMeter(
                                 left: leftData, right: rightData, frameCount: frames)
                             if throttled {
-                                self.updateOutputMeters(
-                                    outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                let agcMeter = Self.computeStereoMeter(
+                                    left: analysis.postAGCLeft!,
+                                    right: analysis.postAGCRight!,
+                                    frameCount: frames
+                                )
+                                self.updatePostAGCMeters(
+                                    leftRMS: agcMeter.leftRMS,
+                                    rightRMS: agcMeter.rightRMS,
+                                    leftPeak: agcMeter.leftPeak,
+                                    rightPeak: agcMeter.rightPeak
+                                )
+                                self.updateOutputMeters(outputRMS: outMeter.rms, outputPeak: outMeter.peak)
                                 self.updateOutputImageMetrics(
                                     correlation: outMeter.correlation,
                                     sideToMidRatio: outMeter.sideToMidRatio
                                 )
                                 self.updateOutputScopeSnapshot(
                                     left: leftData, right: rightData, frameCount: frames)
+                                self.updatePreMPXHistory(
+                                    left: analysis.preMPXLeft!,
+                                    right: analysis.preMPXRight!,
+                                    frameCount: frames
+                                )
                             }
-                        } else {
-                            self.ensureMonitorScratchCapacity(frames: frames)
-                            self.monitorMPXLeftScratch.withUnsafeMutableBufferPointer { mpxL in
-                                self.monitorMPXRightScratch.withUnsafeMutableBufferPointer { mpxR in
-                                    guard let mpxLeft = mpxL.baseAddress,
-                                        let mpxRight = mpxR.baseAddress
-                                    else { return }
-                                    self.generator.renderFromInputAndMonitorInPlace(
-                                        frameCount: frames,
-                                        left: leftData,
-                                        right: rightData,
-                                        mpxLeft: mpxLeft,
-                                        mpxRight: mpxRight
-                                    )
-                                    self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
-                                    let outMeter = Self.computeStereoMeter(
-                                        left: mpxLeft, right: mpxRight, frameCount: frames)
-                                    if throttled {
-                                        self.updateOutputMeters(
-                                            outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                                        self.updateOutputImageMetrics(
-                                            correlation: outMeter.correlation,
-                                            sideToMidRatio: outMeter.sideToMidRatio
-                                        )
-                                        self.updateOutputScopeSnapshot(
-                                            left: mpxLeft, right: mpxRight, frameCount: frames)
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        self.generator.renderFromInputInPlace(
-                            frameCount: frames,
-                            left: leftData,
-                            right: rightData
-                        )
-                        let outMeter = Self.computeStereoMeter(
-                            left: leftData, right: rightData, frameCount: frames)
-                        if throttled {
-                            self.updateOutputMeters(outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                            self.updateOutputImageMetrics(
-                                correlation: outMeter.correlation,
-                                sideToMidRatio: outMeter.sideToMidRatio
-                            )
-                            self.updateOutputScopeSnapshot(
-                                left: leftData, right: rightData, frameCount: frames)
                         }
                     }
                     if throttled, !self.useInputSource {
@@ -411,72 +496,125 @@ final class AudioOutputEngine {
                             left: leftData, right: rightData, frameCount: frames)
                     }
                 } else {
-                    if self.outputMode == .monitorAudio {
-                        if self.generator.isProcessingBypassEnabled {
-                            self.generator.renderMonitorToneNonInterleaved(
+                    _ = self.withAnalysisBuffers(frames: frames) { analysis in
+                        if self.outputMode == .monitorAudio {
+                            if self.generator.isProcessingBypassEnabled {
+                                self.generator.renderMonitorToneNonInterleaved(
+                                    frameCount: frames,
+                                    left: leftData,
+                                    right: rightData,
+                                    analysis: analysis
+                                )
+                                self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
+                                let outMeter = Self.computeStereoMeter(
+                                    left: leftData, right: rightData, frameCount: frames)
+                                if throttled {
+                                    let agcMeter = Self.computeStereoMeter(
+                                        left: analysis.postAGCLeft!,
+                                        right: analysis.postAGCRight!,
+                                        frameCount: frames
+                                    )
+                                    self.updatePostAGCMeters(
+                                        leftRMS: agcMeter.leftRMS,
+                                        rightRMS: agcMeter.rightRMS,
+                                        leftPeak: agcMeter.leftPeak,
+                                        rightPeak: agcMeter.rightPeak
+                                    )
+                                    self.updateOutputMeters(
+                                        outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                    self.updateOutputImageMetrics(
+                                        correlation: outMeter.correlation,
+                                        sideToMidRatio: outMeter.sideToMidRatio
+                                    )
+                                    self.updateOutputScopeSnapshot(
+                                        left: leftData, right: rightData, frameCount: frames)
+                                    self.updatePreMPXHistory(
+                                        left: analysis.preMPXLeft!,
+                                        right: analysis.preMPXRight!,
+                                        frameCount: frames
+                                    )
+                                }
+                            } else {
+                                self.ensureMonitorScratchCapacity(frames: frames)
+                                self.monitorMPXLeftScratch.withUnsafeMutableBufferPointer { mpxL in
+                                    self.monitorMPXRightScratch.withUnsafeMutableBufferPointer { mpxR in
+                                        guard let mpxLeft = mpxL.baseAddress,
+                                            let mpxRight = mpxR.baseAddress
+                                        else { return }
+                                        self.generator.renderToneAndMonitorNonInterleaved(
+                                            frameCount: frames,
+                                            left: leftData,
+                                            right: rightData,
+                                            mpxLeft: mpxLeft,
+                                            mpxRight: mpxRight,
+                                            analysis: analysis
+                                        )
+                                        self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
+                                        let outMeter = Self.computeStereoMeter(
+                                            left: mpxLeft, right: mpxRight, frameCount: frames)
+                                        if throttled {
+                                            let agcMeter = Self.computeStereoMeter(
+                                                left: analysis.postAGCLeft!,
+                                                right: analysis.postAGCRight!,
+                                                frameCount: frames
+                                            )
+                                            self.updatePostAGCMeters(
+                                                leftRMS: agcMeter.leftRMS,
+                                                rightRMS: agcMeter.rightRMS,
+                                                leftPeak: agcMeter.leftPeak,
+                                                rightPeak: agcMeter.rightPeak
+                                            )
+                                            self.updateOutputMeters(
+                                                outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                            self.updateOutputImageMetrics(
+                                                correlation: outMeter.correlation,
+                                                sideToMidRatio: outMeter.sideToMidRatio
+                                            )
+                                            self.updateOutputScopeSnapshot(
+                                                left: mpxLeft, right: mpxRight, frameCount: frames)
+                                            self.updatePreMPXHistory(
+                                                left: analysis.preMPXLeft!,
+                                                right: analysis.preMPXRight!,
+                                                frameCount: frames
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            self.generator.renderNonInterleaved(
                                 frameCount: frames,
                                 left: leftData,
-                                right: rightData
+                                right: rightData,
+                                analysis: analysis
                             )
-                            self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
                             let outMeter = Self.computeStereoMeter(
                                 left: leftData, right: rightData, frameCount: frames)
                             if throttled {
-                                self.updateOutputMeters(
-                                    outputRMS: outMeter.rms, outputPeak: outMeter.peak)
+                                let agcMeter = Self.computeStereoMeter(
+                                    left: analysis.postAGCLeft!,
+                                    right: analysis.postAGCRight!,
+                                    frameCount: frames
+                                )
+                                self.updatePostAGCMeters(
+                                    leftRMS: agcMeter.leftRMS,
+                                    rightRMS: agcMeter.rightRMS,
+                                    leftPeak: agcMeter.leftPeak,
+                                    rightPeak: agcMeter.rightPeak
+                                )
+                                self.updateOutputMeters(outputRMS: outMeter.rms, outputPeak: outMeter.peak)
                                 self.updateOutputImageMetrics(
                                     correlation: outMeter.correlation,
                                     sideToMidRatio: outMeter.sideToMidRatio
                                 )
                                 self.updateOutputScopeSnapshot(
                                     left: leftData, right: rightData, frameCount: frames)
+                                self.updatePreMPXHistory(
+                                    left: analysis.preMPXLeft!,
+                                    right: analysis.preMPXRight!,
+                                    frameCount: frames
+                                )
                             }
-                        } else {
-                            self.ensureMonitorScratchCapacity(frames: frames)
-                            self.monitorMPXLeftScratch.withUnsafeMutableBufferPointer { mpxL in
-                                self.monitorMPXRightScratch.withUnsafeMutableBufferPointer { mpxR in
-                                    guard let mpxLeft = mpxL.baseAddress,
-                                        let mpxRight = mpxR.baseAddress
-                                    else { return }
-                                    self.generator.renderToneAndMonitorNonInterleaved(
-                                        frameCount: frames,
-                                        left: leftData,
-                                        right: rightData,
-                                        mpxLeft: mpxLeft,
-                                        mpxRight: mpxRight
-                                    )
-                                    self.updateMonitorLoudness(left: leftData, right: rightData, frameCount: frames)
-                                    let outMeter = Self.computeStereoMeter(
-                                        left: mpxLeft, right: mpxRight, frameCount: frames)
-                                    if throttled {
-                                        self.updateOutputMeters(
-                                            outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                                        self.updateOutputImageMetrics(
-                                            correlation: outMeter.correlation,
-                                            sideToMidRatio: outMeter.sideToMidRatio
-                                        )
-                                        self.updateOutputScopeSnapshot(
-                                            left: mpxLeft, right: mpxRight, frameCount: frames)
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        self.generator.renderNonInterleaved(
-                            frameCount: frames,
-                            left: leftData,
-                            right: rightData
-                        )
-                        let outMeter = Self.computeStereoMeter(
-                            left: leftData, right: rightData, frameCount: frames)
-                        if throttled {
-                            self.updateOutputMeters(outputRMS: outMeter.rms, outputPeak: outMeter.peak)
-                            self.updateOutputImageMetrics(
-                                correlation: outMeter.correlation,
-                                sideToMidRatio: outMeter.sideToMidRatio
-                            )
-                            self.updateOutputScopeSnapshot(
-                                left: leftData, right: rightData, frameCount: frames)
                         }
                     }
                     if throttled, !self.useInputSource {
@@ -535,6 +673,8 @@ final class AudioOutputEngine {
         pendingInputPeak = 0.0
         pendingInputLeftPeak = 0.0
         pendingInputRightPeak = 0.0
+        pendingPostAGCLeftPeak = 0.0
+        pendingPostAGCRightPeak = 0.0
         pendingOutputPeak = 0.0
         lastMeterReadUptime = nil
         runtimeConfigLock.lock()
@@ -546,6 +686,10 @@ final class AudioOutputEngine {
         meterSnapshot.inputRightRMS = 0.0
         meterSnapshot.inputLeftPeak = 0.0
         meterSnapshot.inputRightPeak = 0.0
+        meterSnapshot.postAGCLeftRMS = 0.0
+        meterSnapshot.postAGCRightRMS = 0.0
+        meterSnapshot.postAGCLeftPeak = 0.0
+        meterSnapshot.postAGCRightPeak = 0.0
         meterSnapshot.outputRMS = 0.0
         meterSnapshot.outputPeak = 0.0
         meterSnapshot.deviationKHzPeak = 0.0
@@ -563,6 +707,8 @@ final class AudioOutputEngine {
         meterSnapshot.liveInputPeak = 0.0
         meterSnapshot.liveInputLeftPeak = 0.0
         meterSnapshot.liveInputRightPeak = 0.0
+        meterSnapshot.livePostAGCLeftPeak = 0.0
+        meterSnapshot.livePostAGCRightPeak = 0.0
         meterSnapshot.liveOutputPeak = 0.0
         meterSnapshot.liveDeviationKHzPeak = 0.0
         meterSnapshot.loudnessAvailable = false
@@ -572,14 +718,23 @@ final class AudioOutputEngine {
         loudnessAnalyzer?.reset()
         inputScopeHistory = []
         outputScopeHistory = []
+        preMPXLeftHistory = []
+        preMPXRightHistory = []
         inputScopeWriteIndex = 0
         outputScopeWriteIndex = 0
+        preMPXWriteIndex = 0
         inputScopeValidFrames = 0
         outputScopeValidFrames = 0
+        preMPXValidFrames = 0
         inputScopeSampleRate = 0.0
         outputScopeSampleRate = 0.0
+        preMPXSampleRate = 0.0
         monitorMPXLeftScratch = []
         monitorMPXRightScratch = []
+        postAGCLeftScratch = []
+        postAGCRightScratch = []
+        preMPXLeftScratch = []
+        preMPXRightScratch = []
         meterLock.unlock()
         isShuttingDown = false
     }
@@ -648,13 +803,64 @@ final class AudioOutputEngine {
         }
     }
 
+    private func ensureAnalysisScratchCapacity(frames: Int) {
+        guard frames > 0 else { return }
+        if postAGCLeftScratch.count < frames {
+            postAGCLeftScratch = Array(repeating: 0.0, count: frames)
+        }
+        if postAGCRightScratch.count < frames {
+            postAGCRightScratch = Array(repeating: 0.0, count: frames)
+        }
+        if preMPXLeftScratch.count < frames {
+            preMPXLeftScratch = Array(repeating: 0.0, count: frames)
+        }
+        if preMPXRightScratch.count < frames {
+            preMPXRightScratch = Array(repeating: 0.0, count: frames)
+        }
+    }
+
     private func preAllocateBuffers(maxFrames: Int) {
         let safeFrames = max(512, maxFrames)
         monitorMPXLeftScratch = [Float](repeating: 0.0, count: safeFrames)
         monitorMPXRightScratch = [Float](repeating: 0.0, count: safeFrames)
+        postAGCLeftScratch = [Float](repeating: 0.0, count: safeFrames)
+        postAGCRightScratch = [Float](repeating: 0.0, count: safeFrames)
+        preMPXLeftScratch = [Float](repeating: 0.0, count: safeFrames)
+        preMPXRightScratch = [Float](repeating: 0.0, count: safeFrames)
         inputConversionBuffer = [Float](repeating: 0.0, count: safeFrames)
         inputConversionBufferStereoL = [Float](repeating: 0.0, count: safeFrames)
         inputConversionBufferStereoR = [Float](repeating: 0.0, count: safeFrames)
+    }
+
+    private func withAnalysisBuffers<R>(
+        frames: Int,
+        _ body: (MPXGenerator.AnalysisBuffers) -> R
+    ) -> R? {
+        guard frames > 0 else { return nil }
+        ensureAnalysisScratchCapacity(frames: frames)
+        return postAGCLeftScratch.withUnsafeMutableBufferPointer { postL in
+            postAGCRightScratch.withUnsafeMutableBufferPointer { postR in
+                preMPXLeftScratch.withUnsafeMutableBufferPointer { preL in
+                    preMPXRightScratch.withUnsafeMutableBufferPointer { preR in
+                        guard let postLeft = postL.baseAddress,
+                            let postRight = postR.baseAddress,
+                            let preLeft = preL.baseAddress,
+                            let preRight = preR.baseAddress
+                        else {
+                            return nil
+                        }
+                        return body(
+                            MPXGenerator.AnalysisBuffers(
+                                postAGCLeft: postLeft,
+                                postAGCRight: postRight,
+                                preMPXLeft: preLeft,
+                                preMPXRight: preRight
+                            )
+                        )
+                    }
+                }
+            }
+        }
     }
 
     private func ensureInputConversionCapacity(frames: Int) {
@@ -992,6 +1198,10 @@ final class AudioOutputEngine {
         let pendingInputLeft = pendingInputLeftPeak.isFinite ? max(0.0, pendingInputLeftPeak) : 0.0
         let pendingInputRight =
             pendingInputRightPeak.isFinite ? max(0.0, pendingInputRightPeak) : 0.0
+        let pendingPostAGCLeft =
+            pendingPostAGCLeftPeak.isFinite ? max(0.0, pendingPostAGCLeftPeak) : 0.0
+        let pendingPostAGCRight =
+            pendingPostAGCRightPeak.isFinite ? max(0.0, pendingPostAGCRightPeak) : 0.0
         let pendingOutput = pendingOutputPeak.isFinite ? max(0.0, pendingOutputPeak) : 0.0
         let decayedInput =
             meterSnapshot.inputPeak.isFinite ? max(0.0, meterSnapshot.inputPeak * decayFactor) : 0.0
@@ -1001,12 +1211,20 @@ final class AudioOutputEngine {
         let decayedInputRight =
             meterSnapshot.inputRightPeak.isFinite
             ? max(0.0, meterSnapshot.inputRightPeak * decayFactor) : 0.0
+        let decayedPostAGCLeft =
+            meterSnapshot.postAGCLeftPeak.isFinite
+            ? max(0.0, meterSnapshot.postAGCLeftPeak * decayFactor) : 0.0
+        let decayedPostAGCRight =
+            meterSnapshot.postAGCRightPeak.isFinite
+            ? max(0.0, meterSnapshot.postAGCRightPeak * decayFactor) : 0.0
         let decayedOutput =
             meterSnapshot.outputPeak.isFinite
             ? max(0.0, meterSnapshot.outputPeak * decayFactor) : 0.0
         let inputPeak = max(pendingInput, decayedInput)
         let inputLeftPeak = max(pendingInputLeft, decayedInputLeft)
         let inputRightPeak = max(pendingInputRight, decayedInputRight)
+        let postAGCLeftPeak = max(pendingPostAGCLeft, decayedPostAGCLeft)
+        let postAGCRightPeak = max(pendingPostAGCRight, decayedPostAGCRight)
         let outputPeak = max(pendingOutput, decayedOutput)
         meterSnapshot.inputRMS =
             meterSnapshot.inputRMS.isFinite ? max(0.0, meterSnapshot.inputRMS) : 0.0
@@ -1014,16 +1232,24 @@ final class AudioOutputEngine {
             meterSnapshot.inputLeftRMS.isFinite ? max(0.0, meterSnapshot.inputLeftRMS) : 0.0
         meterSnapshot.inputRightRMS =
             meterSnapshot.inputRightRMS.isFinite ? max(0.0, meterSnapshot.inputRightRMS) : 0.0
+        meterSnapshot.postAGCLeftRMS =
+            meterSnapshot.postAGCLeftRMS.isFinite ? max(0.0, meterSnapshot.postAGCLeftRMS) : 0.0
+        meterSnapshot.postAGCRightRMS =
+            meterSnapshot.postAGCRightRMS.isFinite ? max(0.0, meterSnapshot.postAGCRightRMS) : 0.0
         meterSnapshot.outputRMS =
             meterSnapshot.outputRMS.isFinite ? max(0.0, meterSnapshot.outputRMS) : 0.0
         meterSnapshot.inputPeak = inputPeak
         meterSnapshot.inputLeftPeak = inputLeftPeak
         meterSnapshot.inputRightPeak = inputRightPeak
+        meterSnapshot.postAGCLeftPeak = postAGCLeftPeak
+        meterSnapshot.postAGCRightPeak = postAGCRightPeak
         meterSnapshot.outputPeak = outputPeak
         meterSnapshot.deviationKHzPeak = outputPeak * targetDeviationKHz
         meterSnapshot.liveInputPeak = pendingInput
         meterSnapshot.liveInputLeftPeak = pendingInputLeft
         meterSnapshot.liveInputRightPeak = pendingInputRight
+        meterSnapshot.livePostAGCLeftPeak = pendingPostAGCLeft
+        meterSnapshot.livePostAGCRightPeak = pendingPostAGCRight
         meterSnapshot.liveOutputPeak = pendingOutput
         meterSnapshot.liveDeviationKHzPeak = pendingOutput * targetDeviationKHz
         if let loudness = loudnessAnalyzer?.snapshot() {
@@ -1040,6 +1266,8 @@ final class AudioOutputEngine {
         pendingInputPeak = 0.0
         pendingInputLeftPeak = 0.0
         pendingInputRightPeak = 0.0
+        pendingPostAGCLeftPeak = 0.0
+        pendingPostAGCRightPeak = 0.0
         pendingOutputPeak = 0.0
         let snapshot = meterSnapshot
         meterLock.unlock()
@@ -1092,12 +1320,49 @@ final class AudioOutputEngine {
         return (count, sr)
     }
 
+    func preMPXStereoWindow(
+        intoLeft leftDestination: inout [Float],
+        right rightDestination: inout [Float],
+        frameCount: Int
+    ) -> (count: Int, sampleRate: Double) {
+        meterLock.lock()
+        let sr = max(1_000.0, preMPXSampleRate)
+        let count = Self.renderRawWindow(
+            from: preMPXLeftHistory,
+            writeIndex: preMPXWriteIndex,
+            validFrames: preMPXValidFrames,
+            frameCount: frameCount,
+            into: &leftDestination
+        )
+        _ = Self.renderRawWindow(
+            from: preMPXRightHistory,
+            writeIndex: preMPXWriteIndex,
+            validFrames: preMPXValidFrames,
+            frameCount: count,
+            into: &rightDestination
+        )
+        meterLock.unlock()
+        return (count, sr)
+    }
+
     var sourceDescription: String {
         useInputSource ? "input" : "tone"
     }
 
     var deviceRoutingNote: String? {
         routingNote
+    }
+
+    var transportSnapshot: InputTransportSnapshot? {
+        guard let snapshot = inputRing?.transportSnapshot() else { return nil }
+        return InputTransportSnapshot(
+            overflows: snapshot.overflows,
+            underflows: snapshot.underflows,
+            bufferedFrames: snapshot.bufferedFrames,
+            resampleMode: snapshot.resampleMode,
+            ratioTrim: snapshot.ratioTrim,
+            sampleStep: snapshot.sampleStep
+        )
     }
 
     private func updateMeters(
@@ -1113,12 +1378,18 @@ final class AudioOutputEngine {
             inputRightRMS: inputRMS,
             inputLeftPeak: inputPeak,
             inputRightPeak: inputPeak,
+            postAGCLeftRMS: 0.0,
+            postAGCRightRMS: 0.0,
+            postAGCLeftPeak: 0.0,
+            postAGCRightPeak: 0.0,
             outputRMS: outputRMS,
             outputPeak: outputPeak,
             deviationKHzPeak: outputPeak * targetDeviationKHz,
             liveInputPeak: inputPeak,
             liveInputLeftPeak: inputPeak,
             liveInputRightPeak: inputPeak,
+            livePostAGCLeftPeak: 0.0,
+            livePostAGCRightPeak: 0.0,
             liveOutputPeak: outputPeak,
             liveDeviationKHzPeak: outputPeak * targetDeviationKHz,
             agcDetectorDB: agc.detectorDB,
@@ -1162,6 +1433,24 @@ final class AudioOutputEngine {
         }
         if safeRightPeak > pendingInputRightPeak {
             pendingInputRightPeak = safeRightPeak
+        }
+    }
+
+    private func updatePostAGCMeters(
+        leftRMS: Float,
+        rightRMS: Float,
+        leftPeak: Float,
+        rightPeak: Float
+    ) {
+        meterSnapshot.postAGCLeftRMS = leftRMS.isFinite ? max(0.0, leftRMS) : 0.0
+        meterSnapshot.postAGCRightRMS = rightRMS.isFinite ? max(0.0, rightRMS) : 0.0
+        let safeLeftPeak = leftPeak.isFinite ? max(0.0, leftPeak) : 0.0
+        let safeRightPeak = rightPeak.isFinite ? max(0.0, rightPeak) : 0.0
+        if safeLeftPeak > pendingPostAGCLeftPeak {
+            pendingPostAGCLeftPeak = safeLeftPeak
+        }
+        if safeRightPeak > pendingPostAGCRightPeak {
+            pendingPostAGCRightPeak = safeRightPeak
         }
     }
 
@@ -1247,6 +1536,23 @@ final class AudioOutputEngine {
         )
     }
 
+    private func updatePreMPXHistory(
+        left: UnsafePointer<Float>,
+        right: UnsafePointer<Float>,
+        frameCount: Int
+    ) {
+        guard frameCount > 0 else { return }
+        appendStereoRawSamples(
+            left: left,
+            right: right,
+            frameCount: frameCount,
+            leftHistory: &preMPXLeftHistory,
+            rightHistory: &preMPXRightHistory,
+            writeIndex: &preMPXWriteIndex,
+            validFrames: &preMPXValidFrames
+        )
+    }
+
     private func configureScopeHistory(renderRate: Double, inputRate: Double?) {
         let safeRenderRate = max(1_000.0, renderRate)
         let safeInputRate = max(1_000.0, inputRate ?? renderRate)
@@ -1260,6 +1566,11 @@ final class AudioOutputEngine {
         outputScopeWriteIndex = 0
         outputScopeValidFrames = 0
         outputScopeSampleRate = safeRenderRate
+        preMPXLeftHistory = Array(repeating: 0.0, count: outputCapacity)
+        preMPXRightHistory = Array(repeating: 0.0, count: outputCapacity)
+        preMPXWriteIndex = 0
+        preMPXValidFrames = 0
+        preMPXSampleRate = safeRenderRate
 
         inputScopeHistory = Array(repeating: 0.0, count: inputCapacity)
         inputScopeWriteIndex = 0
@@ -1288,6 +1599,29 @@ final class AudioOutputEngine {
         }
         writeIndex = idx
         validFrames = min(history.count, validFrames + frameCount)
+    }
+
+    private func appendStereoRawSamples(
+        left: UnsafePointer<Float>,
+        right: UnsafePointer<Float>,
+        frameCount: Int,
+        leftHistory: inout [Float],
+        rightHistory: inout [Float],
+        writeIndex: inout Int,
+        validFrames: inout Int
+    ) {
+        guard !leftHistory.isEmpty, leftHistory.count == rightHistory.count, frameCount > 0 else { return }
+        var idx = writeIndex
+        for i in 0..<frameCount {
+            leftHistory[idx] = Self.clampf(left[i], -1.0, 1.0)
+            rightHistory[idx] = Self.clampf(right[i], -1.0, 1.0)
+            idx += 1
+            if idx >= leftHistory.count {
+                idx = 0
+            }
+        }
+        writeIndex = idx
+        validFrames = min(leftHistory.count, validFrames + frameCount)
     }
 
     private func appendMonoScopeSamples(
