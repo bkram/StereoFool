@@ -113,10 +113,9 @@ Loose ends:
 - widener, mono bass, Orbass, and multiband interaction still needs broader preset-level validation on real program material beyond the current focused sweep
 - pilot/RDS/headroom telemetry exists, but there is still no explicit deviation estimator or exciter-calibration workflow
 - some real-time and monitoring paths still need performance cleanup:
-  - input ring buffer locking
   - per-callback capture-buffer allocation in some fallback paths
-  - FFT/spectrum scratch reuse
-  - RDS wall-clock and string preparation work that should move off the render path
+  - spectrum snapshot/buffer reuse beyond the current cached FFT path
+  - RDS string preparation work that should move further off the render path
 
 Practical implication:
 
@@ -345,9 +344,9 @@ These are the current practical defaults after the recent gain-structure and fin
 
 The next quality improvement should be:
 
-1. validate live-apply behavior and restart-required boundaries on difficult real material and ordinary operator edits
-2. continue only small verifier-backed final-stage cleanups
-3. keep validating stereo/image presets on difficult real material instead of expanding them blindly
+1. remove the remaining per-callback heap allocations from the capture/input conversion paths
+2. do a release smoke pass for live-apply versus restart-required settings on difficult real material
+3. add stronger config/input validation in `AppConfig`
 
 This keeps the plan focused on the actual remaining work instead of repeating steps that are already done.
 
@@ -357,25 +356,23 @@ This section merges the actionable items that used to be split across `bugs.md` 
 
 ### Release-blocking / first fixes
 
-1. Replace the lock-based input ring buffer with a lock-free single-producer/single-consumer design.
-2. Remove per-callback heap allocations from the capture/input conversion paths.
-3. Move RDS wall-clock and calendar work off the audio render path.
-4. Cache FFT/spectrum setup and scratch buffers instead of rebuilding them every refresh.
-5. Add stronger config/input validation in `AppConfig`.
-6. Add a smoke-test pass for live-apply vs restart-required settings so MPX does not stop unexpectedly during ordinary DSP edits.
+1. Remove per-callback heap allocations from the capture/input conversion paths.
+2. Add stronger config/input validation in `AppConfig`.
+3. Add a smoke-test pass for live-apply vs restart-required settings so MPX does not stop unexpectedly during ordinary DSP edits.
 
 ### Current sprint tasks
 
-1. Validate Orbass, mono bass, widener, and multiband interaction on difficult real material.
+1. Remove per-callback heap allocations from the capture/input conversion paths.
 2. Do a release smoke pass for the new live-update path and restart-only settings behavior.
-3. Keep refining the calibration workflow only where real operator friction still exists.
+3. Validate Orbass, mono bass, widener, and multiband interaction on difficult real material.
+4. Keep refining the calibration workflow only where real operator friction still exists.
 
 ### Medium-term maintainability
 
 1. Reduce duplicated filter configuration logic in the biquad/crossover helpers.
 2. Replace undocumented DSP magic numbers with named constants and brief references.
 3. Simplify and test the RDS group scheduler modes more deterministically.
-4. Add an XCTest suite for MPX generation, filters, config round-trip, and ring-buffer behavior.
+4. Expand the XCTest suite beyond ring-buffer behavior into MPX generation, filters, and config round-trip coverage.
 5. Split the monolithic SwiftUI view model into smaller focused view models over time.
 6. Loosen tight coupling between the audio engine and concrete generator types.
 7. Add basic dependency-injection seams for system-facing services such as now-playing and device discovery.
@@ -399,10 +396,17 @@ The following items represent opportunities to improve CPU efficiency while main
 4. **Stereo image processing** - Optimize mid/side calculations with vDSP operations
 5. **Memory access patterns** - Ensure cache-friendly access patterns in tight DSP loops
 6. **Conditional computation** - Skip expensive computations (scopes, spectrum) when corresponding views are hidden
-7. **Buffer reuse** - Expand buffer reuse beyond current implementation to eliminate all per-call allocations
+7. **Buffer reuse** - Expand buffer reuse beyond the current spectrum snapshot path to eliminate all remaining per-call allocations
 8. **Approximation where appropriate** - Use fast math approximations where precision loss is inaudible (e.g., reciprocal square root)
 
 These optimizations should be approached incrementally with verification using the offline verifier to ensure no regression in MPX quality or compliance.
+
+Current remaining performance focus:
+
+- further vDSP utilization in DSP processing loops
+- throttling scope updates when the monitoring view is not visible
+- additional RDS string preparation caching
+- ensuring cache-friendly access patterns in tight DSP loops
 
 ## References
 

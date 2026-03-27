@@ -1,82 +1,72 @@
+import Atomics
 import Foundation
 
 final class StereoInputRingBuffer {
     private let capacity: Int
+    private let mask: Int
     private var left: [Float]
     private var right: [Float]
     private var readScratchLeft: [Float]
     private var readScratchRight: [Float]
-    private var readIndex: Int = 0
-    private var writeIndex: Int = 0
-    private var count: Int = 0
     private var lastLeft: Float = 0.0
     private var lastRight: Float = 0.0
     private var resamplePhase: Double = 0.0
     private var resampleRatioTrim: Double = 0.0
-    private var overflowCount: UInt64 = 0
-    private var underflowCount: UInt64 = 0
-    private let lock = NSLock()
+    private let readCursor = ManagedAtomic<UInt64>(0)
+    private let writeCursor = ManagedAtomic<UInt64>(0)
+    private let overflowCount = ManagedAtomic<UInt64>(0)
+    private let underflowCount = ManagedAtomic<UInt64>(0)
+    private let consumerReadInProgress = ManagedAtomic<Bool>(false)
+    private let producerWriteInProgress = ManagedAtomic<Bool>(false)
 
     init(capacityFrames: Int) {
-        let n = max(512, capacityFrames)
-        self.capacity = n
-        self.left = Array(repeating: 0.0, count: n)
-        self.right = Array(repeating: 0.0, count: n)
-        self.readScratchLeft = Array(repeating: 0.0, count: min(4096, n))
-        self.readScratchRight = Array(repeating: 0.0, count: min(4096, n))
+        let requested = max(512, capacityFrames)
+        let roundedCapacity = Self.nextPowerOfTwo(requested)
+        self.capacity = roundedCapacity
+        self.mask = roundedCapacity - 1
+        self.left = Array(repeating: 0.0, count: roundedCapacity)
+        self.right = Array(repeating: 0.0, count: roundedCapacity)
+        self.readScratchLeft = Array(repeating: 0.0, count: roundedCapacity)
+        self.readScratchRight = Array(repeating: 0.0, count: roundedCapacity)
     }
 
     func write(
         left inLeft: UnsafePointer<Float>, right inRight: UnsafePointer<Float>, frameCount: Int
     ) {
         guard frameCount > 0 else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        dropOldestIfNeeded(framesToWrite: frameCount)
-        var remaining = frameCount
-        var srcOffset = 0
-        while remaining > 0 {
-            let chunk = min(remaining, capacity - writeIndex)
-            left.withUnsafeMutableBufferPointer { dstL in
-                right.withUnsafeMutableBufferPointer { dstR in
-                    let dl = dstL.baseAddress!.advanced(by: writeIndex)
-                    let dr = dstR.baseAddress!.advanced(by: writeIndex)
-                    dl.update(from: inLeft.advanced(by: srcOffset), count: chunk)
-                    dr.update(from: inRight.advanced(by: srcOffset), count: chunk)
-                }
-            }
-            writeIndex = (writeIndex + chunk) % capacity
-            count += chunk
-            srcOffset += chunk
-            remaining -= chunk
-        }
+        producerWriteInProgress.store(true, ordering: .releasing)
+        defer { producerWriteInProgress.store(false, ordering: .releasing) }
+
+        let plan = planWrite(frameCount: frameCount)
+        guard plan.framesToWrite > 0 else { return }
+        copyStereoIntoRing(
+            left: inLeft.advanced(by: plan.sourceOffset),
+            right: inRight.advanced(by: plan.sourceOffset),
+            frameCount: plan.framesToWrite,
+            startCursor: plan.startCursor
+        )
+        writeCursor.store(
+            plan.startCursor &+ UInt64(plan.framesToWrite),
+            ordering: .releasing
+        )
     }
 
     func writeMono(mono inMono: UnsafePointer<Float>, frameCount: Int) {
         guard frameCount > 0 else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        dropOldestIfNeeded(framesToWrite: frameCount)
-        var remaining = frameCount
-        var srcOffset = 0
-        while remaining > 0 {
-            let chunk = min(remaining, capacity - writeIndex)
-            left.withUnsafeMutableBufferPointer { dstL in
-                right.withUnsafeMutableBufferPointer { dstR in
-                    let dl = dstL.baseAddress!.advanced(by: writeIndex)
-                    let dr = dstR.baseAddress!.advanced(by: writeIndex)
-                    for i in 0..<chunk {
-                        let s = inMono[srcOffset + i]
-                        dl[i] = s
-                        dr[i] = s
-                    }
-                }
-            }
-            writeIndex = (writeIndex + chunk) % capacity
-            count += chunk
-            srcOffset += chunk
-            remaining -= chunk
-        }
+        producerWriteInProgress.store(true, ordering: .releasing)
+        defer { producerWriteInProgress.store(false, ordering: .releasing) }
+
+        let plan = planWrite(frameCount: frameCount)
+        guard plan.framesToWrite > 0 else { return }
+        copyMonoIntoRing(
+            mono: inMono.advanced(by: plan.sourceOffset),
+            frameCount: plan.framesToWrite,
+            startCursor: plan.startCursor
+        )
+        writeCursor.store(
+            plan.startCursor &+ UInt64(plan.framesToWrite),
+            ordering: .releasing
+        )
     }
 
     func read(
@@ -85,49 +75,42 @@ final class StereoInputRingBuffer {
         frameCount: Int
     ) -> Int {
         guard frameCount > 0 else { return 0 }
-        var missing = 0
-        lock.lock()
-        let available = min(frameCount, count)
-        if available > 0 {
-            var remaining = available
-            var dstOffset = 0
-            var srcIdx = readIndex
-            while remaining > 0 {
-                let chunk = min(remaining, capacity - srcIdx)
-                left.withUnsafeBufferPointer { srcL in
-                    right.withUnsafeBufferPointer { srcR in
-                        outLeft.advanced(by: dstOffset).update(
-                            from: srcL.baseAddress!.advanced(by: srcIdx),
-                            count: chunk
-                        )
-                        outRight.advanced(by: dstOffset).update(
-                            from: srcR.baseAddress!.advanced(by: srcIdx),
-                            count: chunk
-                        )
-                    }
-                }
-                srcIdx = (srcIdx + chunk) % capacity
-                dstOffset += chunk
-                remaining -= chunk
-            }
-            lastLeft = outLeft[available - 1]
-            lastRight = outRight[available - 1]
-            readIndex = (readIndex + available) % capacity
-            count -= available
+        consumerReadInProgress.store(true, ordering: .releasing)
+        defer { consumerReadInProgress.store(false, ordering: .releasing) }
+        waitForProducerWriteToFinish()
+
+        let snapshot = makeReadableSnapshot(frameCount: frameCount)
+        if snapshot.available > 0 {
+            copyRingFrames(
+                startCursor: snapshot.startCursor,
+                frameCount: snapshot.available,
+                intoLeft: outLeft,
+                outRight: outRight
+            )
+            lastLeft = outLeft[snapshot.available - 1]
+            lastRight = outRight[snapshot.available - 1]
         }
-        if available < frameCount {
-            for i in available..<frameCount {
-                outLeft[i] = 0.0
-                outRight[i] = 0.0
-            }
-            missing = frameCount - available
-            if available == 0 {
+
+        let missing = frameCount - snapshot.available
+        if missing > 0 {
+            fillMissingFrames(
+                intoLeft: outLeft,
+                outRight: outRight,
+                start: snapshot.available,
+                frameCount: frameCount,
+                repeatLast: false
+            )
+            if snapshot.available == 0 {
                 lastLeft = 0.0
                 lastRight = 0.0
             }
-            underflowCount += UInt64(missing)
+            underflowCount.wrappingIncrement(by: UInt64(missing), ordering: .relaxed)
         }
-        lock.unlock()
+
+        readCursor.store(
+            snapshot.startCursor &+ UInt64(snapshot.available),
+            ordering: .releasing
+        )
         return missing
     }
 
@@ -140,79 +123,68 @@ final class StereoInputRingBuffer {
         deadband: Int
     ) -> Int {
         guard frameCount > 0 else { return 0 }
-        lock.lock()
-        let available = count
+        consumerReadInProgress.store(true, ordering: .releasing)
+        defer { consumerReadInProgress.store(false, ordering: .releasing) }
+        waitForProducerWriteToFinish()
+
+        let read = readCursor.load(ordering: .acquiring)
+        let write = writeCursor.load(ordering: .acquiring)
+        let startCursor = readableStartCursor(read: read, write: write)
+        let available = max(0, Int(write &- startCursor))
+
         if available <= 0 {
-            for i in 0..<frameCount {
-                outLeft[i] = 0.0
-                outRight[i] = 0.0
-            }
+            fillMissingFrames(
+                intoLeft: outLeft,
+                outRight: outRight,
+                start: 0,
+                frameCount: frameCount,
+                repeatLast: false
+            )
             lastLeft = 0.0
             lastRight = 0.0
             resamplePhase = 0.0
             resampleRatioTrim = 0.0
-            underflowCount += UInt64(frameCount)
-            lock.unlock()
+            underflowCount.wrappingIncrement(by: UInt64(frameCount), ordering: .relaxed)
+            readCursor.store(startCursor, ordering: .releasing)
             return frameCount
         }
 
         let nominal = max(1, nominalConsume)
-        // When input and render rates are matched (nominal == frameCount),
-        // use pure direct copy with NO adaptive resampling to preserve stereo phase.
-        // This avoids long-term phase drift from trim accumulation.
         if nominal == frameCount {
-            // Always direct copy - don't condition on buffer level
-            let available_ = min(frameCount, available)
-            var missing = 0
-
-            if available_ > 0 {
-                var remaining = available_
-                var dstOffset = 0
-                var srcIdx = readIndex
-                while remaining > 0 {
-                    let chunk = min(remaining, capacity - srcIdx)
-                    left.withUnsafeBufferPointer { srcL in
-                        right.withUnsafeBufferPointer { srcR in
-                            outLeft.advanced(by: dstOffset).update(
-                                from: srcL.baseAddress!.advanced(by: srcIdx),
-                                count: chunk
-                            )
-                            outRight.advanced(by: dstOffset).update(
-                                from: srcR.baseAddress!.advanced(by: srcIdx),
-                                count: chunk
-                            )
-                        }
-                    }
-                    srcIdx = (srcIdx + chunk) % capacity
-                    dstOffset += chunk
-                    remaining -= chunk
-                }
-                lastLeft = outLeft[available_ - 1]
-                lastRight = outRight[available_ - 1]
-                readIndex = (readIndex + available_) % capacity
-                count -= available_
-
-                if available_ < frameCount {
-                    for i in available_..<frameCount {
-                        outLeft[i] = lastLeft
-                        outRight[i] = lastRight
-                    }
-                    missing = frameCount - available_
-                    underflowCount += UInt64(missing)
-                }
-            } else {
-                for i in 0..<frameCount {
-                    outLeft[i] = 0.0
-                    outRight[i] = 0.0
-                }
-                missing = frameCount
-                underflowCount += UInt64(missing)
+            let availableFrames = min(frameCount, available)
+            if availableFrames > 0 {
+                copyRingFrames(
+                    startCursor: startCursor,
+                    frameCount: availableFrames,
+                    intoLeft: outLeft,
+                    outRight: outRight
+                )
+                lastLeft = outLeft[availableFrames - 1]
+                lastRight = outRight[availableFrames - 1]
             }
 
-            // Reset adaptive state when using direct copy
+            let missing = frameCount - availableFrames
+            if missing > 0 {
+                fillMissingFrames(
+                    intoLeft: outLeft,
+                    outRight: outRight,
+                    start: availableFrames,
+                    frameCount: frameCount,
+                    repeatLast: true
+                )
+                if availableFrames == 0 {
+                    lastLeft = 0.0
+                    lastRight = 0.0
+                }
+                underflowCount.wrappingIncrement(by: UInt64(missing), ordering: .relaxed)
+            }
+
             resamplePhase = 0.0
             resampleRatioTrim = 0.0
-            lock.unlock()
+            readCursor.store(
+                startCursor &+ UInt64(availableFrames),
+                ordering: .releasing
+            )
             return missing
         }
 
@@ -230,36 +202,237 @@ final class StereoInputRingBuffer {
 
         let nominalRatio = Double(nominal) / Double(max(1, frameCount))
         let step = max(0.25, min(4.0, nominalRatio * (1.0 + resampleRatioTrim)))
-
         let startPhase = resamplePhase
         let phaseEnd = startPhase + (step * Double(frameCount))
         let neededFrames = min(available, max(1, Int(ceil(phaseEnd)) + 1))
-        ensureScratchCapacity(neededFrames)
-        copyOutOfRing(
-            intoLeft: &readScratchLeft,
-            outRight: &readScratchRight,
-            startIndex: readIndex,
+
+        copyRingFramesIntoScratch(
+            startCursor: startCursor,
             frameCount: neededFrames
         )
 
         let consumed = min(available, Int(phaseEnd))
-        readIndex = (readIndex + consumed) % capacity
-        count -= consumed
+        let missing = renderInterpolatedFrames(
+            intoLeft: outLeft,
+            outRight: outRight,
+            frameCount: frameCount,
+            neededFrames: neededFrames,
+            startPhase: startPhase,
+            step: step
+        )
+
         if consumed >= available {
             resamplePhase = 0.0
         } else {
             resamplePhase = phaseEnd - Double(consumed)
-            // Prevent extreme phase values from accumulating
             if resamplePhase > Double(capacity) / 2 {
                 resamplePhase = Double(capacity) / 4
             }
         }
-        lock.unlock()
+        if missing > 0 {
+            underflowCount.wrappingIncrement(by: UInt64(missing), ordering: .relaxed)
+        }
 
+        readCursor.store(
+            startCursor &+ UInt64(consumed),
+            ordering: .releasing
+        )
+        return missing
+    }
+
+    func bufferedFrames() -> Int {
+        let read = readCursor.load(ordering: .acquiring)
+        let write = writeCursor.load(ordering: .acquiring)
+        return min(capacity, max(0, Int(write &- read)))
+    }
+
+    func stats() -> (overflows: UInt64, underflows: UInt64, bufferedFrames: Int) {
+        let over = overflowCount.load(ordering: .relaxed)
+        let under = underflowCount.load(ordering: .relaxed)
+        let buffered = bufferedFrames()
+        return (over, under, buffered)
+    }
+
+    private func planWrite(frameCount: Int) -> (startCursor: UInt64, sourceOffset: Int, framesToWrite: Int) {
+        let write = writeCursor.load(ordering: .acquiring)
+        let read = readCursor.load(ordering: .acquiring)
+        let unread = write &- read
+        let buffered = min(capacity, max(0, Int(unread)))
+
+        var sourceOffset = 0
+        var framesToWrite = frameCount
+        var dropped: Int = 0
+
+        if framesToWrite > capacity {
+            let trim = framesToWrite - capacity
+            sourceOffset += trim
+            framesToWrite = capacity
+            dropped += trim
+        }
+
+        if consumerReadInProgress.load(ordering: .acquiring) {
+            let free = max(0, capacity - buffered)
+            if framesToWrite > free {
+                let trim = framesToWrite - free
+                sourceOffset += trim
+                framesToWrite = free
+                dropped += trim
+            }
+        } else if buffered + framesToWrite > capacity {
+            let overflow = (buffered + framesToWrite) - capacity
+            readCursor.store(read &+ UInt64(overflow), ordering: .releasing)
+            dropped += overflow
+        }
+
+        if dropped > 0 {
+            overflowCount.wrappingIncrement(by: UInt64(dropped), ordering: .relaxed)
+        }
+        return (write, sourceOffset, framesToWrite)
+    }
+
+    private func makeReadableSnapshot(frameCount: Int) -> (startCursor: UInt64, available: Int) {
+        let read = readCursor.load(ordering: .acquiring)
+        let write = writeCursor.load(ordering: .acquiring)
+        let startCursor = readableStartCursor(read: read, write: write)
+        let available = min(frameCount, max(0, Int(write &- startCursor)))
+        return (startCursor, available)
+    }
+
+    private func waitForProducerWriteToFinish() {
+        while producerWriteInProgress.load(ordering: .acquiring) {
+            _ = 0
+        }
+    }
+
+    private func copyStereoIntoRing(
+        left sourceLeft: UnsafePointer<Float>,
+        right sourceRight: UnsafePointer<Float>,
+        frameCount: Int,
+        startCursor: UInt64
+    ) {
+        guard frameCount > 0 else { return }
+        var remaining = frameCount
+        var sourceOffset = 0
+        var writeIndex = physicalIndex(for: startCursor)
+        while remaining > 0 {
+            let chunk = min(remaining, capacity - writeIndex)
+            left.withUnsafeMutableBufferPointer { dstLeft in
+                right.withUnsafeMutableBufferPointer { dstRight in
+                    dstLeft.baseAddress!.advanced(by: writeIndex).update(
+                        from: sourceLeft.advanced(by: sourceOffset),
+                        count: chunk
+                    )
+                    dstRight.baseAddress!.advanced(by: writeIndex).update(
+                        from: sourceRight.advanced(by: sourceOffset),
+                        count: chunk
+                    )
+                }
+            }
+            writeIndex = (writeIndex + chunk) & mask
+            sourceOffset += chunk
+            remaining -= chunk
+        }
+    }
+
+    private func copyMonoIntoRing(
+        mono sourceMono: UnsafePointer<Float>,
+        frameCount: Int,
+        startCursor: UInt64
+    ) {
+        guard frameCount > 0 else { return }
+        var remaining = frameCount
+        var sourceOffset = 0
+        var writeIndex = physicalIndex(for: startCursor)
+        while remaining > 0 {
+            let chunk = min(remaining, capacity - writeIndex)
+            left.withUnsafeMutableBufferPointer { dstLeft in
+                right.withUnsafeMutableBufferPointer { dstRight in
+                    let outLeft = dstLeft.baseAddress!.advanced(by: writeIndex)
+                    let outRight = dstRight.baseAddress!.advanced(by: writeIndex)
+                    for i in 0..<chunk {
+                        let sample = sourceMono[sourceOffset + i]
+                        outLeft[i] = sample
+                        outRight[i] = sample
+                    }
+                }
+            }
+            writeIndex = (writeIndex + chunk) & mask
+            sourceOffset += chunk
+            remaining -= chunk
+        }
+    }
+
+    private func copyRingFrames(
+        startCursor: UInt64,
+        frameCount: Int,
+        intoLeft outLeft: UnsafeMutablePointer<Float>,
+        outRight: UnsafeMutablePointer<Float>
+    ) {
+        guard frameCount > 0 else { return }
+        var remaining = frameCount
+        var sourceIndex = physicalIndex(for: startCursor)
+        var destinationOffset = 0
+        while remaining > 0 {
+            let chunk = min(remaining, capacity - sourceIndex)
+            left.withUnsafeBufferPointer { srcLeft in
+                right.withUnsafeBufferPointer { srcRight in
+                    outLeft.advanced(by: destinationOffset).update(
+                        from: srcLeft.baseAddress!.advanced(by: sourceIndex),
+                        count: chunk
+                    )
+                    outRight.advanced(by: destinationOffset).update(
+                        from: srcRight.baseAddress!.advanced(by: sourceIndex),
+                        count: chunk
+                    )
+                }
+            }
+            sourceIndex = (sourceIndex + chunk) & mask
+            destinationOffset += chunk
+            remaining -= chunk
+        }
+    }
+
+    private func copyRingFramesIntoScratch(startCursor: UInt64, frameCount: Int) {
+        guard frameCount > 0 else { return }
+        var remaining = frameCount
+        var sourceIndex = physicalIndex(for: startCursor)
+        var destinationOffset = 0
+        while remaining > 0 {
+            let chunk = min(remaining, capacity - sourceIndex)
+            readScratchLeft.withUnsafeMutableBufferPointer { dstLeft in
+                readScratchRight.withUnsafeMutableBufferPointer { dstRight in
+                    left.withUnsafeBufferPointer { srcLeft in
+                        right.withUnsafeBufferPointer { srcRight in
+                            dstLeft.baseAddress!.advanced(by: destinationOffset).update(
+                                from: srcLeft.baseAddress!.advanced(by: sourceIndex),
+                                count: chunk
+                            )
+                            dstRight.baseAddress!.advanced(by: destinationOffset).update(
+                                from: srcRight.baseAddress!.advanced(by: sourceIndex),
+                                count: chunk
+                            )
+                        }
+                    }
+                }
+            }
+            sourceIndex = (sourceIndex + chunk) & mask
+            destinationOffset += chunk
+            remaining -= chunk
+        }
+    }
+
+    private func renderInterpolatedFrames(
+        intoLeft outLeft: UnsafeMutablePointer<Float>,
+        outRight: UnsafeMutablePointer<Float>,
+        frameCount: Int,
+        neededFrames: Int,
+        startPhase: Double,
+        step: Double
+    ) -> Int {
         var localPhase = startPhase
         var missing = 0
-        var finalLeft: Float = lastLeft
-        var finalRight: Float = lastRight
+        var finalLeft = lastLeft
+        var finalRight = lastRight
         for i in 0..<frameCount {
             let base = Int(localPhase)
             if base >= neededFrames {
@@ -267,108 +440,59 @@ final class StereoInputRingBuffer {
                 outRight[i] = 0.0
                 missing += 1
             } else {
-                let frac = Float(localPhase - Double(base))
-                let idx1 = min(base + 1, neededFrames - 1)
+                let fraction = Float(localPhase - Double(base))
+                let next = min(base + 1, neededFrames - 1)
                 let l0 = readScratchLeft[base]
-                let l1 = readScratchLeft[idx1]
+                let l1 = readScratchLeft[next]
                 let r0 = readScratchRight[base]
-                let r1 = readScratchRight[idx1]
-                let l = l0 + ((l1 - l0) * frac)
-                let r = r0 + ((r1 - r0) * frac)
-                outLeft[i] = l
-                outRight[i] = r
-                finalLeft = l
-                finalRight = r
+                let r1 = readScratchRight[next]
+                let leftValue = l0 + ((l1 - l0) * fraction)
+                let rightValue = r0 + ((r1 - r0) * fraction)
+                outLeft[i] = leftValue
+                outRight[i] = rightValue
+                finalLeft = leftValue
+                finalRight = rightValue
             }
             localPhase += step
-        }
-
-        if missing > 0 {
-            underflowCount += UInt64(missing)
         }
         lastLeft = finalLeft
         lastRight = finalRight
         return missing
     }
 
-    private func dropOldestIfNeeded(framesToWrite: Int) {
-        let overflow = max(0, (count + framesToWrite) - capacity)
-        if overflow > 0 {
-            readIndex = (readIndex + overflow) % capacity
-            count -= overflow
-            overflowCount += UInt64(overflow)
-        }
-    }
-
-    func bufferedFrames() -> Int {
-        lock.lock()
-        let buffered = count
-        lock.unlock()
-        return buffered
-    }
-
-    func stats() -> (overflows: UInt64, underflows: UInt64, bufferedFrames: Int) {
-        lock.lock()
-        let over = overflowCount
-        let under = underflowCount
-        let buffered = count
-        lock.unlock()
-        return (over, under, buffered)
-    }
-
-    private func ensureScratchCapacity(_ frameCount: Int) {
-        guard frameCount > 0 else { return }
-        if readScratchLeft.count < frameCount {
-            readScratchLeft = Array(repeating: 0.0, count: frameCount)
-        }
-        if readScratchRight.count < frameCount {
-            readScratchRight = Array(repeating: 0.0, count: frameCount)
-        }
-    }
-
-    private func copyOutOfRing(
-        intoLeft dstLeft: inout [Float],
-        outRight dstRight: inout [Float],
-        startIndex: Int,
-        frameCount: Int
-    ) {
-        guard frameCount > 0 else { return }
-        var remaining = frameCount
-        var srcIdx = startIndex
-        var dstOffset = 0
-        while remaining > 0 {
-            let chunk = min(remaining, capacity - srcIdx)
-            dstLeft.withUnsafeMutableBufferPointer { leftBuffer in
-                dstRight.withUnsafeMutableBufferPointer { rightBuffer in
-                    left.withUnsafeBufferPointer { srcLeft in
-                        right.withUnsafeBufferPointer { srcRight in
-                            leftBuffer.baseAddress!.advanced(by: dstOffset).update(
-                                from: srcLeft.baseAddress!.advanced(by: srcIdx),
-                                count: chunk
-                            )
-                            rightBuffer.baseAddress!.advanced(by: dstOffset).update(
-                                from: srcRight.baseAddress!.advanced(by: srcIdx),
-                                count: chunk
-                            )
-                        }
-                    }
-                }
-            }
-            srcIdx = (srcIdx + chunk) % capacity
-            dstOffset += chunk
-            remaining -= chunk
-        }
-    }
-
-    private func fillWithSilence(
-        outLeft: UnsafeMutablePointer<Float>,
+    private func fillMissingFrames(
+        intoLeft outLeft: UnsafeMutablePointer<Float>,
         outRight: UnsafeMutablePointer<Float>,
-        frameCount: Int
+        start: Int,
+        frameCount: Int,
+        repeatLast: Bool
     ) {
-        guard frameCount > 0 else { return }
-        for i in 0..<frameCount {
-            outLeft[i] = 0.0
-            outRight[i] = 0.0
+        guard start < frameCount else { return }
+        let fillLeft = repeatLast ? lastLeft : 0.0
+        let fillRight = repeatLast ? lastRight : 0.0
+        for index in start..<frameCount {
+            outLeft[index] = fillLeft
+            outRight[index] = fillRight
         }
+    }
+
+    private func physicalIndex(for cursor: UInt64) -> Int {
+        Int(cursor & UInt64(mask))
+    }
+
+    private func readableStartCursor(read: UInt64, write: UInt64) -> UInt64 {
+        let unread = write &- read
+        if unread > UInt64(capacity) {
+            return write &- UInt64(capacity)
+        }
+        return read
+    }
+
+    private static func nextPowerOfTwo(_ value: Int) -> Int {
+        var result = 1
+        while result < value {
+            result <<= 1
+        }
+        return result
     }
 }

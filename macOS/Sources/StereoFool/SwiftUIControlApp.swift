@@ -354,6 +354,7 @@ private final class MPXSpectrumAnalyzer: @unchecked Sendable {
 
     func compute(
         samples: [Float],
+        validCount: Int,
         sampleRate: Double,
         displayBins: Int,
         maxDisplayHz: Double
@@ -361,18 +362,21 @@ private final class MPXSpectrumAnalyzer: @unchecked Sendable {
         let safeBins = max(64, displayBins)
         let nyquist = max(1_000.0, sampleRate * 0.5)
         let maxHz = max(1_000.0, maxDisplayHz)
-        guard samples.count >= 256 else {
+        let sampleCount = min(samples.count, max(0, validCount))
+        guard sampleCount >= 256 else {
             return (Array(repeating: -100.0, count: safeBins), maxHz, nyquist)
         }
 
-        let maxFFTSize = min(samples.count, 8192)
+        let maxFFTSize = min(sampleCount, 8192)
         let log2n = Int(floor(log2(Double(maxFFTSize))))
         let n = max(256, 1 << log2n)
         prepareBuffers(fftSize: n, displayBins: safeBins)
 
         signal.withUnsafeMutableBufferPointer { buffer in
-            samples.suffix(n).withUnsafeBufferPointer { source in
-                buffer.baseAddress?.update(from: source.baseAddress!, count: n)
+            samples.withUnsafeBufferPointer { source in
+                guard let sourceBase = source.baseAddress, let destinationBase = buffer.baseAddress else { return }
+                let start = sampleCount - n
+                destinationBase.update(from: sourceBase.advanced(by: start), count: n)
             }
         }
 
@@ -1026,8 +1030,6 @@ final class StereoFoolViewModel: ObservableObject {
     }
 
     private static let monitoringRefreshHz: Double = 30.0
-    private static let stereoHistorySampleSeconds: Double = 0.25
-    private static let stereoHistoryCapacity: Int = 120
     private static let meterAttackMS: Float = 18.0
     private static let meterReleaseMS: Float = 110.0
     private static let audioPeakMeterAttackMS: Float = 1.0
@@ -1094,9 +1096,6 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var compositeLimiterGainReductionDBValue: Float = 0.0
     @Published var safetyLimiterGainReductionDBValue: Float = 0.0
     @Published var stereoImageText: String = "Corr +1.00 • Side 0.00x"
-    @Published var stereoCorrelationHistory: [Float] = []
-    @Published var stereoSideRatioHistory: [Float] = []
-    @Published var stereoRiskHistory: [Float] = []
     @Published var agcStateText: String = "Off"
     @Published var agcDetailText: String = "Detector -inf dB • Gain 0.0 dB"
     @Published var multibandStateText: String = "Off"
@@ -1129,7 +1128,6 @@ final class StereoFoolViewModel: ObservableObject {
     private var activeRuntimeSnapshot: RuntimeSnapshot?
     private var monitorTimer: Timer?
     private var lastMonitorRefreshTime: TimeInterval?
-    private var lastStereoHistorySampleTime: TimeInterval?
     private var engineStartReference: TimeInterval?
 
     private var vuInputL: Float = 0.0
@@ -1160,6 +1158,7 @@ final class StereoFoolViewModel: ObservableObject {
     private var spectrumUpdateInFlight: Bool = false
     private let spectrumQueue = DispatchQueue(label: "StereoFool.MPXSpectrum", qos: .userInitiated)
     private let spectrumAnalyzer = MPXSpectrumAnalyzer()
+    private var spectrumInputScratch: [Float] = Array(repeating: 0.0, count: 4096)
 
     init(configPath: String) {
         self.configPath = configPath
@@ -2119,10 +2118,6 @@ final class StereoFoolViewModel: ObservableObject {
             compositeLimiterGainReductionDBValue = 0.0
             safetyLimiterGainReductionDBValue = 0.0
             stereoImageText = "Corr +1.00 • Side 0.00x"
-            stereoCorrelationHistory.removeAll(keepingCapacity: true)
-            stereoSideRatioHistory.removeAll(keepingCapacity: true)
-            stereoRiskHistory.removeAll(keepingCapacity: true)
-            lastStereoHistorySampleTime = nil
             widenerStateText = "Off"
             overflowHistory.removeAll(keepingCapacity: true)
             lastOverflowTotal = 0
@@ -2280,56 +2275,8 @@ final class StereoFoolViewModel: ObservableObject {
             widenerStateText = "Safe"
         }
 
-        updateStereoHistory(
-            now: now,
-            correlation: outputStereoCorrelation,
-            sideRatio: outputSideToMidRatio,
-            riskState: widenerStateText
-        )
-
         let elapsed = max(0.0, now - (engineStartReference ?? now))
         updateRDSFields(elapsed: elapsed)
-    }
-
-    private func updateStereoHistory(
-        now: TimeInterval,
-        correlation: Float,
-        sideRatio: Float,
-        riskState: String
-    ) {
-        if let last = lastStereoHistorySampleTime,
-            (now - last) < Self.stereoHistorySampleSeconds
-        {
-            return
-        }
-        lastStereoHistorySampleTime = now
-
-        stereoCorrelationHistory.append(correlation)
-        stereoSideRatioHistory.append(sideRatio)
-        stereoRiskHistory.append(stereoRiskValue(for: riskState))
-
-        if stereoCorrelationHistory.count > Self.stereoHistoryCapacity {
-            stereoCorrelationHistory.removeFirst(stereoCorrelationHistory.count - Self.stereoHistoryCapacity)
-        }
-        if stereoSideRatioHistory.count > Self.stereoHistoryCapacity {
-            stereoSideRatioHistory.removeFirst(stereoSideRatioHistory.count - Self.stereoHistoryCapacity)
-        }
-        if stereoRiskHistory.count > Self.stereoHistoryCapacity {
-            stereoRiskHistory.removeFirst(stereoRiskHistory.count - Self.stereoHistoryCapacity)
-        }
-    }
-
-    private func stereoRiskValue(for state: String) -> Float {
-        if state.caseInsensitiveCompare("Off") == .orderedSame {
-            return 0.0
-        }
-        if state.caseInsensitiveCompare("Safe") == .orderedSame {
-            return 0.25
-        }
-        if state.caseInsensitiveCompare("Wide") == .orderedSame {
-            return 0.65
-        }
-        return 1.0
     }
 
     private func updateScopes(engine: AudioOutputEngine, inputPeak: Float, outputPeak: Float) {
@@ -2368,15 +2315,17 @@ final class StereoFoolViewModel: ObservableObject {
         guard !spectrumUpdateInFlight else { return }
         lastSpectrumRefreshTime = now
         spectrumUpdateInFlight = true
-        let raw = engine.outputSignalWindow(frameCount: 4096)
-        let samples = raw.samples
+        let raw = engine.outputSignalWindow(into: &spectrumInputScratch, frameCount: 4096)
         let sampleRate = raw.sampleRate
+        let validCount = raw.count
 
         let maxDisplayHz: Double = config.fftWindow96kHz ? 96_000.0 : 60_000.0
         let analyzer = spectrumAnalyzer
+        let samples = spectrumInputScratch
         spectrumQueue.async { [weak self] in
             let spectrum = analyzer.compute(
                 samples: samples,
+                validCount: validCount,
                 sampleRate: sampleRate,
                 displayBins: 640,
                 maxDisplayHz: maxDisplayHz
@@ -3284,10 +3233,6 @@ private struct MonitoringDashboardView: View {
                     MonitoringDSPStatusSectionView(model: model)
                 }
 
-                Card(title: "Stereo History") {
-                    StereoImageHistoryPanel(model: model)
-                }
-
                 Card(title: "Calibration") {
                     MonitoringCalibrationSectionView(model: model)
                 }
@@ -4063,197 +4008,6 @@ private struct MonitoringCalibrationSectionView: View {
     private static func dbfsString(_ linear: Float) -> String {
         guard linear > 0.0 else { return "-inf dBFS" }
         return String(format: "%.1f dBFS", 20.0 * log10(linear))
-    }
-}
-
-private struct StereoImageHistoryPanel: View {
-    @ObservedObject var model: StereoFoolViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            FlowStatusRow(items: [
-                ("Current", model.widenerStateText, MonitoringDSPStatusSectionView.stereoImageDotColor(for: model.widenerStateText)),
-                ("Corr", correlationSummary, correlationColor),
-                ("Side", sideSummary, sideColor),
-            ])
-
-            DashboardMetricGrid {
-                StereoHistoryChartCard(
-                    title: "Correlation",
-                    subtitle: "Recent output stereo correlation",
-                    currentValue: correlationSummary,
-                    samples: model.stereoCorrelationHistory,
-                    minY: -1.0,
-                    maxY: 1.0,
-                    lineColor: .cyan,
-                    thresholdLines: [
-                        (0.0, .red.opacity(0.4)),
-                        (0.30, .orange.opacity(0.4)),
-                    ]
-                )
-
-                StereoHistoryChartCard(
-                    title: "Side / Mid",
-                    subtitle: "Recent side-energy balance",
-                    currentValue: sideSummary,
-                    samples: model.stereoSideRatioHistory,
-                    minY: 0.0,
-                    maxY: 1.2,
-                    lineColor: .green,
-                    thresholdLines: [
-                        (0.55, .orange.opacity(0.4)),
-                        (0.85, .red.opacity(0.4)),
-                    ]
-                )
-
-                StereoHistoryChartCard(
-                    title: "Image State",
-                    subtitle: "Off, Safe, Wide, or Risk over time",
-                    currentValue: model.widenerStateText,
-                    samples: model.stereoRiskHistory,
-                    minY: 0.0,
-                    maxY: 1.0,
-                    lineColor: .orange,
-                    thresholdLines: [
-                        (0.25, .green.opacity(0.35)),
-                        (0.65, .orange.opacity(0.35)),
-                        (1.0, .red.opacity(0.35)),
-                    ],
-                    labels: [
-                        (0.0, "Off"),
-                        (0.25, "Safe"),
-                        (0.65, "Wide"),
-                        (1.0, "Risk"),
-                    ]
-                )
-            }
-
-            Text("History is sampled every 0.25 s so you can see stereo drift and pumping over time instead of relying only on the current meter.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var latestCorrelation: Float {
-        model.stereoCorrelationHistory.last ?? 1.0
-    }
-
-    private var latestSideRatio: Float {
-        model.stereoSideRatioHistory.last ?? 0.0
-    }
-
-    private var correlationSummary: String {
-        String(
-            format: "%@%.2f",
-            latestCorrelation >= 0 ? "+" : "",
-            latestCorrelation
-        )
-    }
-
-    private var sideSummary: String {
-        String(format: "%.2fx", latestSideRatio)
-    }
-
-    private var correlationColor: Color {
-        if latestCorrelation < 0.0 {
-            return .red
-        }
-        if latestCorrelation < 0.30 {
-            return .orange
-        }
-        return .green
-    }
-
-    private var sideColor: Color {
-        if latestSideRatio > 0.85 {
-            return .red
-        }
-        if latestSideRatio > 0.55 {
-            return .orange
-        }
-        return .green
-    }
-}
-
-private struct StereoHistoryChartCard: View {
-    let title: String
-    let subtitle: String
-    let currentValue: String
-    let samples: [Float]
-    let minY: Float
-    let maxY: Float
-    let lineColor: Color
-    let thresholdLines: [(Float, Color)]
-    var labels: [(Float, String)] = []
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(title)
-                        .font(.subheadline.weight(.semibold))
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text(currentValue)
-                    .font(.caption.monospaced().weight(.semibold))
-            }
-
-            Canvas { context, size in
-                let rect = CGRect(origin: .zero, size: size)
-                context.fill(
-                    Path(roundedRect: rect, cornerRadius: 8),
-                    with: .color(.black.opacity(0.18))
-                )
-
-                for (value, color) in thresholdLines {
-                    let y = yPosition(for: value, in: rect)
-                    var line = Path()
-                    line.move(to: CGPoint(x: rect.minX, y: y))
-                    line.addLine(to: CGPoint(x: rect.maxX, y: y))
-                    context.stroke(line, with: .color(color), lineWidth: 1)
-                }
-
-                guard samples.count > 1 else { return }
-                let stepX = rect.width / CGFloat(max(1, samples.count - 1))
-                var trace = Path()
-                for (idx, sample) in samples.enumerated() {
-                    let x = CGFloat(idx) * stepX
-                    let y = yPosition(for: sample, in: rect)
-                    if idx == 0 {
-                        trace.move(to: CGPoint(x: x, y: y))
-                    } else {
-                        trace.addLine(to: CGPoint(x: x, y: y))
-                    }
-                }
-                context.stroke(trace, with: .color(lineColor), lineWidth: 1.6)
-            }
-            .frame(height: 86)
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-
-            if !labels.isEmpty {
-                HStack {
-                    ForEach(Array(labels.enumerated()), id: \.offset) { _, item in
-                        Text(item.1)
-                            .font(.caption2.monospaced())
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                    }
-                }
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.35))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private func yPosition(for value: Float, in rect: CGRect) -> CGFloat {
-        let clamped = max(minY, min(maxY, value))
-        let norm = (clamped - minY) / max(0.0001, maxY - minY)
-        return rect.maxY - (CGFloat(norm) * rect.height)
     }
 }
 

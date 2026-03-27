@@ -1,4 +1,5 @@
 import Darwin
+import Atomics
 import Foundation
 
 private let twoPi = Float.pi * 2.0
@@ -816,6 +817,13 @@ private final class BasicRDSCoder {
     private static let offsetD = 0x1B4
     private static let gregorianCalendar = Calendar(identifier: .gregorian)
 
+    private struct CachedClockTimeGroup {
+        let minuteToken: Int
+        let b2Tail: Int
+        let b3Value: Int
+        let b4Value: Int
+    }
+
     private let enabled: Bool
     private let levelScale: Float
     private let piCode: Int
@@ -879,6 +887,11 @@ private final class BasicRDSCoder {
     private let eccCode: Int
     private let licCode: Int
     private let tzOffset: Double
+    private let cachedGroup1Variant = ManagedAtomic<Int>(0)
+    private let cachedCTMinuteToken = ManagedAtomic<Int>(-1)
+    private let cachedCTPacked = ManagedAtomic<UInt64>(0)
+    private let clockUpdateQueue = DispatchQueue(label: "StereoFool.RDSClockCache", qos: .utility)
+    private var clockUpdateTimer: DispatchSourceTimer?
 
     private var sampleRate: Float
     private var carrierPhase: Float = 0.0
@@ -1029,6 +1042,11 @@ private final class BasicRDSCoder {
         self.lpsSeqStart = now
         updateDerivedRates()
         updateShapingFilters()
+        startClockCacheIfNeeded()
+    }
+
+    deinit {
+        clockUpdateTimer?.cancel()
     }
 
     func setSampleRate(_ newSampleRate: Float) {
@@ -1513,7 +1531,7 @@ private final class BasicRDSCoder {
     private func buildGroup1A() -> [UInt8] {
         // Alternate ECC/LIC variants similar to Python scheduler behavior.
         let variants = [0, 3]
-        let selector = Int(Date().timeIntervalSince1970 / 2.0) % 2
+        let selector = cachedGroup1Variant.load(ordering: .acquiring) & 1
         let variant = variants[selector]
         let idValue = (variant == 0) ? eccCode : licCode
         let b3Value = ((variant & 0x0F) << 12) | (idValue & 0xFF)
@@ -1528,49 +1546,37 @@ private final class BasicRDSCoder {
 
     private func buildClockTimeGroupIfNeeded() -> [UInt8]? {
         guard enCT else { return nil }
-        let now = Date()
-        let comps = Self.gregorianCalendar.dateComponents(
-            [.year, .month, .day, .hour, .minute, .second], from: now)
-        guard let year = comps.year,
-            let month = comps.month,
-            let day = comps.day,
-            let hour = comps.hour,
-            let minute = comps.minute,
-            let second = comps.second
-        else {
-            return nil
-        }
-        guard second == 0 else { return nil }
-        guard minute != ctMinuteLock else { return nil }
-        ctMinuteLock = minute
-
-        return buildClockTimeGroupFromComponents(
-            year: year, month: month, day: day, hour: hour, minute: minute)
+        guard let cached = currentCachedClockTimeGroup() else { return nil }
+        guard cached.minuteToken != ctMinuteLock else { return nil }
+        ctMinuteLock = cached.minuteToken
+        return buildGroupBits(
+            groupType: 4,
+            versionB: false,
+            b2Tail: cached.b2Tail,
+            b3Value: cached.b3Value,
+            b4Value: cached.b4Value
+        )
     }
 
     private func buildClockTimeGroupImmediate() -> [UInt8]? {
         guard enCT else { return nil }
-        let now = Date()
-        let comps = Self.gregorianCalendar.dateComponents([.year, .month, .day, .hour, .minute], from: now)
-        guard let year = comps.year,
-            let month = comps.month,
-            let day = comps.day,
-            let hour = comps.hour,
-            let minute = comps.minute
-        else {
-            return nil
-        }
-        return buildClockTimeGroupFromComponents(
-            year: year, month: month, day: day, hour: hour, minute: minute)
+        guard let cached = currentCachedClockTimeGroup() else { return nil }
+        return buildGroupBits(
+            groupType: 4,
+            versionB: false,
+            b2Tail: cached.b2Tail,
+            b3Value: cached.b3Value,
+            b4Value: cached.b4Value
+        )
     }
 
-    private func buildClockTimeGroupFromComponents(
+    private func makeClockTimeGroupPayload(
         year: Int,
         month: Int,
         day: Int,
         hour: Int,
         minute: Int
-    ) -> [UInt8] {
+    ) -> (b2Tail: Int, b3Value: Int, b4Value: Int) {
         let mjd = Self.modifiedJulianDay(year: year, month: month, day: day)
         let tzHalfHours = max(0, min(31, Int(abs(tzOffset) * 2.0)))
         let tzSign = tzOffset < 0 ? 1 : 0
@@ -1578,13 +1584,7 @@ private final class BasicRDSCoder {
         let b3Value = ((mjd & 0x7FFF) << 1) | ((hour >> 4) & 0x1)
         let b4Value =
             ((hour & 0x0F) << 12) | ((minute & 0x3F) << 6) | (tzSign << 5) | (tzHalfHours & 0x1F)
-        return buildGroupBits(
-            groupType: 4,
-            versionB: false,
-            b2Tail: b2Tail,
-            b3Value: b3Value,
-            b4Value: b4Value
-        )
+        return (b2Tail, b3Value, b4Value)
     }
 
     private func generateAutoSchedule() -> [RDSGroupSpec] {
@@ -1662,6 +1662,89 @@ private final class BasicRDSCoder {
             seq.append(RDSGroupSpec(type: 15, versionB: false))
         }
         return seq
+    }
+
+    private func startClockCacheIfNeeded() {
+        guard enCT || enID else { return }
+        refreshClockCache()
+        let timer = DispatchSource.makeTimerSource(queue: clockUpdateQueue)
+        timer.schedule(deadline: .now() + .milliseconds(250), repeating: .seconds(1))
+        timer.setEventHandler { [weak self] in
+            self?.refreshClockCache()
+        }
+        clockUpdateTimer = timer
+        timer.resume()
+    }
+
+    private func refreshClockCache() {
+        let now = Date()
+        if enID {
+            cachedGroup1Variant.store(
+                Int(now.timeIntervalSince1970 / 2.0) & 1,
+                ordering: .releasing
+            )
+        }
+        guard enCT else { return }
+        let comps = Self.gregorianCalendar.dateComponents(
+            [.year, .month, .day, .hour, .minute, .second],
+            from: now
+        )
+        guard let year = comps.year,
+            let month = comps.month,
+            let day = comps.day,
+            let hour = comps.hour,
+            let minute = comps.minute,
+            let second = comps.second
+        else {
+            return
+        }
+        guard second == 0 else { return }
+        let payload = makeClockTimeGroupPayload(
+            year: year,
+            month: month,
+            day: day,
+            hour: hour,
+            minute: minute
+        )
+        let minuteToken = (((year * 100 + month) * 100 + day) * 100 + hour) * 100 + minute
+        cachedCTPacked.store(
+            packCachedClockTimeGroup(
+                minuteToken: minuteToken,
+                b2Tail: payload.b2Tail,
+                b3Value: payload.b3Value,
+                b4Value: payload.b4Value
+            ),
+            ordering: .releasing
+        )
+        cachedCTMinuteToken.store(minuteToken, ordering: .releasing)
+    }
+
+    private func currentCachedClockTimeGroup() -> CachedClockTimeGroup? {
+        let minuteToken = cachedCTMinuteToken.load(ordering: .acquiring)
+        guard minuteToken >= 0 else { return nil }
+        let packed = cachedCTPacked.load(ordering: .acquiring)
+        return unpackCachedClockTimeGroup(minuteToken: minuteToken, packed: packed)
+    }
+
+    private func packCachedClockTimeGroup(
+        minuteToken: Int,
+        b2Tail: Int,
+        b3Value: Int,
+        b4Value: Int
+    ) -> UInt64 {
+        _ = minuteToken
+        return (UInt64(b2Tail & 0x1F) << 32)
+            | (UInt64(b3Value & 0xFFFF) << 16)
+            | UInt64(b4Value & 0xFFFF)
+    }
+
+    private func unpackCachedClockTimeGroup(minuteToken: Int, packed: UInt64) -> CachedClockTimeGroup {
+        CachedClockTimeGroup(
+            minuteToken: minuteToken,
+            b2Tail: Int((packed >> 32) & 0x1F),
+            b3Value: Int((packed >> 16) & 0xFFFF),
+            b4Value: Int(packed & 0xFFFF)
+        )
     }
 
     private func diBitForSegment(_ segment: Int) -> Bool {

@@ -1078,17 +1078,18 @@ final class AudioOutputEngine {
         return (input, output)
     }
 
-    func outputSignalWindow(frameCount: Int) -> (samples: [Float], sampleRate: Double) {
+    func outputSignalWindow(into destination: inout [Float], frameCount: Int) -> (count: Int, sampleRate: Double) {
         meterLock.lock()
         let sr = max(1_000.0, outputScopeSampleRate)
-        let data = Self.renderRawWindow(
+        let count = Self.renderRawWindow(
             from: outputScopeHistory,
             writeIndex: outputScopeWriteIndex,
             validFrames: outputScopeValidFrames,
-            frameCount: frameCount
+            frameCount: frameCount,
+            into: &destination
         )
         meterLock.unlock()
-        return (data, sr)
+        return (count, sr)
     }
 
     var sourceDescription: String {
@@ -1354,16 +1355,22 @@ final class AudioOutputEngine {
         from history: [Float],
         writeIndex: Int,
         validFrames: Int,
-        frameCount: Int
-    ) -> [Float] {
-        guard !history.isEmpty, validFrames > 0, frameCount > 0 else { return [] }
-        let n = max(1, min(validFrames, frameCount))
-        let start = (writeIndex - n + history.count) % history.count
-        var output = Array(repeating: Float.zero, count: n)
-        for i in 0..<n {
-            output[i] = history[(start + i) % history.count]
+        frameCount: Int,
+        into destination: inout [Float]
+    ) -> Int {
+        guard !history.isEmpty, validFrames > 0, frameCount > 0 else {
+            destination.removeAll(keepingCapacity: true)
+            return 0
         }
-        return output
+        let n = max(1, min(validFrames, frameCount))
+        if destination.count != n {
+            destination = Array(repeating: 0.0, count: n)
+        }
+        let start = (writeIndex - n + history.count) % history.count
+        for i in 0..<n {
+            destination[i] = history[(start + i) % history.count]
+        }
+        return n
     }
 
     private static func computeStereoMeter(
