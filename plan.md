@@ -112,10 +112,7 @@ Loose ends:
 - the final composite limiter path is improved, but it is still an evolved approximation rather than a deliberately designed composite clipper with one clear architecture
 - widener, mono bass, Orbass, and multiband interaction still needs broader preset-level validation on real program material beyond the current focused sweep
 - pilot/RDS/headroom telemetry exists, but there is still no explicit deviation estimator or exciter-calibration workflow
-- some real-time and monitoring paths still need performance cleanup:
-  - per-callback capture-buffer allocation in some fallback paths
-  - spectrum snapshot/buffer reuse beyond the current cached FFT path
-  - RDS string preparation work that should move further off the render path
+- RDS string preparation work that should move further off the render path
 
 Practical implication:
 
@@ -178,30 +175,32 @@ Users should not need to abuse AGC target to get acceptable loudness.
 
 ### Phase 1. Fix the gain structure
 
-Status: partially complete
+Status: mostly complete
+
+Completed:
+
+1. Output trim measurably changes MPX output level.
+2. AGC target no longer forces hot settings for normal modulation.
+3. Live DSP controls work without forcing engine restarts.
+4. Config validation clamps all gain parameters to safe ranges (`AppConfig.validate()`).
 
 Still open:
 
 1. Add one internal gain-structure note per stage in code comments so future tuning stays coherent.
 
-Success criteria:
-
-- output trim measurably changes MPX output level
-- AGC target no longer has to be set unrealistically hot to get normal modulation
-- ordinary DSP controls can be changed live without forcing engine restarts
-
 ### Phase 2. Add a proper final composite stage
 
 Status: partially complete
 
+Completed:
+
+1. Pure calculation functions extracted: `makeFinalCompositeThresholds()`, `makeDrivenAudioComposite()`, `makeOutputComposite()`, `updateSubcarrierReservation()`.
+2. Composite protection chain implemented: pre-limiter soft clipping, composite limiter, post-limiter soft clipping, safety limiter.
+3. Named constants for pre/post limiter headroom and floor values.
+
 Next work:
 
-1. Do not attempt another large helper extraction of the final composite stage until there is a tighter micro-refactor plan.
-2. Extract only pure calculations first:
-   - pre-limiter ceiling math
-   - post-limiter ceiling math
-   - composite budget / margin math
-3. Keep stateful pieces in place until the pure calculations are isolated and verified:
+1. Keep stateful pieces in place until the pure calculations are isolated and verified:
    - reservation envelope
    - composite limiter state
    - smoother state
@@ -260,7 +259,7 @@ Success criteria:
 
 ### Phase 5. Tighten AGC role and defaults
 
-Status: partially complete
+Status: mostly complete
 
 1. Keep wideband AGC as a slow leveler, not a loudness stage.
 2. Re-evaluate defaults after Phase 1 and Phase 2 are in place.
@@ -298,10 +297,10 @@ Next work:
 
 This section is intentionally concrete and implementation-focused.
 
-1. Treat the current final composite path as the verified baseline until a tighter refactor plan is complete.
+1. ~~Treat the current final composite path as the verified baseline until a tighter refactor plan is complete.~~ Done.
 2. Refactor the final composite path only in micro-steps:
-   - pure ceiling math first
-   - budget-margin math second
+   - ~~pure ceiling math first~~ Done (`makeFinalCompositeThresholds`, `makeDrivenAudioComposite`, `makeOutputComposite`).
+   - ~~budget-margin math second~~ Done.
    - stateful limiter packaging last
    - rerun `--verify` after every micro-step
 3. Validate and retune:
@@ -312,13 +311,13 @@ This section is intentionally concrete and implementation-focused.
 4. Add deterministic offline tests for:
    - stereo-to-mono collapse behavior
    - now-playing RT / RT+ formatting edge cases
-5. Keep the MPX width/compliance checks as a regression gate and extend them with longer-run cases.
+5. ~~Keep the MPX width/compliance checks as a regression gate~~ Done (verifier checks `maxAbove60kRatioDB` and `maxAbove67kRatioDB`). Extend with longer-run cases.
 6. Extend the RDS timed-text parser with a documented compatible subset:
-   - `Ns:` duration segments
+   - ~~`Ns:` duration segments~~ Done.
    - `Nt:` transmit-count segments
    - escapes for separators
    - optional wrap markers if they are still judged useful
-7. Move remaining non-DSP work off the audio callback where practical.
+7. Move remaining non-DSP work off the audio callback where practical (RDS string preparation still on render path).
 8. Keep shrinking the final composite cleanup into verifier-backed micro-steps until the stateful stage can be isolated safely.
 
 Success criteria:
@@ -342,13 +341,16 @@ These are the current practical defaults after the recent gain-structure and fin
 
 ## Immediate next step
 
+Recently completed:
+
+1. ~~Remove per-callback heap allocations from capture/input conversion paths.~~ Done. `MonitorLoudnessAnalyzer` rewritten with fixed-size ring buffer and atomic cursor for lock-free audio-to-UI handoff. Scratch buffers pre-allocated.
+2. ~~Add stronger config/input validation in `AppConfig`.~~ Done. `validate()` method clamps all 50+ audio-critical parameters to safe ranges. Live-apply vs restart-required settings documented in code.
+
 The next quality improvement should be:
 
-1. remove the remaining per-callback heap allocations from the capture/input conversion paths
-2. do a release smoke pass for live-apply versus restart-required settings on difficult real material
-3. add stronger config/input validation in `AppConfig`
-
-This keeps the plan focused on the actual remaining work instead of repeating steps that are already done.
+1. Do a release smoke pass for live-apply versus restart-required settings on difficult real material.
+2. Add gain-structure code comments at each DSP stage.
+3. Validate Orbass, mono bass, widener, and multiband interaction on difficult real material.
 
 ## Tactical backlog
 
@@ -356,16 +358,15 @@ This section merges the actionable items that used to be split across `bugs.md` 
 
 ### Release-blocking / first fixes
 
-1. Remove per-callback heap allocations from the capture/input conversion paths.
-2. Add stronger config/input validation in `AppConfig`.
+1. ~~Remove per-callback heap allocations from the capture/input conversion paths.~~ Done.
+2. ~~Add stronger config/input validation in `AppConfig`.~~ Done.
 3. Add a smoke-test pass for live-apply vs restart-required settings so MPX does not stop unexpectedly during ordinary DSP edits.
 
 ### Current sprint tasks
 
-1. Remove per-callback heap allocations from the capture/input conversion paths.
-2. Do a release smoke pass for the new live-update path and restart-only settings behavior.
-3. Validate Orbass, mono bass, widener, and multiband interaction on difficult real material.
-4. Keep refining the calibration workflow only where real operator friction still exists.
+1. Do a release smoke pass for the new live-update path and restart-only settings behavior.
+2. Validate Orbass, mono bass, widener, and multiband interaction on difficult real material.
+3. Keep refining the calibration workflow only where real operator friction still exists.
 
 ### Medium-term maintainability
 
@@ -375,9 +376,8 @@ This section merges the actionable items that used to be split across `bugs.md` 
 4. Expand the XCTest suite beyond ring-buffer behavior into MPX generation, filters, and config round-trip coverage.
 5. Split the monolithic SwiftUI view model into smaller focused view models over time.
 6. Loosen tight coupling between the audio engine and concrete generator types.
-7. Add basic dependency-injection seams for system-facing services such as now-playing and device discovery.
-8. Sanitize external now-playing script output before using it in RT/RT+ paths.
-9. Harden config file watching/reload behavior against race conditions.
+7. ~~Sanitize external now-playing script output before using it in RT/RT+ paths.~~ Done (`NowPlayingScriptRunner.parseSnapshot` safely parses output).
+8. Harden config file watching/reload behavior against race conditions.
 
 ## Design constraints
 
@@ -394,7 +394,7 @@ The following items represent opportunities to improve CPU efficiency while main
 2. **RDS string preparation** - Cache RDS byte preparation and avoid repeated string allocations in RDS group generation
 3. **Stereo image processing** - Optimize the remaining mid/side energy calculations with vDSP where it stays maintainable
 4. **Memory access patterns** - Keep tightening cache-friendly access in input conversion, history capture, and tight DSP support paths
-5. **Buffer reuse** - Eliminate any remaining per-call scratch churn in capture and analysis paths
+5. ~~**Buffer reuse** - Eliminate any remaining per-call scratch churn in capture and analysis paths~~ Done. Scratch buffers pre-allocated; `MonitorLoudnessAnalyzer` uses fixed ring buffer.
 6. **Approximation where appropriate** - Use fast math approximations only where profiling shows real value and verification stays clean
 
 These optimizations should be approached incrementally with verification using the offline verifier to ensure no regression in MPX quality or compliance.
@@ -416,17 +416,17 @@ This section turns the remaining performance work into an explicit execution pla
 
 ### Phase P1. Make the callback safer under load
 
-Status: partially complete
+Status: mostly complete
 
 Completed:
 
 1. Removed render-thread busy waiting from `StereoInputRingBuffer`.
 2. Removed unconditional runtime-config lock acquisition from the audio callback by adding an atomic pending fast path.
+3. Replaced unbounded `MonitorLoudnessAnalyzer` array with fixed-size ring buffer and atomic cursor for lock-free audio-to-UI handoff.
 
 Next work:
 
-1. Ensure runtime apply never performs heavy filter or compressor reconfiguration directly inside the callback unless it is proven glitch-free and bounded.
-2. Re-audit all input fallback paths to confirm they stay allocation-free and non-blocking at callback time.
+1. Re-audit all input fallback paths to confirm they stay allocation-free and non-blocking at callback time.
 
 Success criteria:
 
@@ -538,10 +538,10 @@ Success criteria:
 
 ### Recommended execution order
 
-1. Remove ring-buffer busy waiting and callback locks.
-2. Precompute monitor-demod and Orbass coefficients.
-3. Gate scope and loudness work by visibility and usage.
-4. Revisit adaptive-read scratch copying only after the safety work above is complete.
+1. ~~Remove ring-buffer busy waiting and callback locks.~~ Done.
+2. ~~Precompute monitor-demod and Orbass coefficients.~~ Done.
+3. ~~Gate scope and loudness work by visibility and usage.~~ Done.
+4. ~~Revisit adaptive-read scratch copying only after the safety work above is complete.~~ Done.
 5. Capture baseline Instruments data and keep it current.
 
 ## References

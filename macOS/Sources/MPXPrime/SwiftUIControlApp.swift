@@ -532,6 +532,7 @@ private struct FinalStagePreset {
     let agcMinGainDB: Double
     let finalDriveDB: Double
     let compositeLimiterEnabled: Bool
+    let preEncodeAudioLimiterEnabled: Bool
 }
 
 enum MultibandPresetIntensity: String, CaseIterable, Identifiable {
@@ -1141,6 +1142,7 @@ final class MPXPrimeViewModel: ObservableObject {
     @Published var audioCompositePeakLinear: Float = 0.0
     @Published var compositeBudgetMarginDBValue: Float = 0.0
     @Published var compositeLimiterGainReductionDBValue: Float = 0.0
+    @Published var preEncodeLimiterGainReductionDBValue: Float = 0.0
     @Published var safetyLimiterGainReductionDBValue: Float = 0.0
     @Published var stereoImageText: String = "Corr +1.00 • Side 0.00x"
     @Published var agcStateText: String = "Off"
@@ -1313,7 +1315,7 @@ final class MPXPrimeViewModel: ObservableObject {
     func startMonitoringTimer() {
         monitorTimer?.invalidate()
         let timer = Timer(timeInterval: (1.0 / Self.monitoringRefreshHz), repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            MainActor.assumeIsolated {
                 self?.refreshMonitoringSnapshot()
             }
         }
@@ -1649,6 +1651,7 @@ final class MPXPrimeViewModel: ObservableObject {
         config.widebandAGCMinGainDB = preset.agcMinGainDB
         config.finalDriveDB = preset.finalDriveDB
         config.compositeLimiterEnabled = preset.compositeLimiterEnabled
+        config.preEncodeAudioLimiterEnabled = preset.preEncodeAudioLimiterEnabled
         saveConfig(restartRequired: false)
         applyLiveRuntimeConfigIfRunning()
         statusText =
@@ -1760,6 +1763,9 @@ final class MPXPrimeViewModel: ObservableObject {
         case .limiter:
             config.finalStagePresetID = defaults.finalStagePresetID
             config.compositeLimiterEnabled = defaults.compositeLimiterEnabled
+            config.preEncodeAudioLimiterEnabled = defaults.preEncodeAudioLimiterEnabled
+            config.preEncodeThreshold = defaults.preEncodeThreshold
+            config.preEncodeReleaseMS = defaults.preEncodeReleaseMS
             config.finalDriveDB = defaults.finalDriveDB
             config.mpxDeviationKHz = defaults.mpxDeviationKHz
         }
@@ -2127,6 +2133,7 @@ final class MPXPrimeViewModel: ObservableObject {
         var agcGainDB: Float = 0.0
         var agcGateActive: Bool = false
         var compositeLimiterGainReductionDB: Float = 0.0
+        var preEncodeAudioLimiterGainReductionDB: Float = 0.0
         var mpxSafetyLimiterGainReductionDB: Float = 0.0
         var pilotInjectionPercent: Float = 0.0
         var rdsInjectionPercent: Float = 0.0
@@ -2245,6 +2252,7 @@ final class MPXPrimeViewModel: ObservableObject {
             agcGainDB = meters.agcGainDB
             agcGateActive = meters.agcGateActive
             compositeLimiterGainReductionDB = meters.compositeLimiterGainReductionDB
+            preEncodeAudioLimiterGainReductionDB = meters.preEncodeAudioLimiterGainReductionDB
             mpxSafetyLimiterGainReductionDB = meters.mpxSafetyLimiterGainReductionDB
             pilotInjectionPercent = meters.pilotInjectionPercent
             rdsInjectionPercent = meters.rdsInjectionPercent
@@ -2321,6 +2329,7 @@ final class MPXPrimeViewModel: ObservableObject {
             audioCompositePeakLinear = 0.0
             compositeBudgetMarginDBValue = 0.0
             compositeLimiterGainReductionDBValue = 0.0
+            preEncodeLimiterGainReductionDBValue = 0.0
             safetyLimiterGainReductionDBValue = 0.0
             stereoImageText = "Corr +1.00 • Side 0.00x"
             widenerStateText = "Off"
@@ -2436,7 +2445,7 @@ final class MPXPrimeViewModel: ObservableObject {
                 dt: dt
             ))
         let limiterGRPeakHold = updateLimiterGRPeakHold(
-            liveValueDB: compositeLimiterGainReductionDB,
+            liveValueDB: preEncodeAudioLimiterGainReductionDB,
             dt: dt
         )
 
@@ -2452,16 +2461,17 @@ final class MPXPrimeViewModel: ObservableObject {
         audioCompositePeakLinear = audioCompositePeak
         compositeBudgetMarginDBValue = compositeBudgetMarginDB
         compositeLimiterGainReductionDBValue = compositeLimiterGainReductionDB
+        preEncodeLimiterGainReductionDBValue = preEncodeAudioLimiterGainReductionDB
         safetyLimiterGainReductionDBValue = mpxSafetyLimiterGainReductionDB
 
         let limiterState =
-            config.compositeLimiterEnabled
-            ? (compositeLimiterGainReductionDB >= 0.2 ? "Active" : "Idle") : "Off"
+            config.preEncodeAudioLimiterEnabled
+            ? (preEncodeAudioLimiterGainReductionDB >= 0.2 ? "Active" : "Idle") : "Off"
         limiterStateText = limiterState
         limiterDetailText = String(
-            format: "Drive %.1f dB • GR %.1f dB • Max %.1f dB • Safe %.1f dB • Peak %@",
+            format: "Drive %.1f dB • Pre-Enc GR %.1f dB • Max %.1f dB • Safe %.1f dB • Peak %@",
             config.finalDriveDB,
-            compositeLimiterGainReductionDB,
+            preEncodeAudioLimiterGainReductionDB,
             limiterGRPeakHold,
             mpxSafetyLimiterGainReductionDB,
             Self.dbfsString(outputPeak)
@@ -2761,6 +2771,11 @@ final class MPXPrimeViewModel: ObservableObject {
         raw.range(of: #"(^|[\s/])\d+(?:\.\d+)?s:"#, options: .regularExpression) != nil
     }
 
+    private static let timedPrefixRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"^([0-9]+(?:\.[0-9]+)?)s:"#, options: [])
+    private static let timedTokenRegex: NSRegularExpression? = try? NSRegularExpression(
+        pattern: #"([0-9]+(?:\.[0-9]+)?)s:"#, options: [])
+
     private static func parseTimedDisplaySequence(_ raw: String) -> [(
         duration: Double, text: String
     )] {
@@ -2772,8 +2787,7 @@ final class MPXPrimeViewModel: ObservableObject {
         let slashParts = trimmed.split(separator: "/").map(String.init)
         if slashParts.count > 1 {
             var out: [(Double, String)] = []
-            let prefixRegex = try? NSRegularExpression(
-                pattern: #"^([0-9]+(?:\.[0-9]+)?)s:"#, options: [])
+            let prefixRegex = timedPrefixRegex
             for part in slashParts {
                 let p = part.trimmingCharacters(in: .whitespacesAndNewlines)
                 if p.isEmpty { continue }
@@ -2795,8 +2809,7 @@ final class MPXPrimeViewModel: ObservableObject {
             return out.isEmpty ? [(10.0, trimmed)] : out
         }
 
-        let tokenRegex = try? NSRegularExpression(pattern: #"([0-9]+(?:\.[0-9]+)?)s:"#, options: [])
-        if let tokenRegex {
+        if let tokenRegex = timedTokenRegex {
             let ns = trimmed as NSString
             let matches = tokenRegex.matches(
                 in: trimmed, options: [], range: NSRange(location: 0, length: ns.length))
@@ -3018,7 +3031,8 @@ final class MPXPrimeViewModel: ObservableObject {
             agcMaxGainDB: 12.0,
             agcMinGainDB: -12.0,
             finalDriveDB: 6.0,
-            compositeLimiterEnabled: true
+            compositeLimiterEnabled: true,
+            preEncodeAudioLimiterEnabled: true
         ),
         .init(
             id: "chr",
@@ -3030,7 +3044,8 @@ final class MPXPrimeViewModel: ObservableObject {
             agcMaxGainDB: 10.0,
             agcMinGainDB: -9.0,
             finalDriveDB: 8.0,
-            compositeLimiterEnabled: true
+            compositeLimiterEnabled: true,
+            preEncodeAudioLimiterEnabled: true
         ),
         .init(
             id: "punchy",
@@ -3042,7 +3057,8 @@ final class MPXPrimeViewModel: ObservableObject {
             agcMaxGainDB: 11.0,
             agcMinGainDB: -10.0,
             finalDriveDB: 7.5,
-            compositeLimiterEnabled: true
+            compositeLimiterEnabled: true,
+            preEncodeAudioLimiterEnabled: true
         ),
         .init(
             id: "speech",
@@ -3054,7 +3070,8 @@ final class MPXPrimeViewModel: ObservableObject {
             agcMaxGainDB: 10.0,
             agcMinGainDB: -8.0,
             finalDriveDB: 4.5,
-            compositeLimiterEnabled: true
+            compositeLimiterEnabled: true,
+            preEncodeAudioLimiterEnabled: true
         ),
     ]
 
@@ -4206,10 +4223,10 @@ private struct MonitoringCalibrationSectionView: View {
                 )
                 DSPMetricGroupCard(
                     title: "Protection",
-                    subtitle: "Composite limiter may work; full-MPX safety limiting should stay minimal",
+                    subtitle: "Pre-encode limiter controls L/R peaks; composite clipper is a safety net",
                     rows: [
                         ("Final Drive", String(format: "%.1f dB", model.config.finalDriveDB)),
-                        ("Limiter GR", String(format: "%.1f dB", model.compositeLimiterGainReductionDBValue)),
+                        ("Pre-Encode GR", String(format: "%.1f dB", model.preEncodeLimiterGainReductionDBValue)),
                         ("Safety GR", String(format: "%.1f dB", model.safetyLimiterGainReductionDBValue)),
                         ("MPX Output", String(format: "%.1f dB", model.config.outputGainDB)),
                     ]
@@ -5397,6 +5414,7 @@ private struct ProcessingLimiterTab: View {
                 }
             }
             .pickerStyle(.menu)
+            Toggle("Enable Pre-Encode Limiter", isOn: model.configBinding(\.preEncodeAudioLimiterEnabled, runtimeDisposition: .live))
             Toggle("Enable Composite Limiter", isOn: model.configBinding(\.compositeLimiterEnabled, runtimeDisposition: .live))
             DoubleSliderRow(
                 title: "Final Drive",

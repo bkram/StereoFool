@@ -57,6 +57,7 @@ final class AudioOutputEngine {
         var agcGainDB: Float
         var agcGateActive: Bool
         var compositeLimiterGainReductionDB: Float
+        var preEncodeAudioLimiterGainReductionDB: Float
         var mpxSafetyLimiterGainReductionDB: Float
         var pilotInjectionPercent: Float
         var rdsInjectionPercent: Float
@@ -83,6 +84,7 @@ final class AudioOutputEngine {
         private static let shortTermBlockCount = 30
         private static let silenceGateLUFS: Float = -70.0
         private static let relativeGateOffsetLU: Float = -10.0
+        private static let maxHistoryBlocks = 600  // 60s of 100ms blocks
 
         private let sampleRate: Float
         private let blockFrameTarget: Int
@@ -90,7 +92,16 @@ final class AudioOutputEngine {
         private var kWeightShelf = StereoBiquad()
         private var partialBlockEnergy: Double = 0.0
         private var partialBlockFrames: Int = 0
-        private var completedBlockMeanSquares: [Double] = []
+
+        // Fixed-size ring buffer — allocated once in init(), never resized.
+        // Audio thread writes via process(), UI thread reads via snapshot().
+        private var ring: [Double]
+        private var ringHead: Int = 0
+        private var ringCount: Int = 0
+        // Atomic cursor packs (ringHead << 32 | ringCount) for lock-free
+        // audio→UI handoff. Audio thread stores with .releasing after each
+        // block write; UI thread loads with .acquiring before reading ring.
+        private let ringCursor = ManagedAtomic<UInt64>(0)
 
         init(sampleRate: Float) {
             self.sampleRate = max(8_000.0, sampleRate)
@@ -98,17 +109,22 @@ final class AudioOutputEngine {
                 1,
                 Int((Self.blockDurationSeconds * Double(self.sampleRate)).rounded())
             )
+            self.ring = Array(repeating: 0.0, count: Self.maxHistoryBlocks)
             reset()
         }
 
         func reset() {
             partialBlockEnergy = 0.0
             partialBlockFrames = 0
-            completedBlockMeanSquares.removeAll(keepingCapacity: false)
+            ringHead = 0
+            ringCount = 0
+            ringCursor.store(0, ordering: .releasing)
+            for i in 0..<ring.count { ring[i] = 0.0 }
             kWeightHP.configureHighpass(cutoffHz: 38.0, sampleRate: sampleRate)
             kWeightShelf.configureHighShelf(gainDB: 4.0, cutoffHz: 1_680.0, sampleRate: sampleRate)
         }
 
+        // Called from audio render thread — MUST be lock-free and allocation-free.
         func process(left: UnsafePointer<Float>, right: UnsafePointer<Float>, frameCount: Int) {
             guard frameCount > 0 else { return }
             for i in 0..<frameCount {
@@ -117,20 +133,30 @@ final class AudioOutputEngine {
                 partialBlockEnergy += Double((weighted.0 * weighted.0) + (weighted.1 * weighted.1))
                 partialBlockFrames += 1
                 if partialBlockFrames >= blockFrameTarget {
-                    completedBlockMeanSquares.append(partialBlockEnergy / Double(partialBlockFrames))
+                    ring[ringHead] = partialBlockEnergy / Double(partialBlockFrames)
+                    ringHead = (ringHead + 1) % Self.maxHistoryBlocks
+                    if ringCount < Self.maxHistoryBlocks {
+                        ringCount += 1
+                    }
+                    let packed = (UInt64(ringHead) << 32) | UInt64(ringCount)
+                    ringCursor.store(packed, ordering: .releasing)
                     partialBlockEnergy = 0.0
                     partialBlockFrames = 0
                 }
             }
         }
 
+        // Called from UI thread (under meterLock).
         func snapshot() -> LoudnessSnapshot {
-            guard completedBlockMeanSquares.count >= Self.momentaryBlockCount else {
+            let packed = ringCursor.load(ordering: .acquiring)
+            let head = Int(packed >> 32)
+            let count = Int(packed & 0xFFFF_FFFF)
+            guard count >= Self.momentaryBlockCount else {
                 return LoudnessSnapshot()
             }
-            let momentary = rollingLufs(lastBlocks: Self.momentaryBlockCount)
-            let shortTerm = rollingLufs(lastBlocks: Self.shortTermBlockCount)
-            let integrated = integratedLufs()
+            let momentary = rollingLufs(head: head, count: count, lastBlocks: Self.momentaryBlockCount)
+            let shortTerm = rollingLufs(head: head, count: count, lastBlocks: Self.shortTermBlockCount)
+            let integrated = integratedLufs(head: head, count: count)
             return LoudnessSnapshot(
                 available: true,
                 momentaryLUFS: momentary,
@@ -139,40 +165,65 @@ final class AudioOutputEngine {
             )
         }
 
-        private func rollingLufs(lastBlocks: Int) -> Float {
-            let blocks = min(lastBlocks, completedBlockMeanSquares.count)
-            guard blocks > 0 else { return -120.0 }
-            let slice = completedBlockMeanSquares.suffix(blocks)
-            let meanSquare = slice.reduce(0.0, +) / Double(blocks)
-            return Self.lufs(meanSquare: meanSquare)
+        @inline(__always)
+        private func blockAt(logicalIndex: Int, head: Int, count: Int) -> Double {
+            let start = (head - count + Self.maxHistoryBlocks) % Self.maxHistoryBlocks
+            return ring[(start + logicalIndex) % Self.maxHistoryBlocks]
         }
 
-        private func integratedLufs() -> Float {
-            let gatingBlocks = overlapping400msBlocks()
-            guard !gatingBlocks.isEmpty else { return -120.0 }
+        private func rollingLufs(head: Int, count: Int, lastBlocks: Int) -> Float {
+            let blocks = min(lastBlocks, count)
+            guard blocks > 0 else { return -120.0 }
+            var sum = 0.0
+            let offset = count - blocks
+            for i in 0..<blocks {
+                sum += blockAt(logicalIndex: offset + i, head: head, count: count)
+            }
+            return Self.lufs(meanSquare: sum / Double(blocks))
+        }
 
-            let absoluteGated = gatingBlocks.filter { Self.lufs(meanSquare: $0) >= Self.silenceGateLUFS }
-            guard !absoluteGated.isEmpty else { return -120.0 }
+        private func integratedLufs(head: Int, count: Int) -> Float {
+            guard count >= Self.momentaryBlockCount else { return -120.0 }
+            let windowCount = count - Self.momentaryBlockCount + 1
 
-            let absoluteMeanSquare = absoluteGated.reduce(0.0, +) / Double(absoluteGated.count)
+            // First pass: absolute gate at -70 LUFS
+            var absoluteGatedSum = 0.0
+            var absoluteGatedCount = 0
+            for start in 0..<windowCount {
+                var windowSum = 0.0
+                for j in 0..<Self.momentaryBlockCount {
+                    windowSum += blockAt(logicalIndex: start + j, head: head, count: count)
+                }
+                let windowMean = windowSum / Double(Self.momentaryBlockCount)
+                if Self.lufs(meanSquare: windowMean) >= Self.silenceGateLUFS {
+                    absoluteGatedSum += windowMean
+                    absoluteGatedCount += 1
+                }
+            }
+            guard absoluteGatedCount > 0 else { return -120.0 }
+
+            let absoluteMeanSquare = absoluteGatedSum / Double(absoluteGatedCount)
             let absoluteLufs = Self.lufs(meanSquare: absoluteMeanSquare)
             let relativeGate = absoluteLufs + Self.relativeGateOffsetLU
-            let relativeGated = absoluteGated.filter { Self.lufs(meanSquare: $0) >= relativeGate }
-            guard !relativeGated.isEmpty else { return absoluteLufs }
 
-            let integratedMeanSquare = relativeGated.reduce(0.0, +) / Double(relativeGated.count)
-            return Self.lufs(meanSquare: integratedMeanSquare)
-        }
-
-        private func overlapping400msBlocks() -> [Double] {
-            guard completedBlockMeanSquares.count >= Self.momentaryBlockCount else { return [] }
-            var blocks: [Double] = []
-            blocks.reserveCapacity(completedBlockMeanSquares.count - Self.momentaryBlockCount + 1)
-            for start in 0...(completedBlockMeanSquares.count - Self.momentaryBlockCount) {
-                let window = completedBlockMeanSquares[start..<(start + Self.momentaryBlockCount)]
-                blocks.append(window.reduce(0.0, +) / Double(Self.momentaryBlockCount))
+            // Second pass: relative gate
+            var relativeGatedSum = 0.0
+            var relativeGatedCount = 0
+            for start in 0..<windowCount {
+                var windowSum = 0.0
+                for j in 0..<Self.momentaryBlockCount {
+                    windowSum += blockAt(logicalIndex: start + j, head: head, count: count)
+                }
+                let windowMean = windowSum / Double(Self.momentaryBlockCount)
+                if Self.lufs(meanSquare: windowMean) >= Self.silenceGateLUFS,
+                   Self.lufs(meanSquare: windowMean) >= relativeGate
+                {
+                    relativeGatedSum += windowMean
+                    relativeGatedCount += 1
+                }
             }
-            return blocks
+            guard relativeGatedCount > 0 else { return absoluteLufs }
+            return Self.lufs(meanSquare: relativeGatedSum / Double(relativeGatedCount))
         }
 
         private static func lufs(meanSquare: Double) -> Float {
@@ -191,7 +242,7 @@ final class AudioOutputEngine {
     private let requestedInputDeviceID: AudioDeviceID?
     private let requestedOutputDeviceID: AudioDeviceID?
     private let outputMode: AudioOutputMode
-    private let targetDeviationKHz: Float
+    private var targetDeviationKHz: Float
     private var configuredRenderSampleRate: Double = 0.0
     private var inputRing: StereoInputRingBuffer?
     private var captureTapInstalled = false
@@ -235,6 +286,7 @@ final class AudioOutputEngine {
         agcGainDB: 0.0,
         agcGateActive: false,
         compositeLimiterGainReductionDB: 0.0,
+        preEncodeAudioLimiterGainReductionDB: 0.0,
         mpxSafetyLimiterGainReductionDB: 0.0,
         pilotInjectionPercent: 0.0,
         rdsInjectionPercent: 0.0,
@@ -641,6 +693,7 @@ final class AudioOutputEngine {
         meterSnapshot.agcGainDB = 0.0
         meterSnapshot.agcGateActive = false
         meterSnapshot.compositeLimiterGainReductionDB = 0.0
+        meterSnapshot.preEncodeAudioLimiterGainReductionDB = 0.0
         meterSnapshot.mpxSafetyLimiterGainReductionDB = 0.0
         meterSnapshot.pilotInjectionPercent = 0.0
         meterSnapshot.rdsInjectionPercent = 0.0
@@ -1379,6 +1432,7 @@ final class AudioOutputEngine {
             widebandAGCAttackMS: Float(config.widebandAGCAttackMS),
             widebandAGCReleaseMS: Float(config.widebandAGCReleaseMS),
             compositeLimiterEnabled: config.compositeLimiterEnabled,
+            preEncodeAudioLimiterEnabled: config.preEncodeAudioLimiterEnabled,
             mpxDeviationKHz: Float(config.mpxDeviationKHz),
             orbassEnabled: config.orbassEnabled,
             orbassAmount: Float(config.orbassAmount),
@@ -1673,6 +1727,7 @@ final class AudioOutputEngine {
             agcGainDB: agc.gainDB,
             agcGateActive: agc.gateActive,
             compositeLimiterGainReductionDB: limiter.gainReductionDB,
+            preEncodeAudioLimiterGainReductionDB: limiter.preEncodeGainReductionDB,
             mpxSafetyLimiterGainReductionDB: limiter.safetyGainReductionDB,
             pilotInjectionPercent: calibration.pilotPercent,
             rdsInjectionPercent: calibration.rdsPercent,
@@ -1802,6 +1857,7 @@ final class AudioOutputEngine {
         meterSnapshot.agcGainDB = agc.gainDB
         meterSnapshot.agcGateActive = agc.gateActive
         meterSnapshot.compositeLimiterGainReductionDB = limiter.gainReductionDB
+        meterSnapshot.preEncodeAudioLimiterGainReductionDB = limiter.preEncodeGainReductionDB
         meterSnapshot.mpxSafetyLimiterGainReductionDB = limiter.safetyGainReductionDB
         meterSnapshot.pilotInjectionPercent = calibration.pilotPercent
         meterSnapshot.rdsInjectionPercent = calibration.rdsPercent
@@ -1832,6 +1888,7 @@ final class AudioOutputEngine {
         runtimeConfigLock.unlock()
         if let runtime {
             generator.applyRuntimeConfig(runtime)
+            targetDeviationKHz = max(1.0, runtime.mpxDeviationKHz)
             runtimeConfigApplyCount.wrappingIncrement(by: 1, ordering: .relaxed)
         }
     }

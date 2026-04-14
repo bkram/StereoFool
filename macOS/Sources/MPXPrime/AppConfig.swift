@@ -20,6 +20,31 @@ struct AppConfig {
             .standardizingPath
     }
 
+    // Parameter apply behaviour:
+    //
+    // Live-apply (via RuntimeConfig — changes take effect immediately):
+    //   inputGainDB, outputGainDB, finalDriveDB, mpxDeviationKHz,
+    //   compositeLimiterEnabled, preEncodeAudioLimiterEnabled,
+    //   widebandAGCEnabled/Target/Attack/Release/MaxGain/MinGain,
+    //   orbassEnabled/Amount/FreqHz/Harmonics/Drive/Density/Subharmonics*,
+    //   monoBassEnabled/FreqHz,
+    //   stereoWidenEnabled/Width/Center/Mix,
+    //   multiband Enabled/Mode/X1-X4Hz/Thresholds/Ratios/Attack/Release/
+    //     KneeDB/LinkStrength/MakeupDB/ReleaseProgramDependent
+    //
+    // Live-apply RDS (via RDSRuntimeConfig):
+    //   rdsRT*/rdsPS*/rdsLongPS*/rdsPTYN* text and formatting,
+    //   rdsNowPlayingEnabled
+    //
+    // Restart-required (engine must be restarted):
+    //   sampleRate, blockSize, sourceMode, device UIDs, monitorEnabled,
+    //   monoMode, preemphasisUS, pilotLevel, sumLevel, diffLevel,
+    //   programLowpassHz, limitMPX/Threshold/Lookahead*, processingBypass,
+    //   hpfHz, hfTrimDB/Hz, testToneMode/Freq,
+    //   preEncodeThreshold, preEncodeReleaseMS,
+    //   audioCompositeSoftClipEnabled, audioCompositeSmootherEnabled,
+    //   finalMPXSoftClipEnabled
+
     var sampleRate: Double = 192_000.0
     var fftWindow96kHz: Bool = true
     var blockSize: Int = 2048
@@ -49,6 +74,9 @@ struct AppConfig {
     var limitLookaheadMS: Double = 5.0
     var limitLookaheadEnabled: Bool = true
     var compositeLimiterEnabled: Bool = true
+    var preEncodeAudioLimiterEnabled: Bool = true
+    var preEncodeThreshold: Double = 0.85
+    var preEncodeReleaseMS: Double = 50.0
     var audioCompositeSoftClipEnabled: Bool = true
     var audioCompositeSmootherEnabled: Bool = true
     var finalMPXSoftClipEnabled: Bool = true
@@ -205,6 +233,12 @@ struct AppConfig {
             "limit_lookahead_enabled", defaultValue: cfg.limitLookaheadEnabled)
         cfg.compositeLimiterEnabled = mpx.bool(
             "composite_clipper_enabled", defaultValue: cfg.compositeLimiterEnabled)
+        cfg.preEncodeAudioLimiterEnabled = mpx.bool(
+            "pre_encode_limiter_enabled", defaultValue: cfg.preEncodeAudioLimiterEnabled)
+        cfg.preEncodeThreshold = mpx.double(
+            "pre_encode_threshold", defaultValue: cfg.preEncodeThreshold)
+        cfg.preEncodeReleaseMS = mpx.double(
+            "pre_encode_release_ms", defaultValue: cfg.preEncodeReleaseMS)
         cfg.audioCompositeSoftClipEnabled = mpx.bool(
             "audio_composite_softclip_enabled",
             defaultValue: cfg.audioCompositeSoftClipEnabled
@@ -365,25 +399,117 @@ struct AppConfig {
             "rds_gaussian_enabled", defaultValue: cfg.rdsGaussianEnabled)
         cfg.rdsGaussianBWHZ = rds.double("rds_gaussian_bw_hz", defaultValue: cfg.rdsGaussianBWHZ)
         cfg.rdsGaussianTaps = rds.int("rds_gaussian_taps", defaultValue: cfg.rdsGaussianTaps)
-        cfg.rdsPI = Self.sanitizedPICode(cfg.rdsPI)
-        cfg.rdsPTY = max(0, min(31, cfg.rdsPTY))
-        cfg.rdsRTMode = (cfg.rdsRTMode.uppercased() == "2B") ? "2B" : "2A"
-        cfg.rdsRTCycleTime = max(1.0, min(60.0, cfg.rdsRTCycleTime))
-        cfg.rdsRTActiveBuffer = max(0, min(3, cfg.rdsRTActiveBuffer))
-        cfg.rdsRTABCycleCount = max(1, min(99, cfg.rdsRTABCycleCount))
-        cfg.rdsECC = Self.sanitizedHexByte(cfg.rdsECC)
-        cfg.rdsLIC = Self.sanitizedHexByte(cfg.rdsLIC)
-        cfg.rdsTZOffset = max(-12.0, min(14.0, cfg.rdsTZOffset))
-        cfg.rdsLevel = max(0.0, min(7.5, cfg.rdsLevel))
-        cfg.rdsFreq = max(1_000.0, min(120_000.0, cfg.rdsFreq))
-        cfg.rdsGaussianBWHZ = max(600.0, min(6_000.0, cfg.rdsGaussianBWHZ))
-        cfg.rdsGaussianTaps = max(9, min(401, cfg.rdsGaussianTaps | 1))
-
-        // Note: monitor_rate_hz only affects the optional monitoring audio capture, not main render rate
-        // Main render rate uses the default sample_rate or is determined by hardware capability
-        cfg.blockSize = max(1024, interfaces.int("blocksize", defaultValue: cfg.blockSize))
+        cfg.sampleRate = interfaces.double("sample_rate", defaultValue: cfg.sampleRate)
+        cfg.blockSize = interfaces.int("blocksize", defaultValue: cfg.blockSize)
         cfg.fftWindow96kHz = interfaces.bool("fft_window_92khz", defaultValue: cfg.fftWindow96kHz)
+        cfg.validate()
         return cfg
+    }
+
+    mutating func validate() {
+        // Gain parameters — powf(10, x/20) overflows Float beyond ~±680 dB;
+        // sane broadcast range is much smaller.
+        inputGainDB = max(-40.0, min(40.0, inputGainDB))
+        outputGainDB = max(-40.0, min(40.0, outputGainDB))
+        finalDriveDB = max(-20.0, min(20.0, finalDriveDB))
+
+        // Pilot / sum / diff levels
+        pilotLevel = max(0.0, min(0.15, pilotLevel))
+        sumLevel = max(0.0, min(2.0, sumLevel))
+        diffLevel = max(0.0, min(2.0, diffLevel))
+
+        // Test tone
+        testToneFreq = max(20.0, min(20_000.0, testToneFreq))
+
+        // Filter frequencies
+        hpfHz = max(10.0, min(200.0, hpfHz))
+        hfTrimDB = max(-12.0, min(0.0, hfTrimDB))
+        hfTrimHz = max(500.0, min(12_000.0, hfTrimHz))
+        programLowpassHz = max(8_000.0, min(20_000.0, programLowpassHz))
+
+        // Limiter
+        limitThreshold = max(0.5, min(0.999, limitThreshold))
+        limitLookaheadMS = max(0.0, min(20.0, limitLookaheadMS))
+        preEncodeThreshold = max(0.5, min(0.999, preEncodeThreshold))
+        preEncodeReleaseMS = max(10.0, min(200.0, preEncodeReleaseMS))
+
+        // MPX deviation
+        mpxDeviationKHz = max(25.0, min(100.0, mpxDeviationKHz))
+
+        // Pre-emphasis
+        if ![0, 25, 50, 75].contains(preemphasisUS) {
+            preemphasisUS = 50
+        }
+
+        // Wideband AGC
+        widebandAGCTargetDB = max(-40.0, min(0.0, widebandAGCTargetDB))
+        widebandAGCAttackMS = max(1.0, min(5_000.0, widebandAGCAttackMS))
+        widebandAGCReleaseMS = max(10.0, min(10_000.0, widebandAGCReleaseMS))
+        widebandAGCMaxGainDB = max(0.0, min(30.0, widebandAGCMaxGainDB))
+        widebandAGCMinGainDB = max(-30.0, min(0.0, widebandAGCMinGainDB))
+        if widebandAGCMaxGainDB < widebandAGCMinGainDB {
+            widebandAGCMaxGainDB = 12.0
+            widebandAGCMinGainDB = -12.0
+        }
+
+        // Orbass
+        orbassAmount = max(0.0, min(1.0, orbassAmount))
+        orbassFreqHz = max(45.0, min(220.0, orbassFreqHz))
+        orbassHarmonics = max(0.0, min(1.0, orbassHarmonics))
+        orbassDrive = max(0.0, min(2.5, orbassDrive))
+        orbassDensity = max(0.0, min(1.0, orbassDensity))
+        orbassSubharmonicsAmount = max(0.0, min(1.0, orbassSubharmonicsAmount))
+
+        // Stereo widener
+        stereoWidenWidth = max(0.0, min(1.0, stereoWidenWidth))
+        stereoWidenCenter = max(0.0, min(1.0, stereoWidenCenter))
+        stereoWidenMix = max(0.0, min(1.0, stereoWidenMix))
+        monoBassFreqHz = max(60.0, min(250.0, monoBassFreqHz))
+
+        // Multiband
+        multibandMode = (multibandMode == 5) ? 5 : 3
+        multibandX1Hz = max(40.0, min(300.0, multibandX1Hz))
+        multibandX2Hz = max(100.0, min(1_000.0, multibandX2Hz))
+        multibandX3Hz = max(500.0, min(5_000.0, multibandX3Hz))
+        multibandX4Hz = max(2_000.0, min(16_000.0, multibandX4Hz))
+        multibandLowHz = max(80.0, min(1_000.0, multibandLowHz))
+        multibandHighHz = max(500.0, min(8_000.0, multibandHighHz))
+        multibandLowThresholdDB = max(-40.0, min(0.0, multibandLowThresholdDB))
+        multibandMidThresholdDB = max(-40.0, min(0.0, multibandMidThresholdDB))
+        multibandHighThresholdDB = max(-40.0, min(0.0, multibandHighThresholdDB))
+        multibandLowRatio = max(1.0, min(20.0, multibandLowRatio))
+        multibandMidRatio = max(1.0, min(20.0, multibandMidRatio))
+        multibandHighRatio = max(1.0, min(20.0, multibandHighRatio))
+        multibandLowAttackMS = max(0.1, min(200.0, multibandLowAttackMS))
+        multibandMidAttackMS = max(0.1, min(200.0, multibandMidAttackMS))
+        multibandHighAttackMS = max(0.1, min(200.0, multibandHighAttackMS))
+        multibandLowReleaseMS = max(10.0, min(2_000.0, multibandLowReleaseMS))
+        multibandMidReleaseMS = max(10.0, min(2_000.0, multibandMidReleaseMS))
+        multibandHighReleaseMS = max(10.0, min(2_000.0, multibandHighReleaseMS))
+        multibandKneeDB = max(0.0, min(12.0, multibandKneeDB))
+        multibandLinkStrength = max(0.0, min(1.0, multibandLinkStrength))
+        multibandMakeupDB = max(-12.0, min(12.0, multibandMakeupDB))
+
+        // Engine
+        sampleRate = max(44_100.0, min(384_000.0, sampleRate))
+        blockSize = max(1024, min(8192, blockSize))
+
+        // RDS
+        rdsPI = Self.sanitizedPICode(rdsPI)
+        rdsPTY = max(0, min(31, rdsPTY))
+        rdsRTMode = (rdsRTMode.uppercased() == "2B") ? "2B" : "2A"
+        rdsRTCycleTime = max(1.0, min(60.0, rdsRTCycleTime))
+        rdsRTActiveBuffer = max(0, min(3, rdsRTActiveBuffer))
+        rdsRTABCycleCount = max(1, min(99, rdsRTABCycleCount))
+        rdsECC = Self.sanitizedHexByte(rdsECC)
+        rdsLIC = Self.sanitizedHexByte(rdsLIC)
+        rdsTZOffset = max(-12.0, min(14.0, rdsTZOffset))
+        rdsLevel = max(0.0, min(7.5, rdsLevel))
+        rdsFreq = max(1_000.0, min(120_000.0, rdsFreq))
+        rdsGaussianBWHZ = max(600.0, min(6_000.0, rdsGaussianBWHZ))
+        rdsGaussianTaps = max(9, min(401, rdsGaussianTaps | 1))
+        rdsNowPlayingPollSeconds = max(1.0, min(300.0, rdsNowPlayingPollSeconds))
+        rdsNowPlayingTimeoutSeconds = max(0.2, min(30.0, rdsNowPlayingTimeoutSeconds))
     }
 
     static func resolvedINIPath(_ path: String, forWrite: Bool = false) -> String {
@@ -412,6 +538,9 @@ struct AppConfig {
             "limit_lookahead_enabled = \(Self.boolString(limitLookaheadEnabled))",
             "limit_lookahead_ms = \(Self.formatFloat(limitLookaheadMS))",
             "composite_clipper_enabled = \(Self.boolString(compositeLimiterEnabled))",
+            "pre_encode_limiter_enabled = \(Self.boolString(preEncodeAudioLimiterEnabled))",
+            "pre_encode_threshold = \(Self.formatFloat(preEncodeThreshold))",
+            "pre_encode_release_ms = \(Self.formatFloat(preEncodeReleaseMS))",
             "audio_composite_softclip_enabled = \(Self.boolString(audioCompositeSoftClipEnabled))",
             "audio_composite_smoother_enabled = \(Self.boolString(audioCompositeSmootherEnabled))",
             "final_mpx_softclip_enabled = \(Self.boolString(finalMPXSoftClipEnabled))",

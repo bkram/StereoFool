@@ -33,25 +33,33 @@ Audio Input (L/R) @ interface rate (typically 192 kHz)
 │    ├── Pre-emphasis 50 µs / 75 µs
 │    └── Optional pre-emphasis HF control
 │
+├──► Pre-encode audio limiter (L/R domain, stereo-linked)
+│    └── True-peak limiter on L/R after pre-emphasis, before stereo encoding
+│        Controls peaks before they enter the stereo encoder where
+│        pre-emphasis would amplify them further
+│
 ├──► Stereo encoder (phase-coherent)
 │    ├── M = (L+R)/2  → steep LPF ~15.0–15.2 kHz
 │    ├── S = (L−R)/2  → steep LPF ~15.0–15.2 kHz
-│    ├── Pilot 19 kHz (≈8–10% injection, exact phase reference)
 │    └── DSB-SC: S × cos(2π·38 kHz)   where 38 kHz = 2×pilot (phase locked)
 │
-├──► RDS path (MPX domain @ output rate)
+├──► RDS path (parallel, MPX domain @ output rate)
 │    ├── RDS baseband (biphase / shaping)
 │    ├── Gaussian filter (spectral containment)
-│    └── 57 kHz subcarrier (3×pilot, phase locked), injection ~3–7%
+│    └── 57 kHz subcarrier (3×pilot, phase locked)
 │
-├──► Composite sum (phase-coherent)
-│    └── MPX = M + (S@38k DSB-SC) + Pilot19 + RDS57
-│
-├──► Final MPX chain
+├──► Final MPX chain (audio composite only)
 │    ├── Final Drive (audio-composite domain)
-│    ├── Audio-composite limiter/clipper
+│    ├── Audio-composite limiter (4× oversampled true-peak with decimation LP)
 │    ├── MPX output calibration
-│    └── Full-MPX safety limiter
+│    └── Safety limiter (audio composite only — no pilot, no RDS)
+│
+├──► Post-limiter subcarrier injection
+│    ├── Pilot 19 kHz (≈8–10% injection, constant amplitude)
+│    ├── RDS 57 kHz (≈3–7% injection, constant amplitude)
+│    └── Subcarriers bypass all limiting stages to preserve constant
+│        amplitude for reliable stereo decoding and RDS reception
+│        (professional broadcast standard: Omnia, Orban, Stereotool)
 │
 ├──► Output formatting
 │    └── Output: PCM to DAC via AVAudioEngine
@@ -89,9 +97,11 @@ Within the main audio path, MPX Prime currently runs:
 7. Multiband with 3-band or 5-band complementary crossovers
 8. Stereo-image protection
 9. Pre-emphasis
-10. Stereo coder
-11. Pilot and RDS injection
-12. Final MPX loudness and safety stages
+10. Pre-encode audio limiter (L/R domain, stereo-linked true-peak)
+11. Stereo encoder (M/S encoding, 38 kHz DSB-SC subcarrier)
+12. Audio-composite limiter (4× oversampled true-peak)
+13. Safety limiter (audio composite only)
+14. Pilot and RDS injection (post-limiter, constant amplitude)
 
 When `Mono Mode` is enabled, MPX Prime suppresses the pilot, stereo subcarrier, and RDS injection so the transmitted composite is true mono.
 

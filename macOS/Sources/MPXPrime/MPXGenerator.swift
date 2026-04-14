@@ -208,6 +208,27 @@ struct CompositeTruePeakLimiter {
     }
 }
 
+struct PreEncodeAudioLimiter {
+    private var limiterL = CompositeTruePeakLimiter()
+    private var limiterR = CompositeTruePeakLimiter()
+    private var gainReduction: Float = 0.0
+
+    mutating func configure(sampleRate: Float, threshold: Float, releaseMS: Float = 50.0) {
+        limiterL.configure(sampleRate: sampleRate, threshold: threshold, releaseMS: releaseMS)
+        limiterR.configure(sampleRate: sampleRate, threshold: threshold, releaseMS: releaseMS)
+        gainReduction = 0.0
+    }
+
+    mutating func process(left: Float, right: Float) -> (Float, Float) {
+        let outL = limiterL.process(left)
+        let outR = limiterR.process(right)
+        gainReduction = max(limiterL.gainReductionDB, limiterR.gainReductionDB)
+        return (outL, outR)
+    }
+
+    var gainReductionDB: Float { gainReduction }
+}
+
 struct OnePoleLP {
     var alpha: Float = 1.0
     var state: Float = 0.0
@@ -2750,6 +2771,7 @@ final class MPXGenerator {
     struct FinalLimiterStatus {
         let enabled: Bool
         let gainReductionDB: Float
+        let preEncodeGainReductionDB: Float
         let safetyGainReductionDB: Float
     }
 
@@ -2789,6 +2811,7 @@ final class MPXGenerator {
         let widebandAGCAttackMS: Float
         let widebandAGCReleaseMS: Float
         let compositeLimiterEnabled: Bool
+        let preEncodeAudioLimiterEnabled: Bool
         let mpxDeviationKHz: Float
         let orbassEnabled: Bool
         let orbassAmount: Float
@@ -2982,6 +3005,10 @@ final class MPXGenerator {
 
     private var compositeLimiterEnabled: Bool
     private var compositeLimiter = CompositeTruePeakLimiter()
+    private var preEncodeAudioLimiterEnabled: Bool
+    private var preEncodeAudioLimiter = PreEncodeAudioLimiter()
+    private var preEncodeThreshold: Float = 0.85
+    private var preEncodeReleaseMS: Float = 50.0
 
     private var toneStep: Float
     private var tonePhase: Float = 0.0
@@ -3096,6 +3123,7 @@ final class MPXGenerator {
         self.limitLookaheadEnabled = config.limitLookaheadEnabled
         self.limitLookaheadMS = clampf(Float(config.limitLookaheadMS), 0.0, 20.0)
         self.compositeLimiterEnabled = config.compositeLimiterEnabled
+        self.preEncodeAudioLimiterEnabled = config.preEncodeAudioLimiterEnabled
         self.audioCompositeSoftClipEnabled = config.audioCompositeSoftClipEnabled
         self.audioCompositeSmootherRequested = config.audioCompositeSmootherEnabled
         self.finalMPXSoftClipEnabled = config.finalMPXSoftClipEnabled
@@ -3182,6 +3210,13 @@ final class MPXGenerator {
             threshold: min(0.96, threshold * 0.965),
             releaseMS: 32.0
         )
+        preEncodeThreshold = clampf(Float(config.preEncodeThreshold), 0.5, 0.999)
+        preEncodeReleaseMS = clampf(Float(config.preEncodeReleaseMS), 10.0, 200.0)
+        preEncodeAudioLimiter.configure(
+            sampleRate: self.sampleRate,
+            threshold: preEncodeThreshold,
+            releaseMS: preEncodeReleaseMS
+        )
         updateDerivedRates()
         configureMonitorDemod()
     }
@@ -3216,9 +3251,14 @@ final class MPXGenerator {
             enabled: limitEnabled && limitLookaheadEnabled
         )
         compositeLimiter.configure(
-            sampleRate: sampleRate,
+            sampleRate: self.sampleRate,
             threshold: min(0.96, threshold * 0.965),
             releaseMS: 32.0
+        )
+        preEncodeAudioLimiter.configure(
+            sampleRate: sampleRate,
+            threshold: preEncodeThreshold,
+            releaseMS: preEncodeReleaseMS
         )
         rdsCoder?.setSampleRate(sampleRate)
         updateDerivedRates()
@@ -3231,6 +3271,7 @@ final class MPXGenerator {
         finalDrive = powf(10.0, config.finalDriveDB / 20.0)
         deviationScale = config.mpxDeviationKHz / 75.0
         compositeLimiterEnabled = config.compositeLimiterEnabled
+        preEncodeAudioLimiterEnabled = config.preEncodeAudioLimiterEnabled
 
         let agcChanged =
             widebandAGCEnabled != config.widebandAGCEnabled
@@ -3392,8 +3433,9 @@ final class MPXGenerator {
 
     var finalLimiterStatus: FinalLimiterStatus {
         FinalLimiterStatus(
-            enabled: compositeLimiterEnabled && !processingBypass,
+            enabled: (compositeLimiterEnabled || preEncodeAudioLimiterEnabled) && !processingBypass,
             gainReductionDB: compositeLimiter.gainReductionDB,
+            preEncodeGainReductionDB: preEncodeAudioLimiter.gainReductionDB,
             safetyGainReductionDB: (limitEnabled && !processingBypass)
                 ? lookaheadLimiter.gainReductionDB : 0.0
         )
@@ -3959,6 +4001,12 @@ final class MPXGenerator {
 
         updateStereoImageMonitor(left: stereo.left, right: stereo.right)
 
+        if preEncodeAudioLimiterEnabled && !processingBypass {
+            let limited = preEncodeAudioLimiter.process(left: stereo.left, right: stereo.right)
+            stereo.left = limited.0
+            stereo.right = limited.1
+        }
+
         let composite = makeCompositeComponents(
             left: stereo.left,
             right: stereo.right,
@@ -4223,11 +4271,12 @@ final class MPXGenerator {
             audioCompositePeakState * audioCompositePeakDecayCoeff
         )
 
-        var mpx = Self.makeOutputComposite(
-            audioComposite: audioComposite,
-            subcarriers: subcarriers,
-            outputGain: outputGain
-        )
+        // Safety limiter on audio composite only — pilot and RDS are injected
+        // after all limiting to preserve constant amplitude.  Professional
+        // broadcast standard (Omnia, Orban, Stereotool): subcarriers bypass
+        // the final limiter so the receiver's stereo decoder and RDS decoder
+        // always see stable reference signals.
+        var mpx = audioComposite * outputGain
 
         if limitEnabled {
             mpx = lookaheadLimiter.process(mpx)
@@ -4235,6 +4284,9 @@ final class MPXGenerator {
                 mpx = Self.softClipSafety(mpx, threshold: threshold)
             }
         }
+
+        // Inject pilot and RDS after all limiting — constant amplitude
+        mpx += subcarriers * outputGain
 
         return clampf(mpx, -1.0, 1.0)
     }
