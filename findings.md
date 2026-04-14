@@ -1,7 +1,7 @@
-# StereoFool Project Evaluation
+# MPX Prime Project Evaluation
 
 ## Overview
-StereoFool is a native macOS FM composite (MPX) generator written in Swift and SwiftUI. It takes live audio input or a test tone, applies optional broadcast-style processing, generates stereo FM baseband with pilot and optional RDS, and sends MPX plus optional decoded monitor audio to Core Audio devices.
+MPX Prime is a native macOS FM composite (MPX) generator written in Swift and SwiftUI. It takes live audio input or a test tone, applies optional broadcast-style processing, generates stereo FM baseband with pilot and optional RDS, and sends MPX plus optional decoded monitor audio to Core Audio devices.
 
 ## Positive Aspects
 1. Well-structured SwiftUI application with clear separation of concerns
@@ -20,7 +20,7 @@ StereoFool is a native macOS FM composite (MPX) generator written in Swift and S
 ### 1. Audio Buffering Performance (Fixed)
 - **Issue**: Per-callback heap allocations and locking in audio conversion paths
 - **Fix**: Completely redesigned `StereoInputRingBuffer` to use lock-free atomic operations instead of `NSLock`, eliminating per-callback heap allocations and reducing lock contention
-- **Location**: `macOS/Sources/StereoFool/StereoInputRingBuffer.swift`
+- **Location**: `macOS/Sources/MPXPrime/StereoInputRingBuffer.swift`
 - **Impact**: Significantly improved real-time audio performance by making the buffer truly lock-free and allocation-free in the audio callback path
 
 ### 2. RDS Processing Optimization (Fixed)
@@ -30,7 +30,7 @@ StereoFool is a native macOS FM composite (MPX) generator written in Swift and S
   - Moved expensive `Date`/`Calendar` computations off the audio render path
   - Replaced simple UTF-8 conversion with proper RDS character mapping per EN 50067 standard
   - Added atomic operations for thread-safe cache updates
-- **Location**: `macOS/Sources/StereoFool/MPXGenerator.swift`
+- **Location**: `macOS/Sources/MPXPrime/MPXGenerator.swift`
 - **Impact**: Reduced CPU load on audio callback thread and improved RDS text handling compliance
 
 ### 3. Monitoring and Calibration Enhancements (Fixed)
@@ -40,7 +40,7 @@ StereoFool is a native macOS FM composite (MPX) generator written in Swift and S
   - Implemented stereo history tracking showing correlation, side/mid ratio, and image state over time
   - Added visual indicators for pilot/RDS levels, composite budget margin, and limiter status
   - Enhanced monitoring with actionable calibration steps based on current readings
-- **Location**: `macOS/Sources/StereoFool/SwiftUIControlApp.swift`
+- **Location**: `macOS/Sources/MPXPrime/SwiftUIControlApp.swift`
 - **Impact**: Much clearer operational workflow for aligning with broadcast exciters
 
 ### 4. Verification System Improvements (Fixed)
@@ -50,13 +50,13 @@ StereoFool is a native macOS FM composite (MPX) generator written in Swift and S
   - Added long-run signature references with updated values
   - Improved occupied bandwidth and ratio checking
   - Added safety checkpoints to verifier logic
-- **Location**: `macOS/Sources/StereoFool/VerificationHarness.swift` and `macOS/Verification.ini`
+- **Location**: `macOS/Sources/MPXPrime/VerificationHarness.swift` and `macOS/Verification.ini`
 - **Impact**: More reliable offline verification that better correlates with real-world performance
 
 ### 5. FFT/Spectrum Analyzer Optimization (Already Implemented)
 - **Issue**: FFT/spectrum scratch buffers being rebuilt on every refresh
 - **Status**: **ALREADY FIXED** - The `MPXSpectrumAnalyzer` class already caches FFT setup, windowing data, and scratch buffers, only rebuilding them when the FFT size actually changes
-- **Location**: `macOS/Sources/StereoFool/SwiftUIControlApp.swift` (lines 337-462 in `prepareBuffers` method)
+- **Location**: `macOS/Sources/MPXPrime/SwiftUIControlApp.swift` (lines 337-462 in `prepareBuffers` method)
 - **Impact**: Eliminates unnecessary CPU overhead in spectrum updates while maintaining correct functionality
 
 ## Remaining Issues Identified
@@ -141,4 +141,4 @@ The plan.md file has been updated to reflect completed work and current prioriti
 The plan accurately reflects the work completed (particularly the significant audio buffering, RDS, and FFT caching optimizations) and identifies the next steps for continued improvement.
 
 ## Conclusion
-StereoFool has made significant progress in addressing performance bottlenecks, particularly with the lock-free audio buffering, optimized RDS processing, and pre-existing FFT caching. The codebase remains clean, well-documented, and follows Apple's platform conventions. With the remaining improvements addressed, the project is well-positioned to reach professional-grade quality and usability.
+MPX Prime has made significant progress in addressing performance bottlenecks, particularly with the lock-free audio buffering, optimized RDS processing, and pre-existing FFT caching. The codebase remains clean, well-documented, and follows Apple's platform conventions. With the remaining improvements addressed, the project is well-positioned to reach professional-grade quality and usability.

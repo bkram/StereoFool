@@ -1,6 +1,6 @@
-# StereoFool macOS
+# MPX Prime macOS
 
-StereoFool is a native macOS FM stereo / MPX / RDS app built with Swift, SwiftUI, and AppKit.
+MPX Prime is a native macOS FM stereo / MPX / RDS app built with Swift, SwiftUI, and AppKit.
 
 Current release line: `0.85`
 
@@ -21,7 +21,7 @@ swift build --package-path macOS -c release
 From repo root:
 
 ```bash
-swift run --package-path macOS StereoFool
+swift run --package-path macOS MPXPrime
 ```
 
 Default launch mode is GUI.
@@ -29,19 +29,19 @@ Default launch mode is GUI.
 Headless mode:
 
 ```bash
-swift run --package-path macOS StereoFool --nogui
+swift run --package-path macOS MPXPrime --nogui
 ```
 
 Custom config path:
 
 ```bash
-swift run --package-path macOS StereoFool --config /path/to/StereoFool.ini
+swift run --package-path macOS MPXPrime --config "/path/to/MPX Prime.ini"
 ```
 
 ## Default configuration path
 
 ```text
-~/Library/Application Support/StereoFool/StereoFool.ini
+~/Library/Application Support/MPX Prime/MPX Prime.ini
 ```
 
 ## UI overview

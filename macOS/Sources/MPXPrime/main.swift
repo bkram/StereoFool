@@ -27,9 +27,13 @@ struct CLIOptions {
 func defaultVerificationConfigPath() -> String {
     let launchDirectory =
         ProcessInfo.processInfo.environment["PWD"] ?? FileManager.default.currentDirectoryPath
-    let candidate = ((launchDirectory as NSString).appendingPathComponent("macOS/Verification.ini")
-        as NSString).standardizingPath
-    if FileManager.default.fileExists(atPath: candidate) {
+    let candidates = [
+        ((launchDirectory as NSString).appendingPathComponent("macOS/Verification.ini")
+            as NSString).standardizingPath,
+        ((launchDirectory as NSString).appendingPathComponent("Verification.ini")
+            as NSString).standardizingPath,
+    ]
+    for candidate in candidates where FileManager.default.fileExists(atPath: candidate) {
         return candidate
     }
     return AppConfig.defaultINIPath
@@ -90,16 +94,16 @@ func parseCLI() -> CLIOptions {
 
 func printUsage() {
     let text = """
-        StereoFool
+        MPX Prime
 
         Usage:
-          StereoFool [--config <path>] [--seconds 30] [--gui|--nogui]
-          StereoFool [--config <path>] --verify [--seconds 5]
-          StereoFool [--config <path>] --verify-presets [--seconds 5]
-          StereoFool [--config <path>] --verify-long [--seconds 30]
+          MPXPrime [--config <path>] [--seconds 30] [--gui|--nogui]
+          MPXPrime [--config <path>] --verify [--seconds 5]
+          MPXPrime [--config <path>] --verify-presets [--seconds 5]
+          MPXPrime [--config <path>] --verify-long [--seconds 30]
 
         Options:
-          --config   Path to macOS INI config (default: ~/Library/Application Support/StereoFool/StereoFool.ini)
+          --config   Path to macOS INI config (default: ~/Library/Application Support/MPX Prime/MPX Prime.ini)
           --seconds  Auto-stop after N seconds (GUI or headless)
           --gui      Launch native SwiftUI macOS window (default)
           --nogui    Run headless
@@ -157,7 +161,7 @@ do {
 
     let qosApplied = applyRealtimePriorityHints()
     if !qosApplied {
-        fputs("StereoFool: unable to apply QoS hint\n", stderr)
+        fputs("MPX Prime: unable to apply QoS hint\n", stderr)
     }
 
     if options.gui {
@@ -240,7 +244,7 @@ do {
             })
     }
 
-    print("StereoFool running. Press Ctrl-C to stop.")
+    print("MPX Prime running. Press Ctrl-C to stop.")
 
     // Run the application event loop - same as GUI does
     app.run()

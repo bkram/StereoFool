@@ -840,19 +840,18 @@ private final class BasicRDSCoder {
     private let afCodes: [Int]
     private let psCentered: Bool
     private let rtManualBuffers: Bool
-    private let rtCycleAB: Bool
-    private let rtRawText: String
-    private let rtRawBufferA: String
-    private let rtRawBufferB: String
-    private let rtBufferA: String
-    private let rtBufferB: String
-    private let rtCR: Bool
-    private let rtCentered: Bool
-    private let rtMode2B: Bool
+    private var rtCycleAB: Bool
+    private var rtRawText: String
+    private var rtRawBuffers: [String]
+    private let rtBuffers: [String]
+    private var rtBufferEnabled: [Bool]
+    private var rtCR: Bool
+    private var rtCentered: Bool
+    private var rtMode2B: Bool
     private let rtCycle: Bool
-    private let rtCycleTime: Double
+    private var rtCycleTime: Double
     private let rtActiveBuffer: Int
-    private let rtABCycleCount: Int
+    private var rtABCycleCount: Int
     private let rdsFreqHz: Float
     private let gaussianEnabled: Bool
     private let gaussianBWHZ: Float
@@ -863,9 +862,9 @@ private final class BasicRDSCoder {
     private let schedulerStandardLPS: Bool
     private let psFrames: [String]
     private let psFrameBytes: [[UInt8]]
-    private let rtFrames: [String]
+    private var rtFrames: [String]
     private let psSequence: [TimedTextFrame]
-    private let rtSequence: [TimedTextFrame]
+    private var rtSequence: [TimedTextFrame]
     private let ptynEnabled: Bool
     private let ptynCentered: Bool
     private let ptynFrames: [String]
@@ -877,10 +876,10 @@ private final class BasicRDSCoder {
     private let lpsFrames: [String]
     private let lpsPreparedFrameBytes: [[UInt8]]
     private let lpsSequence: [TimedTextFrame]
-    private let rtPlusEnabled: Bool
-    private let rtPlusFormatA: String
-    private let rtPlusFormatB: String
-    private let nowPlayingEnabled: Bool
+    private var rtPlusEnabled: Bool
+    private var rtPlusFormatA: String
+    private var rtPlusFormatB: String
+    private var nowPlayingEnabled: Bool
     private let nowPlayingState: NowPlayingState?
     private let enCT: Bool
     private let enID: Bool
@@ -890,7 +889,7 @@ private final class BasicRDSCoder {
     private let cachedGroup1Variant = ManagedAtomic<Int>(0)
     private let cachedCTMinuteToken = ManagedAtomic<Int>(-1)
     private let cachedCTPacked = ManagedAtomic<UInt64>(0)
-    private let clockUpdateQueue = DispatchQueue(label: "StereoFool.RDSClockCache", qos: .utility)
+    private let clockUpdateQueue = DispatchQueue(label: "MPXPrime.RDSClockCache", qos: .utility)
     private var clockUpdateTimer: DispatchSourceTimer?
 
     private var sampleRate: Float
@@ -917,11 +916,7 @@ private final class BasicRDSCoder {
     private var rtSeqStart: Double = 0.0
     private var rtABFlag: Int = 0
     private var rtABCycles: Int = 0
-    private var lastManualRTBuffer: Int = 0
-    private var rtManualPreparedA: String
-    private var rtManualPreparedABytes: [UInt8]
-    private var rtManualPreparedB: String
-    private var rtManualPreparedBBytes: [UInt8]
+    private var lastManualRTBuffer: Int = -1
     private var ptynSegment: Int = 0
     private var ptynFrameIndex: Int = 0
     private var ptynSeqIndex: Int = 0
@@ -961,16 +956,20 @@ private final class BasicRDSCoder {
         self.rtManualBuffers = config.rdsRTManualBuffers
         self.rtCycleAB = config.rdsRTCycleAB
         self.rtRawText = config.rdsRTText
-        self.rtRawBufferA = config.rdsRTA
-        self.rtRawBufferB = config.rdsRTB
-        self.rtBufferA = Self.sanitizeText(config.rdsRTA, uppercase: false)
-        self.rtBufferB = Self.sanitizeText(config.rdsRTB, uppercase: false)
+        self.rtRawBuffers = [config.rdsRTA, config.rdsRTB, config.rdsRTC, config.rdsRTD]
+        self.rtBuffers = rtRawBuffers.map { Self.sanitizeText($0, uppercase: false) }
+        self.rtBufferEnabled = [
+            config.rdsRTBufferAEnabled,
+            config.rdsRTBufferBEnabled,
+            config.rdsRTBufferCEnabled,
+            config.rdsRTBufferDEnabled,
+        ]
         self.rtCR = config.rdsRTCR
         self.rtCentered = config.rdsRTCentered
         self.rtMode2B = config.rdsRTMode.uppercased() == "2B"
         self.rtCycle = config.rdsRTCycle
         self.rtCycleTime = max(1.0, config.rdsRTCycleTime)
-        self.rtActiveBuffer = max(0, min(1, config.rdsRTActiveBuffer))
+        self.rtActiveBuffer = max(0, min(3, config.rdsRTActiveBuffer))
         self.rtABCycleCount = max(1, config.rdsRTABCycleCount)
         self.rdsFreqHz = clampf(Float(config.rdsFreq), 1000.0, 120_000.0)
         self.gaussianEnabled = config.rdsGaussianEnabled
@@ -1024,16 +1023,6 @@ private final class BasicRDSCoder {
         self.eccCode = Self.parseHexByte(config.rdsECC)
         self.licCode = Self.parseHexByte(config.rdsLIC)
         self.tzOffset = config.rdsTZOffset
-        self.rtManualPreparedA = ""
-        self.rtManualPreparedABytes = []
-        self.rtManualPreparedB = ""
-        self.rtManualPreparedBBytes = []
-        let preparedA = Self.prepareRTFrame(rtBufferA, width: rtMode2B ? 32 : 64, centered: rtCentered, appendCR: rtCR)
-        self.rtManualPreparedA = preparedA
-        self.rtManualPreparedABytes = Self.rdsBytes(preparedA)
-        let preparedB = Self.prepareRTFrame(rtBufferB, width: rtMode2B ? 32 : 64, centered: rtCentered, appendCR: rtCR)
-        self.rtManualPreparedB = preparedB
-        self.rtManualPreparedBBytes = Self.rdsBytes(preparedB)
         self.sampleRate = max(8_000.0, sampleRate)
         let now = Date().timeIntervalSinceReferenceDate
         self.psSeqStart = now
@@ -1053,6 +1042,48 @@ private final class BasicRDSCoder {
         sampleRate = max(8_000.0, newSampleRate)
         updateDerivedRates()
         updateShapingFilters()
+    }
+
+    func applyRDSRuntimeConfig(_ config: MPXGenerator.RDSRuntimeConfig) {
+        rtRawText = config.rtText
+        rtRawBuffers =
+            Array(config.rtBuffers.prefix(4))
+            + Array(repeating: "", count: max(0, 4 - config.rtBuffers.count))
+        rtBufferEnabled =
+            Array(config.rtBufferEnabled.prefix(4))
+            + Array(repeating: false, count: max(0, 4 - config.rtBufferEnabled.count))
+        rtCR = config.rtCR
+        rtCentered = config.rtCentered
+        rtMode2B = config.rtMode2B
+        rtCycleTime = max(1.0, config.rtCycleTime)
+        rtCycleAB = config.rtCycleAB
+        rtABCycleCount = max(1, config.rtABCycleCount)
+        rtPlusEnabled = config.rtPlusEnabled
+        rtPlusFormatA = config.rtPlusFormatA
+        rtPlusFormatB = config.rtPlusFormatB
+        nowPlayingEnabled = config.nowPlayingEnabled
+
+        let width = rtMode2B ? 32 : 64
+        rtFrames = Self.parseTimedFrames(
+            rtRawText,
+            width: width,
+            uppercase: false,
+            center: rtCentered
+        )
+        rtSequence = Self.parseTimedSequence(
+            rtRawText,
+            width: width,
+            uppercase: false,
+            center: rtCentered
+        )
+
+        let now = Date().timeIntervalSinceReferenceDate
+        rtSeqStart = now
+        rtSeqIndex = 0
+        rtSegment = 0
+        rtABCycles = 0
+        rtDynamicSignature = ""
+        lastManualRTBuffer = -1
     }
 
     func nextSample() -> Float {
@@ -1394,12 +1425,7 @@ private final class BasicRDSCoder {
         let bytes = frameData.bytes
         let segment = rtSegment % 16
         rtSegment += 1
-        let abFlag: Int
-        if rtManualBuffers {
-            abFlag = currentManualRTBuffer()
-        } else {
-            abFlag = rtABFlag & 1
-        }
+        let abFlag = rtABFlag & 1
         let b2Tail = ((abFlag & 1) << 4) | segment
         if rtPlusEnabled {
             let snapshot = currentNowPlayingSnapshot()
@@ -1667,6 +1693,11 @@ private final class BasicRDSCoder {
     private func startClockCacheIfNeeded() {
         guard enCT || enID else { return }
         refreshClockCache()
+        if enCT, let cached = currentCachedClockTimeGroup() {
+            // Prime the cache for immediate Group 4A requests without forcing a
+            // once-per-minute CT burst right after startup.
+            ctMinuteLock = cached.minuteToken
+        }
         let timer = DispatchSource.makeTimerSource(queue: clockUpdateQueue)
         timer.schedule(deadline: .now() + .milliseconds(250), repeating: .seconds(1))
         timer.setEventHandler { [weak self] in
@@ -1693,12 +1724,10 @@ private final class BasicRDSCoder {
             let month = comps.month,
             let day = comps.day,
             let hour = comps.hour,
-            let minute = comps.minute,
-            let second = comps.second
+            let minute = comps.minute
         else {
             return
         }
-        guard second == 0 else { return }
         let payload = makeClockTimeGroupPayload(
             year: year,
             month: month,
@@ -1811,36 +1840,93 @@ private final class BasicRDSCoder {
         }
     }
 
-    private func currentManualRTBuffer() -> Int {
-        if rtCycle {
-            let elapsed = Date().timeIntervalSinceReferenceDate - rtSeqStart
-            return Int(elapsed / max(1.0, rtCycleTime)) % 2
+    private func enabledManualRTBuffers() -> [Int] {
+        let enabled = rtBufferEnabled.enumerated().compactMap { index, isEnabled in
+            let hasText = !rtRawBuffers[index].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return (isEnabled && hasText) ? index : nil
         }
-        return rtActiveBuffer
+        return enabled
     }
 
-    private func currentRTFrame(limit: Int) -> (text: String, bytes: [UInt8]) {
-        let nowPlayingSnapshot = currentNowPlayingSnapshot()
-        if rtManualBuffers {
-            let buf = currentManualRTBuffer()
-            if buf != lastManualRTBuffer {
-                rtSegment = 0
-                lastManualRTBuffer = buf
-            }
-            if nowPlayingEnabled {
-                let template = (buf == 0) ? rtRawBufferA : rtRawBufferB
+    private func currentManualRTFrame(limit: Int, snapshot: NowPlayingSnapshot)
+        -> (index: Int, text: String, bytes: [UInt8])
+    {
+        let enabledBuffers = enabledManualRTBuffers()
+        guard !enabledBuffers.isEmpty else {
+            let frame = Self.prepareRTFrame("", width: limit, centered: rtCentered, appendCR: rtCR)
+            return (0, frame, Self.rdsBytes(frame))
+        }
+
+        var sequence: [TimedTextFrame] = []
+        for bufferIndex in enabledBuffers {
+            let raw = rtRawBuffers[bufferIndex]
+            let expanded =
+                nowPlayingEnabled ? Self.expandNowPlayingMacros(raw, snapshot: snapshot) : raw
+            sequence.append(
+                contentsOf: Self.parseRTBufferSequence(
+                    expanded,
+                    width: limit,
+                    center: rtCentered,
+                    defaultDuration: max(1.0, rtCycleTime)
+                )
+            )
+        }
+
+        guard !sequence.isEmpty else {
+            let frame = Self.prepareRTFrame("", width: limit, centered: rtCentered, appendCR: rtCR)
+            return (0, frame, Self.rdsBytes(frame))
+        }
+
+        if sequence.count == 1 {
+            let prepared = Self.prepareRTFrame(
+                sequence[0].text,
+                width: limit,
+                centered: rtCentered,
+                appendCR: rtCR
+            )
+            return (0, prepared, Self.rdsBytes(prepared))
+        }
+
+        let total = sequence.reduce(0.0) { $0 + max(0.1, $1.duration) }
+        let elapsed = (Date().timeIntervalSinceReferenceDate - rtSeqStart).truncatingRemainder(
+            dividingBy: max(0.1, total)
+        )
+        var acc = 0.0
+        for (index, frame) in sequence.enumerated() {
+            acc += max(0.1, frame.duration)
+            if elapsed <= acc {
                 let prepared = Self.prepareRTFrame(
-                    Self.expandNowPlayingMacros(template, snapshot: nowPlayingSnapshot),
+                    frame.text,
                     width: limit,
                     centered: rtCentered,
                     appendCR: rtCR
                 )
-                return (prepared, Self.rdsBytes(prepared))
+                return (index, prepared, Self.rdsBytes(prepared))
             }
-            if buf == 0 {
-                return (rtManualPreparedA, rtManualPreparedABytes)
+        }
+
+        let prepared = Self.prepareRTFrame(
+            sequence[sequence.count - 1].text,
+            width: limit,
+            centered: rtCentered,
+            appendCR: rtCR
+        )
+        return (sequence.count - 1, prepared, Self.rdsBytes(prepared))
+    }
+
+    private func currentRTFrame(limit: Int) -> (text: String, bytes: [UInt8]) {
+        let nowPlayingSnapshot = currentNowPlayingSnapshot()
+        if !enabledManualRTBuffers().isEmpty {
+            let manual = currentManualRTFrame(limit: limit, snapshot: nowPlayingSnapshot)
+            if manual.index != lastManualRTBuffer {
+                rtSegment = 0
+                rtABCycles = 0
+                if lastManualRTBuffer >= 0 && !rtCycleAB {
+                    rtABFlag ^= 1
+                }
+                lastManualRTBuffer = manual.index
             }
-            return (rtManualPreparedB, rtManualPreparedBBytes)
+            return (manual.text, manual.bytes)
         }
 
         if nowPlayingEnabled {
@@ -2067,6 +2153,22 @@ private final class BasicRDSCoder {
     {
         return parseTimedSequence(raw, width: width, uppercase: uppercase, center: center).map(
             \.text)
+    }
+
+    private static func parseRTBufferSequence(
+        _ raw: String,
+        width: Int,
+        center: Bool,
+        defaultDuration: Double
+    ) -> [TimedTextFrame] {
+        let sequence = parseTimedSequence(raw, width: width, uppercase: false, center: center)
+        guard !containsTimedCommand(raw) else { return sequence }
+        let duration = max(0.1, defaultDuration)
+        return sequence.map { TimedTextFrame(duration: duration, text: $0.text) }
+    }
+
+    private static func containsTimedCommand(_ raw: String) -> Bool {
+        raw.range(of: #"(^|[\s/])\d+s:"#, options: .regularExpression) != nil
     }
 
     private static func parseTimedSequence(_ raw: String, width: Int, uppercase: Bool, center: Bool)
@@ -2668,6 +2770,7 @@ final class MPXGenerator {
     private static let finalCompositePostLimiterHeadroom: Float = 0.030
     private static let finalCompositePreLimiterFloor: Float = 0.18
     private static let finalCompositePostLimiterFloor: Float = 0.16
+    private static let monitorDiffDecodeGain: Float = 1.06
 
     private struct EncoderComplianceConfig {
         let programLowpassHz: Float
@@ -2675,7 +2778,7 @@ final class MPXGenerator {
         let hfGuardCrossoverHz: Float
     }
 
-    struct RuntimeConfig {
+    struct RuntimeConfig: Equatable {
         let inputGainDB: Float
         let outputGainDB: Float
         let finalDriveDB: Float
@@ -2725,6 +2828,22 @@ final class MPXGenerator {
         let multibandHighReleaseMS: Float
     }
 
+    struct RDSRuntimeConfig: Equatable {
+        let rtText: String
+        let rtBuffers: [String]
+        let rtBufferEnabled: [Bool]
+        let rtCR: Bool
+        let rtCentered: Bool
+        let rtMode2B: Bool
+        let rtCycleTime: Double
+        let rtCycleAB: Bool
+        let rtABCycleCount: Int
+        let rtPlusEnabled: Bool
+        let rtPlusFormatA: String
+        let rtPlusFormatB: String
+        let nowPlayingEnabled: Bool
+    }
+
     private var sampleRate: Float
     private let preemphasisUS: Int
     private let toneFreq: Float
@@ -2762,6 +2881,9 @@ final class MPXGenerator {
     private let limitLookaheadEnabled: Bool
     private let limitLookaheadMS: Float
     private var lookaheadLimiter = LookaheadLimiter()
+    private let audioCompositeSoftClipEnabled: Bool
+    private let audioCompositeSmootherRequested: Bool
+    private let finalMPXSoftClipEnabled: Bool
 
     private var orbassEnabled: Bool
     private var orbassAmount: Float
@@ -2786,6 +2908,13 @@ final class MPXGenerator {
     private let orbassHoldSeconds: Float = 0.12
     private var orbassHoldRemaining: Float = 0.0
     private var orbassMakeupGain: Float = 1.0
+    private var orbassSampleDuration: Float = 1.0 / 48_000.0
+    private var orbassRatioAlpha: Float = 0.0
+    private var orbassLevelAlpha: Float = 0.0
+    private var orbassAdaptiveAttackAlpha: Float = 0.0
+    private var orbassAdaptiveReleaseAlpha: Float = 0.0
+    private var orbassMakeupAttackCoeff: Float = 0.0
+    private var orbassMakeupReleaseCoeff: Float = 0.0
 
     private var multibandEnabled: Bool
     private var multibandMode: Int
@@ -2923,6 +3052,14 @@ final class MPXGenerator {
     private var monitorExpectedSideReleaseCoeff: Float = 0.0
     private var monitorCollapseHoldSamples: Int = 0
     private var monitorCollapseCooldownSamples: Int = 0
+    private var monitorProgramEnvAttackCoeff: Float = 0.0
+    private var monitorProgramEnvReleaseCoeff: Float = 0.0
+    private var monitorNoiseFloorRiseCoeff: Float = 0.0
+    private var monitorNoiseFloorFallCoeff: Float = 0.0
+    private var monitorNoiseGateAttackCoeff: Float = 0.0
+    private var monitorNoiseGateReleaseCoeff: Float = 0.0
+    private var monitorCollapseHoldThresholdSamples: Int = 0
+    private var monitorCollapseCooldownResetSamples: Int = 0
 
     init(config: AppConfig, sampleRate: Double, nowPlayingState: NowPlayingState? = nil) {
         self.sampleRate = Float(max(8_000.0, sampleRate))
@@ -2959,6 +3096,9 @@ final class MPXGenerator {
         self.limitLookaheadEnabled = config.limitLookaheadEnabled
         self.limitLookaheadMS = clampf(Float(config.limitLookaheadMS), 0.0, 20.0)
         self.compositeLimiterEnabled = config.compositeLimiterEnabled
+        self.audioCompositeSoftClipEnabled = config.audioCompositeSoftClipEnabled
+        self.audioCompositeSmootherRequested = config.audioCompositeSmootherEnabled
+        self.finalMPXSoftClipEnabled = config.finalMPXSoftClipEnabled
 
         self.orbassEnabled = config.orbassEnabled
         self.orbassAmount = clampf(Float(config.orbassAmount), 0.0, 1.0)
@@ -3209,6 +3349,10 @@ final class MPXGenerator {
         }
     }
 
+    func applyRDSRuntimeConfig(_ config: RDSRuntimeConfig) {
+        rdsCoder?.applyRDSRuntimeConfig(config)
+    }
+
     private func makeEncoderComplianceConfig() -> EncoderComplianceConfig {
         let effectiveProgramLP = effectiveProgramLowpassHz(
             configured: programLowpassHz,
@@ -3281,7 +3425,7 @@ final class MPXGenerator {
         encoderHFGuardAttackCoeff = expf(-1.0 / (0.004 * sr))
         encoderHFGuardReleaseCoeff = expf(-1.0 / (0.080 * sr))
         let nyquist = (sampleRate * 0.5) - 100.0
-        if nyquist > 56_000.0 {
+        if audioCompositeSmootherRequested, nyquist > 56_000.0 {
             compositeAudioSmoother.configure(
                 cutoffHz: min(54_000.0, nyquist - 1_500.0),
                 sampleRate: sampleRate
@@ -3296,12 +3440,33 @@ final class MPXGenerator {
         rdsSupported = nyquist > 57_100.0
 
         updateMonitorRecoveryRates()
+        updateOrbassDynamicRates()
     }
 
     private func updateMonitorRecoveryRates() {
         let sr = max(8_000.0, sampleRate)
         monitorExpectedSideAttackCoeff = expf(-1.0 / (0.010 * sr))
         monitorExpectedSideReleaseCoeff = expf(-1.0 / (0.260 * sr))
+        monitorProgramEnvAttackCoeff = expf(-1.0 / (0.010 * sr))
+        monitorProgramEnvReleaseCoeff = expf(-1.0 / (0.180 * sr))
+        monitorNoiseFloorRiseCoeff = expf(-1.0 / (3.0 * sr))
+        monitorNoiseFloorFallCoeff = expf(-1.0 / (0.50 * sr))
+        monitorNoiseGateAttackCoeff = expf(-1.0 / (0.006 * sr))
+        monitorNoiseGateReleaseCoeff = expf(-1.0 / (0.140 * sr))
+        monitorCollapseHoldThresholdSamples = max(1, Int((sr * 0.55).rounded()))
+        monitorCollapseCooldownResetSamples = max(1, Int((sr * 2.0).rounded()))
+    }
+
+    private func updateOrbassDynamicRates() {
+        let sr = max(8_000.0, sampleRate)
+        let dt = 1.0 / sr
+        orbassSampleDuration = dt
+        orbassRatioAlpha = 1.0 - expf(-dt / 0.45)
+        orbassLevelAlpha = 1.0 - expf(-dt / 1.1)
+        orbassAdaptiveAttackAlpha = 1.0 - expf(-dt / 1.2)
+        orbassAdaptiveReleaseAlpha = 1.0 - expf(-dt / 2.8)
+        orbassMakeupAttackCoeff = expf(-1.0 / ((45.0 * 0.001) * sr))
+        orbassMakeupReleaseCoeff = expf(-1.0 / ((220.0 * 0.001) * sr))
     }
 
     private func configureStereoWidener() {
@@ -3321,17 +3486,17 @@ final class MPXGenerator {
         let sr = max(8_000.0, sampleRate)
         let nyquist = max(6_000.0, (sr * 0.5) - 200.0)
 
-        monitorLPRLP.configureLowpass(cutoffHz: 15_000.0, sampleRate: sr)
+        monitorLPRLP.configureLowpass(cutoffHz: 15_500.0, sampleRate: sr)
 
         monitorDiffBandHP.configureHighpass(cutoffHz: 23_000.0, sampleRate: sr)
-        let diffHigh = min(52_000.0, nyquist)
+        let diffHigh = min(54_000.0, nyquist)
         if diffHigh > 24_000.0 {
             monitorDiffBandLP.configureLowpass(cutoffHz: diffHigh, sampleRate: sr)
         } else {
             monitorDiffBandLP.configureIdentity()
         }
 
-        monitorDiffLP.configureLowpass(cutoffHz: 15_000.0, sampleRate: sr)
+        monitorDiffLP.configureLowpass(cutoffHz: 15_500.0, sampleRate: sr)
 
         if nyquist > (pilotFreq + 100.0) {
             monitorRFNotchPilot.configureNotch(freqHz: pilotFreq, sampleRate: sr, q: 18.0)
@@ -3370,6 +3535,7 @@ final class MPXGenerator {
         let dsb = monitorDiffBandLP.process(dsbHP)
         var diff = 2.0 * dsb * lastSubcarrierSample
         diff = monitorDiffLP.process(diff)
+        diff *= Self.monitorDiffDecodeGain
         diff = -diff
 
         var left = lpr + diff
@@ -3380,23 +3546,18 @@ final class MPXGenerator {
         left = monitorDeemphasisL.process(left)
         right = monitorDeemphasisR.process(right)
 
-        let sr = max(8_000.0, sampleRate)
         let activity = max(0.0, lastProgramActivity)
 
-        let envAttackS: Float = 0.010
-        let envReleaseS: Float = 0.180
-        let envAttackCoeff = expf(-1.0 / (sr * envAttackS))
-        let envReleaseCoeff = expf(-1.0 / (sr * envReleaseS))
-        let envCoeff = activity > monitorProgramEnv ? envAttackCoeff : envReleaseCoeff
+        let envCoeff =
+            activity > monitorProgramEnv ? monitorProgramEnvAttackCoeff : monitorProgramEnvReleaseCoeff
         monitorProgramEnv = (envCoeff * monitorProgramEnv) + ((1.0 - envCoeff) * activity)
 
         // Track the long-term idle floor to reject ADC hiss when no real program is present.
         let floorTarget = monitorProgramEnv
         if !monitorNoiseGateOpen || floorTarget <= (monitorProgramNoiseFloor * 1.4) {
-            let floorRiseS: Float = 3.0
-            let floorFallS: Float = 0.50
-            let floorS = floorTarget > monitorProgramNoiseFloor ? floorRiseS : floorFallS
-            let floorCoeff = expf(-1.0 / (sr * floorS))
+            let floorCoeff =
+                floorTarget > monitorProgramNoiseFloor
+                ? monitorNoiseFloorRiseCoeff : monitorNoiseFloorFallCoeff
             monitorProgramNoiseFloor =
                 (floorCoeff * monitorProgramNoiseFloor) + ((1.0 - floorCoeff) * floorTarget)
         }
@@ -3411,10 +3572,8 @@ final class MPXGenerator {
             monitorNoiseGateOpen = true
         }
         let targetGain: Float = monitorNoiseGateOpen ? 1.0 : 0.0
-        let attackS: Float = 0.006
-        let releaseS: Float = 0.140
-        let timeConstant = targetGain > monitorNoiseGateGain ? attackS : releaseS
-        let coeff = expf(-1.0 / (sr * timeConstant))
+        let coeff =
+            targetGain > monitorNoiseGateGain ? monitorNoiseGateAttackCoeff : monitorNoiseGateReleaseCoeff
         monitorNoiseGateGain = (coeff * monitorNoiseGateGain) + ((1.0 - coeff) * targetGain)
         left *= monitorNoiseGateGain
         right *= monitorNoiseGateGain
@@ -3430,10 +3589,10 @@ final class MPXGenerator {
         if sidePresent && collapsed {
             monitorCollapseHoldSamples += 1
             if monitorCollapseCooldownSamples <= 0,
-                monitorCollapseHoldSamples > Int(sr * 0.55)
+                monitorCollapseHoldSamples > monitorCollapseHoldThresholdSamples
             {
                 configureMonitorDemod()
-                monitorCollapseCooldownSamples = Int(sr * 2.0)
+                monitorCollapseCooldownSamples = monitorCollapseCooldownResetSamples
                 monitorCollapseHoldSamples = 0
             }
         } else {
@@ -4036,21 +4195,27 @@ final class MPXGenerator {
             deviationScale: deviationScale,
             finalDrive: finalDrive
         )
-        var audioComposite = Self.softClipSafety(
-            rawAudioComposite,
-            threshold: thresholds.preLimiterCeiling
-        )
+        let audioCompositeShaperActive = audioCompositeSoftClipEnabled && !compositeLimiterEnabled
+        var audioComposite = rawAudioComposite
+        if audioCompositeShaperActive {
+            audioComposite = Self.softClipSafety(
+                rawAudioComposite,
+                threshold: thresholds.preLimiterCeiling
+            )
+        }
         if compositeLimiterEnabled {
             audioComposite = compositeLimiter.process(audioComposite)
         }
-        if compositeAudioSmootherEnabled {
+        if compositeAudioSmootherEnabled && audioCompositeShaperActive {
             audioComposite = compositeAudioSmoother.process(audioComposite)
         }
 
-        audioComposite = Self.softClipSafety(
-            audioComposite,
-            threshold: thresholds.postLimiterCeiling
-        )
+        if audioCompositeShaperActive {
+            audioComposite = Self.softClipSafety(
+                audioComposite,
+                threshold: thresholds.postLimiterCeiling
+            )
+        }
 
         let audioCompositeAbs = fabsf(audioComposite)
         audioCompositePeakState = max(
@@ -4066,7 +4231,9 @@ final class MPXGenerator {
 
         if limitEnabled {
             mpx = lookaheadLimiter.process(mpx)
-            mpx = Self.softClipSafety(mpx, threshold: threshold)
+            if finalMPXSoftClipEnabled {
+                mpx = Self.softClipSafety(mpx, threshold: threshold)
+            }
         }
 
         return clampf(mpx, -1.0, 1.0)
@@ -4310,7 +4477,7 @@ final class MPXGenerator {
             return (left, right)
         }
 
-        let dt = 1.0 / max(8_000.0, sampleRate)
+        let dt = orbassSampleDuration
         let midAbs = max(1e-6, fabsf(mid))
         let bassAbs = fabsf(low)
         let gateFloor = max(0.012, orbassLevelEst * 0.18)
@@ -4319,8 +4486,7 @@ final class MPXGenerator {
         }
 
         let lowRatio = bassAbs / max(midAbs, orbassLevelEst * 0.7, 0.02)
-        let ratioAlpha = 1.0 - expf(-dt / 0.45)
-        orbassRatioEst += (lowRatio - orbassRatioEst) * ratioAlpha
+        orbassRatioEst += (lowRatio - orbassRatioEst) * orbassRatioAlpha
         let targetRatio = orbassTargetRatio + (0.06 * density)
         let deadband = max(0.03, orbassRatioDeadband - (0.015 * density))
         let lowEnter = max(0.05, targetRatio - deadband)
@@ -4332,16 +4498,16 @@ final class MPXGenerator {
             orbassAdaptiveTarget = 0.0
         }
 
-        let levelAlpha = 1.0 - expf(-dt / 1.1)
-        orbassLevelEst += (midAbs - orbassLevelEst) * levelAlpha
+        orbassLevelEst += (midAbs - orbassLevelEst) * orbassLevelAlpha
         let transientFactor = midAbs / max(1e-6, orbassLevelEst)
         if transientFactor > 3.5 {
             orbassHoldRemaining = orbassHoldSeconds
         }
         orbassHoldRemaining = max(0.0, orbassHoldRemaining - dt)
         if orbassHoldRemaining <= 0.0 {
-            let adaptTau: Float = orbassAdaptiveTarget > orbassAdaptiveGain ? 1.2 : 2.8
-            let adaptAlpha = 1.0 - expf(-dt / adaptTau)
+            let adaptAlpha =
+                orbassAdaptiveTarget > orbassAdaptiveGain
+                ? orbassAdaptiveAttackAlpha : orbassAdaptiveReleaseAlpha
             orbassAdaptiveGain += (orbassAdaptiveTarget - orbassAdaptiveGain) * adaptAlpha
         }
         let adaptive = clampf(orbassAdaptiveGain, 0.0, 1.0)
@@ -4386,8 +4552,8 @@ final class MPXGenerator {
         orbassMakeupGain = smoothOrbassGain(
             current: orbassMakeupGain,
             target: targetMakeup,
-            attackMS: 45.0,
-            releaseMS: 220.0
+            attackCoeff: orbassMakeupAttackCoeff,
+            releaseCoeff: orbassMakeupReleaseCoeff
         )
         midOut *= orbassMakeupGain
 
@@ -4402,12 +4568,13 @@ final class MPXGenerator {
         )
     }
 
-    private func smoothOrbassGain(current: Float, target: Float, attackMS: Float, releaseMS: Float)
-        -> Float
-    {
-        let sr = max(8_000.0, sampleRate)
-        let tauMS = target > current ? max(0.1, attackMS) : max(1.0, releaseMS)
-        let coeff = expf(-1.0 / ((tauMS * 0.001) * sr))
+    private func smoothOrbassGain(
+        current: Float,
+        target: Float,
+        attackCoeff: Float,
+        releaseCoeff: Float
+    ) -> Float {
+        let coeff = target > current ? attackCoeff : releaseCoeff
         return (coeff * current) + ((1.0 - coeff) * target)
     }
 

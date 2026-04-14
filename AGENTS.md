@@ -3,20 +3,20 @@
 ## Project basics
 
 - Primary entrypoint: `macOS/Package.swift`
-- Default config file: `~/Library/Application Support/StereoFool/StereoFool.ini`
+- Default config file: `~/Library/Application Support/MPX Prime/MPX Prime.ini`
 - Native macOS app built with Swift + SwiftUI
 
 ## How to run
 
 ```bash
-swift run --package-path macOS StereoFool
+swift run --package-path macOS MPXPrime
 ```
 
 Default runs with GUI. Use `--nogui` for headless mode.
 
 ## Code change guidance
 
-- Keep runtime DSP in `macOS/Sources/StereoFool/` - prefer small, testable helpers.
+- Keep runtime DSP in `macOS/Sources/MPXPrime/` - prefer small, testable helpers.
 - SwiftUI views in `SwiftUIControlApp.swift` - keep lightweight.
 - Avoid reintroducing separate Stereo/RDS menus; use unified navigation.
 - Avoid adding non-ASCII characters to source or docs.

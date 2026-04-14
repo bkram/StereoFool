@@ -1073,7 +1073,7 @@ func runVerificationHarness(
 ) throws -> Int32 {
     let config = try AppConfig.load(fromINI: configPath)
     if presetSweep {
-        print("StereoFool Preset Verification")
+        print("MPX Prime Preset Verification")
         print("Config: \(configPath)")
         print(
             "Render: \(Int(config.sampleRate)) Hz • Block \(config.blockSize) • Sweep Duration \(String(format: "%.1f", min(durationSeconds, 1.0))) s"
@@ -1086,10 +1086,21 @@ func runVerificationHarness(
     }
     let scenarios = longRun ? longRunVerificationScenarios() : verificationScenarios()
 
-    print(longRun ? "StereoFool Long-Run Verification" : "StereoFool Verification")
+    print(longRun ? "MPX Prime Long-Run Verification" : "MPX Prime Verification")
     print("Config: \(configPath)")
     print(
         "Render: \(Int(config.sampleRate)) Hz • Block \(config.blockSize) • Duration \(String(format: "%.1f", durationSeconds)) s"
+    )
+    let audioCompositeShaperActive =
+        config.audioCompositeSoftClipEnabled && !config.compositeLimiterEnabled
+    let audioCompositeSmootherActive =
+        config.audioCompositeSmootherEnabled && audioCompositeShaperActive
+    print(
+        "Final Stage: shaper \(audioCompositeShaperActive ? "on" : "off")"
+            + " • smoother \(audioCompositeSmootherActive ? "on" : "off")"
+            + " • composite limiter \(config.compositeLimiterEnabled ? "on" : "off")"
+            + " • MPX safety \(config.limitMPX ? "on" : "off")"
+            + " • MPX soft clip \(config.finalMPXSoftClipEnabled ? "on" : "off")"
     )
     if longRun {
         print("Scope: focused program-material compliance/regression scenarios")

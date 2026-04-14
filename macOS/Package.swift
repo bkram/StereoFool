@@ -2,28 +2,28 @@
 import PackageDescription
 
 let package = Package(
-    name: "StereoFool",
+    name: "MPXPrime",
     platforms: [
         .macOS(.v15)
     ],
     products: [
-        .executable(name: "StereoFool", targets: ["StereoFool"])
+        .executable(name: "MPXPrime", targets: ["MPXPrime"])
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-atomics.git", from: "1.2.0")
     ],
     targets: [
         .executableTarget(
-            name: "StereoFool",
+            name: "MPXPrime",
             dependencies: [
                 .product(name: "Atomics", package: "swift-atomics")
             ],
-            path: "Sources/StereoFool"
+            path: "Sources/MPXPrime"
         ),
         .testTarget(
-            name: "StereoFoolTests",
-            dependencies: ["StereoFool"],
-            path: "Tests/StereoFoolTests"
+            name: "MPXPrimeTests",
+            dependencies: ["MPXPrime"],
+            path: "Tests/MPXPrimeTests"
         )
     ]
 )

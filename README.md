@@ -1,10 +1,10 @@
-# StereoFool
+# MPX Prime
 
 Version: 0.85
 
-StereoFool is a native macOS FM composite (MPX) generator written in Swift and SwiftUI. It takes live audio input or a test tone, applies optional broadcast-style processing, generates stereo FM baseband with pilot and optional RDS, and sends MPX plus optional decoded monitor audio to Core Audio devices.
+MPX Prime is a native macOS FM composite (MPX) generator written in Swift and SwiftUI. It takes live audio input or a test tone, applies optional broadcast-style processing, generates stereo FM baseband with pilot and optional RDS, and sends MPX plus optional decoded monitor audio to Core Audio devices.
 
-StereoFool is experimental and not suitable for production broadcast use. It targets core behavior from EN 50067 / IEC 62106 and common FM stereo practice, but it is not certified and no compliance warranty is implied.
+MPX Prime is experimental and not suitable for production broadcast use. It targets core behavior from EN 50067 / IEC 62106 and common FM stereo practice, but it is not certified and no compliance warranty is implied.
 
 ## Current app structure
 
@@ -26,7 +26,7 @@ StereoFool is experimental and not suitable for production broadcast use. It tar
 - Broadcast preset picker for AGC/final-stage tuning (`Balanced Music`, `CHR / Dance`, `Punchy Music`, `Speech / Talk`)
 - Decoded MPX monitor output on a selectable monitor device
 - Scopes, spectrum, levels, sticky peaks, and live monitoring views
-- Config persisted to `~/Library/Application Support/StereoFool/StereoFool.ini`
+- Config persisted to `~/Library/Application Support/MPX Prime/MPX Prime.ini`
 
 ## Requirements
 
@@ -46,43 +46,43 @@ swift build --package-path macOS
 From repo root:
 
 ```bash
-swift run --package-path macOS StereoFool
+swift run --package-path macOS MPXPrime
 ```
 
 Headless mode:
 
 ```bash
-swift run --package-path macOS StereoFool --nogui
+swift run --package-path macOS MPXPrime --nogui
 ```
 
 Fixed runtime:
 
 ```bash
-swift run --package-path macOS StereoFool --seconds 10
+swift run --package-path macOS MPXPrime --seconds 10
 ```
 
 Offline verification:
 
 ```bash
-swift run --package-path macOS StereoFool --verify --seconds 5
+swift run --package-path macOS MPXPrime --verify --seconds 5
 ```
 
 Preset sweep verification:
 
 ```bash
-swift run --package-path macOS StereoFool --verify-presets --seconds 5
+swift run --package-path macOS MPXPrime --verify-presets --seconds 5
 ```
 
 Long-run compliance/regression verification:
 
 ```bash
-swift run --package-path macOS StereoFool --verify-long --seconds 30
+swift run --package-path macOS MPXPrime --verify-long --seconds 30
 ```
 
 Custom config file:
 
 ```bash
-swift run --package-path macOS StereoFool --config /path/to/StereoFool.ini
+swift run --package-path macOS MPXPrime --config "/path/to/MPX Prime.ini"
 ```
 
 ## Configuration
@@ -90,7 +90,7 @@ swift run --package-path macOS StereoFool --config /path/to/StereoFool.ini
 Default config location:
 
 ```text
-~/Library/Application Support/StereoFool/StereoFool.ini
+~/Library/Application Support/MPX Prime/MPX Prime.ini
 ```
 
 Relevant config sections:
@@ -181,7 +181,7 @@ Expected script behavior:
 No-data behavior:
 
 - Exit with status `1` when no song is currently playing or no usable metadata is available
-- StereoFool treats `exit 1` and empty output as `No Song Data`
+- MPX Prime treats `exit 1` and empty output as `No Song Data`
 - Any RT segment containing `{now_playing}`, `{display}`, `{artist}`, or `{title}` is discarded entirely when no song data is available
 - This works for both slash-separated timed RT and consecutive timed markers
 
@@ -233,23 +233,23 @@ Important defaults:
 
 - `MPX Output Device` is the composite/baseband output device
 - `Monitor Output Device (Decoded MPX Simulation)` is used when monitor output is enabled
-- The orange microphone indicator in the macOS menu bar is the system privacy indicator and appears when StereoFool is actively using audio input
+- The orange microphone indicator in the macOS menu bar is the system privacy indicator and appears when MPX Prime is actively using audio input
 - `Mono Mode` now transmits true mono composite and suppresses pilot, stereo subcarrier, and RDS while enabled
 
 ## Offline verification
 
-StereoFool includes an offline MPX verification mode that renders deterministic test scenarios without opening audio devices.
+MPX Prime includes an offline MPX verification mode that renders deterministic test scenarios without opening audio devices.
 
 Example:
 
 ```bash
-./macOS/.build/debug/StereoFool --verify --seconds 5
+./macOS/.build/debug/MPXPrime --verify --seconds 5
 ```
 
 For key multiband-preset validation:
 
 ```bash
-./macOS/.build/debug/StereoFool --verify-presets --seconds 5
+./macOS/.build/debug/MPXPrime --verify-presets --seconds 5
 ```
 
 The report includes:

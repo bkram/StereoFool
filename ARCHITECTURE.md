@@ -2,7 +2,7 @@
 
 ## Overview
 
-StereoFool is a native macOS audio application built with Swift and SwiftUI. It provides real-time FM stereo MPX generation with RDS support using AVAudioEngine.
+MPX Prime is a native macOS audio application built with Swift and SwiftUI. It provides real-time FM stereo MPX generation with RDS support using AVAudioEngine.
 
 ```
 SwiftUI UI  <->  App State (ObservableObject)
@@ -78,7 +78,7 @@ Audio Input (L/R) @ interface rate (typically 192 kHz)
 
 ## Current processing order
 
-Within the main audio path, StereoFool currently runs:
+Within the main audio path, MPX Prime currently runs:
 
 1. Input trim and conditioning
 2. Wideband AGC
@@ -93,7 +93,7 @@ Within the main audio path, StereoFool currently runs:
 11. Pilot and RDS injection
 12. Final MPX loudness and safety stages
 
-When `Mono Mode` is enabled, StereoFool suppresses the pilot, stereo subcarrier, and RDS injection so the transmitted composite is true mono.
+When `Mono Mode` is enabled, MPX Prime suppresses the pilot, stereo subcarrier, and RDS injection so the transmitted composite is true mono.
 
 ## External Dependencies
 

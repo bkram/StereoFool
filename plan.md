@@ -1,8 +1,8 @@
-# StereoFool FM/MPX Roadmap
+# MPX Prime FM/MPX Roadmap
 
 ## Goal
 
-Bring StereoFool closer to a broadcast-grade FM composite generator and processor by:
+Bring MPX Prime closer to a broadcast-grade FM composite generator and processor by:
 
 - fixing current gain-structure bugs
 - separating operating-level control from output calibration
@@ -10,7 +10,7 @@ Bring StereoFool closer to a broadcast-grade FM composite generator and processo
 - preserving pilot and RDS integrity under loudness processing
 - improving calibration, metering, and verification
 
-This plan is based on current StereoFool behavior plus publicly available official material from Telos/Omnia, Orban, Stereo Tool, and Breakaway.
+This plan is based on current MPX Prime behavior plus publicly available official material from Telos/Omnia, Orban, Stereo Tool, and Breakaway.
 
 ## Research summary
 
@@ -35,7 +35,7 @@ Stereo Tool is the clearest public software reference for modern MPX generation 
 - pilot and RDS levels are exposed as calibrated percentages
 - BS.412 / spectrum compliance and RF-spectrum visualization are part of the FM toolset
 
-Takeaway for StereoFool:
+Takeaway for MPX Prime:
 
 - if we want competitive FM loudness and cleanliness, final loudness control must move into an oversampled composite stage
 - RF/compliance visibility should eventually be first-class, not an afterthought
@@ -50,7 +50,7 @@ BreakawayOne's official public material is less detailed about internal FM/MPX m
 - RDS is modular and considered part of the FM ecosystem
 - a separate low-latency monitor path is useful operationally
 
-Takeaway for StereoFool:
+Takeaway for MPX Prime:
 
 - treat FM as a dedicated processing/output topology
 - keep low-latency monitoring as a separate design concern from the highest-quality transmit path
@@ -77,7 +77,7 @@ Wideband AGC is now behaving more like a platform leveler, but its defaults and 
 
 ### 3. Stereo enhancement still needs deeper validation
 
-StereoFool now has a more professional stereo-image path, image presets, and a history view, but it still needs deliberate listening and measurement work.
+MPX Prime now has a more professional stereo-image path, image presets, and a history view, but it still needs deliberate listening and measurement work.
 
 Impact:
 
@@ -87,7 +87,7 @@ Impact:
 
 ### 4. Runtime apply boundaries are much better, but still need validation discipline
 
-StereoFool now applies most ordinary DSP controls live and reserves restart-only handling for engine, routing, and encoder-structure changes. That is the right model, but it still needs stronger validation so live updates do not introduce transient artifacts and restart-only boundaries stay obvious.
+MPX Prime now applies most ordinary DSP controls live and reserves restart-only handling for engine, routing, and encoder-structure changes. That is the right model, but it still needs stronger validation so live updates do not introduce transient artifacts and restart-only boundaries stay obvious.
 
 Impact:
 
@@ -105,7 +105,7 @@ The offline verifier, preset sweep, width/compliance checks, and long-run mode n
 
 ### 6. Swift DSP implementation still has cleanup debt
 
-StereoFool's Swift DSP is now credible and effective, but there are still implementation-level loose ends that should be addressed before treating the chain as fully mature.
+MPX Prime's Swift DSP is now credible and effective, but there are still implementation-level loose ends that should be addressed before treating the chain as fully mature.
 
 Loose ends:
 
@@ -125,9 +125,9 @@ Practical implication:
 
 ### 7. RDS text syntax is functional, but still behind established tooling
 
-StereoFool already supports timed PS/RT sequences such as `10s:Text/10s:Other Text`, but it does not yet match the more mature public user-facing syntax that processors such as Stereo Tool expose.
+MPX Prime already supports timed PS/RT sequences such as `10s:Text/10s:Other Text`, but it does not yet match the more mature public user-facing syntax that processors such as Stereo Tool expose.
 
-What StereoFool already supports:
+What MPX Prime already supports:
 
 - timed text segments with `Ns:Text`
 - slash-separated PS and RT sequences
@@ -145,7 +145,7 @@ Constraints:
 
 - this should be implemented from public documentation only
 - do not rely on reverse engineering or copied parser behavior
-- preserve StereoFool-specific macro support (`{artist}`, `{title}`, `{date}`, `{time}`, etc.)
+- preserve MPX Prime-specific macro support (`{artist}`, `{title}`, `{date}`, `{time}`, etc.)
 
 ## Target architecture
 
@@ -165,7 +165,7 @@ Constraints:
 
 ### Control separation
 
-StereoFool should clearly distinguish:
+MPX Prime should clearly distinguish:
 
 - `Input Gain`: source trim
 - `Wideband AGC Target`: average operating platform
@@ -235,7 +235,7 @@ Next work:
    - RDS injection
    - composite headroom
 2. Document expected exciter integration:
-   - when StereoFool pre-emphasis is on, external pre-emphasis must be off
+   - when MPX Prime pre-emphasis is on, external pre-emphasis must be off
 3. Keep refining the dedicated calibration workflow with clearer exciter-facing guidance and warning states if needed.
 
 Success criteria:
@@ -390,22 +390,20 @@ This section merges the actionable items that used to be split across `bugs.md` 
 
 The following items represent opportunities to improve CPU efficiency while maintaining or enhancing enterprise-grade MPX quality:
 
-1. **Further vDSP utilization** - Replace manual loops in MPXGenerator with vDSP operations where numerically equivalent and beneficial
-2. **Scope processing optimization** - Throttle scope updates more aggressively when monitoring view is not visible
-3. **RDS string preparation** - Cache RDS byte preparation and avoid repeated string allocations in RDS group generation
-4. **Stereo image processing** - Optimize mid/side calculations with vDSP operations
-5. **Memory access patterns** - Ensure cache-friendly access patterns in tight DSP loops
-6. **Conditional computation** - Skip expensive computations (scopes, spectrum) when corresponding views are hidden
-7. **Buffer reuse** - Expand buffer reuse beyond the current spectrum snapshot path to eliminate all remaining per-call allocations
-8. **Approximation where appropriate** - Use fast math approximations where precision loss is inaudible (e.g., reciprocal square root)
+1. **Further vDSP utilization** - Replace remaining manual loops in analysis and support code where numerically equivalent and beneficial
+2. **RDS string preparation** - Cache RDS byte preparation and avoid repeated string allocations in RDS group generation
+3. **Stereo image processing** - Optimize the remaining mid/side energy calculations with vDSP where it stays maintainable
+4. **Memory access patterns** - Keep tightening cache-friendly access in input conversion, history capture, and tight DSP support paths
+5. **Buffer reuse** - Eliminate any remaining per-call scratch churn in capture and analysis paths
+6. **Approximation where appropriate** - Use fast math approximations only where profiling shows real value and verification stays clean
 
 These optimizations should be approached incrementally with verification using the offline verifier to ensure no regression in MPX quality or compliance.
 
 Current remaining performance focus:
 
 - further vDSP utilization in DSP processing loops
-- throttling scope updates when the monitoring view is not visible
 - additional RDS string preparation caching
+- remaining stereo-image and scope-helper optimization
 - ensuring cache-friendly access patterns in tight DSP loops
 
 ## Real-Time Performance Plan
@@ -418,18 +416,17 @@ This section turns the remaining performance work into an explicit execution pla
 
 ### Phase P1. Make the callback safer under load
 
-Status: open
+Status: partially complete
+
+Completed:
+
+1. Removed render-thread busy waiting from `StereoInputRingBuffer`.
+2. Removed unconditional runtime-config lock acquisition from the audio callback by adding an atomic pending fast path.
 
 Next work:
 
-1. Remove render-thread busy waiting from `StereoInputRingBuffer`:
-   - replace spin-based producer/consumer coordination with a lock-free read/write scheme that tolerates overlap
-   - prefer returning the latest stable readable region over waiting for a write to finish
-2. Remove audio-thread lock usage where practical:
-   - replace runtime-config handoff with an atomic or single-writer lock-free swap model
-   - keep meter publication one-way from audio thread to UI thread
-3. Ensure runtime apply never performs heavy filter or compressor reconfiguration directly inside the callback unless it is proven glitch-free and bounded.
-4. Re-audit all input fallback paths to confirm they stay allocation-free and non-blocking at callback time.
+1. Ensure runtime apply never performs heavy filter or compressor reconfiguration directly inside the callback unless it is proven glitch-free and bounded.
+2. Re-audit all input fallback paths to confirm they stay allocation-free and non-blocking at callback time.
 
 Success criteria:
 
@@ -439,17 +436,20 @@ Success criteria:
 
 ### Phase P2. Cut obvious per-sample waste
 
-Status: open
+Status: partially complete
+
+Completed:
+
+1. Precomputed monitor-demod coefficients that depend only on sample rate or fixed timing constants.
+2. Precomputed Orbass smoothing and adaptation coefficients that did not need per-sample recalculation.
 
 Next work:
 
-1. Precompute monitor-demod coefficients that currently depend only on sample rate or fixed timing constants.
-2. Precompute Orbass smoothing and adaptation coefficients that do not need to be recalculated every sample.
-3. Audit monitor mode for repeated transcendental math in hot loops:
+1. Audit the remaining hot scalar DSP support paths for repeated transcendental math:
    - `expf`
    - `powf`
    - repeated coefficient derivation
-4. Keep stateful filter and compressor sample processing scalar unless profiling proves a safe vectorized alternative.
+2. Keep stateful filter and compressor sample processing scalar unless profiling proves a safe vectorized alternative.
 
 Success criteria:
 
@@ -458,19 +458,24 @@ Success criteria:
 
 ### Phase P3. Consolidate analysis and metering work
 
-Status: open
+Status: partially complete
+
+Completed:
+
+1. Made scope/history capture and loudness measurement visibility-aware.
+2. Removed non-throttled stereo-meter passes that only fed throttled UI updates.
+3. Centralized throttled render analysis in one helper and split stereo levels from stereo image metrics so hidden-monitor states do less work.
+4. Extended Accelerate use in hot analysis helpers:
+   - vectorized input format conversion where practical
+   - chunked/vectorized scope and history write helpers
+   - cheaper stereo image metrics derived from existing level totals plus dot products
 
 Next work:
 
-1. Reduce duplicate passes over the same render buffer:
-   - combine output metering, stereo-image metrics, and scope capture where that can be done without making the code opaque
-2. Make monitoring work more visibility-aware:
-   - skip or further throttle scope/history capture when the corresponding UI is hidden
-   - keep loudness analysis disabled when it is not being displayed or recorded
-3. Extend Accelerate use where the math is clearly equivalent and the code stays maintainable:
-   - side/mid energy
-   - scope downsampling helpers
-   - input format conversion where practical
+1. Reduce any remaining duplicate passes over the same render buffer where that can be done without making the code opaque.
+2. Extend Accelerate use where the math is clearly equivalent and the code stays maintainable:
+   - any remaining scope downsampling helpers that still justify it after profiling
+3. Re-profile the callback after the current analysis cleanup so the next work is guided by real hotspots rather than by source inspection alone.
 
 Success criteria:
 
@@ -480,16 +485,27 @@ Success criteria:
 
 ### Phase P4. Tighten memory and data movement
 
-Status: open
+Status: partially complete
+
+Completed:
+
+1. Removed adaptive-read scratch copying in the input ring buffer by interpolating directly from stable published ring data.
+2. Made mono capture conversion more cache-friendly:
+   - mono `Int16` / `Int32` input now converts into a single mono scratch buffer
+   - mono `Float32` input no longer expands into temporary stereo buffers before ring writes
+3. Reduced history-buffer write amplification:
+   - stereo and mono scope history writes now use chunked/vectorized helpers
+   - pre-MPX raw stereo history writes now use chunk copies plus in-place clipping
+4. Reduced history-buffer readback cost:
+   - raw window extraction now uses contiguous chunk copies instead of per-sample wrapped reads
+   - scope-window extraction now scans contiguous chunks instead of doing modulo work per sample
+5. Gave the pre-MPX spectrum path its own shorter history depth instead of reusing the full scope-history retention.
 
 Next work:
 
-1. Revisit ring-buffer copy strategy:
-   - reduce unnecessary scratch copying for adaptive reads if a stable two-segment read API can replace it safely
-2. Make mono-to-stereo duplication and interleaved-input conversion more cache-friendly and more vectorized where beneficial.
-3. Review history buffers and analysis buffers for write amplification:
-   - avoid storing data that is never rendered or inspected
-4. Keep all hot-path buffers long-lived and preallocated for worst-case block sizes already supported by the engine.
+1. Audit the remaining output-spectrum and scope-readback helpers for any residual unnecessary copying or oversized scratch buffers.
+2. Re-check fallback and uncommon capture paths for any remaining per-callback allocation or avoidable data churn.
+3. Keep all hot-path buffers long-lived and preallocated for worst-case block sizes already supported by the engine.
 
 Success criteria:
 

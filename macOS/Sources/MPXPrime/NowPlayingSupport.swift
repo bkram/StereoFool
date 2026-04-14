@@ -153,7 +153,7 @@ final class NowPlayingScriptRunner: @unchecked Sendable {
     }
 
     private let state: NowPlayingState
-    private let queue = DispatchQueue(label: "StereoFool.NowPlayingScript", qos: .utility)
+    private let queue = DispatchQueue(label: "MPXPrime.NowPlayingScript", qos: .utility)
     private var timer: DispatchSourceTimer?
     private var settings = Settings(
         config: {

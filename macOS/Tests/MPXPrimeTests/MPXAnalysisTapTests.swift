@@ -1,5 +1,5 @@
 import XCTest
-@testable import StereoFool
+@testable import MPXPrime
 
 final class MPXAnalysisTapTests: XCTestCase {
     func testAnalysisBuffersPreserveStereoOrdering() {

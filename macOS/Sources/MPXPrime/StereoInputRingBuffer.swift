@@ -15,8 +15,6 @@ final class StereoInputRingBuffer {
     private let mask: Int
     private var left: [Float]
     private var right: [Float]
-    private var readScratchLeft: [Float]
-    private var readScratchRight: [Float]
     private var lastLeft: Float = 0.0
     private var lastRight: Float = 0.0
     private var resamplePhase: Double = 0.0
@@ -26,7 +24,6 @@ final class StereoInputRingBuffer {
     private let overflowCount = ManagedAtomic<UInt64>(0)
     private let underflowCount = ManagedAtomic<UInt64>(0)
     private let consumerReadInProgress = ManagedAtomic<Bool>(false)
-    private let producerWriteInProgress = ManagedAtomic<Bool>(false)
     private let transportMode = ManagedAtomic<Int>(0)
     private let transportRatioTrimMicrounits = ManagedAtomic<Int>(0)
     private let transportSampleStepMicrounits = ManagedAtomic<Int>(1_000_000)
@@ -38,17 +35,12 @@ final class StereoInputRingBuffer {
         self.mask = roundedCapacity - 1
         self.left = Array(repeating: 0.0, count: roundedCapacity)
         self.right = Array(repeating: 0.0, count: roundedCapacity)
-        self.readScratchLeft = Array(repeating: 0.0, count: roundedCapacity)
-        self.readScratchRight = Array(repeating: 0.0, count: roundedCapacity)
     }
 
     func write(
         left inLeft: UnsafePointer<Float>, right inRight: UnsafePointer<Float>, frameCount: Int
     ) {
         guard frameCount > 0 else { return }
-        producerWriteInProgress.store(true, ordering: .releasing)
-        defer { producerWriteInProgress.store(false, ordering: .releasing) }
-
         let plan = planWrite(frameCount: frameCount)
         guard plan.framesToWrite > 0 else { return }
         copyStereoIntoRing(
@@ -65,9 +57,6 @@ final class StereoInputRingBuffer {
 
     func writeMono(mono inMono: UnsafePointer<Float>, frameCount: Int) {
         guard frameCount > 0 else { return }
-        producerWriteInProgress.store(true, ordering: .releasing)
-        defer { producerWriteInProgress.store(false, ordering: .releasing) }
-
         let plan = planWrite(frameCount: frameCount)
         guard plan.framesToWrite > 0 else { return }
         copyMonoIntoRing(
@@ -89,7 +78,6 @@ final class StereoInputRingBuffer {
         guard frameCount > 0 else { return 0 }
         consumerReadInProgress.store(true, ordering: .releasing)
         defer { consumerReadInProgress.store(false, ordering: .releasing) }
-        waitForProducerWriteToFinish()
 
         let snapshot = makeReadableSnapshot(frameCount: frameCount)
         if snapshot.available > 0 {
@@ -137,7 +125,6 @@ final class StereoInputRingBuffer {
         guard frameCount > 0 else { return 0 }
         consumerReadInProgress.store(true, ordering: .releasing)
         defer { consumerReadInProgress.store(false, ordering: .releasing) }
-        waitForProducerWriteToFinish()
 
         let read = readCursor.load(ordering: .acquiring)
         let write = writeCursor.load(ordering: .acquiring)
@@ -221,16 +208,12 @@ final class StereoInputRingBuffer {
         let phaseEnd = startPhase + (step * Double(frameCount))
         let neededFrames = min(available, max(1, Int(ceil(phaseEnd)) + 1))
 
-        copyRingFramesIntoScratch(
-            startCursor: startCursor,
-            frameCount: neededFrames
-        )
-
         let consumed = min(available, Int(phaseEnd))
         let missing = renderInterpolatedFrames(
             intoLeft: outLeft,
             outRight: outRight,
             frameCount: frameCount,
+            startIndex: physicalIndex(for: startCursor),
             neededFrames: neededFrames,
             startPhase: startPhase,
             step: step
@@ -324,12 +307,6 @@ final class StereoInputRingBuffer {
         return (startCursor, available)
     }
 
-    private func waitForProducerWriteToFinish() {
-        while producerWriteInProgress.load(ordering: .acquiring) {
-            _ = 0
-        }
-    }
-
     private func copyStereoIntoRing(
         left sourceLeft: UnsafePointer<Float>,
         right sourceRight: UnsafePointer<Float>,
@@ -418,39 +395,11 @@ final class StereoInputRingBuffer {
         }
     }
 
-    private func copyRingFramesIntoScratch(startCursor: UInt64, frameCount: Int) {
-        guard frameCount > 0 else { return }
-        var remaining = frameCount
-        var sourceIndex = physicalIndex(for: startCursor)
-        var destinationOffset = 0
-        while remaining > 0 {
-            let chunk = min(remaining, capacity - sourceIndex)
-            readScratchLeft.withUnsafeMutableBufferPointer { dstLeft in
-                readScratchRight.withUnsafeMutableBufferPointer { dstRight in
-                    left.withUnsafeBufferPointer { srcLeft in
-                        right.withUnsafeBufferPointer { srcRight in
-                            dstLeft.baseAddress!.advanced(by: destinationOffset).update(
-                                from: srcLeft.baseAddress!.advanced(by: sourceIndex),
-                                count: chunk
-                            )
-                            dstRight.baseAddress!.advanced(by: destinationOffset).update(
-                                from: srcRight.baseAddress!.advanced(by: sourceIndex),
-                                count: chunk
-                            )
-                        }
-                    }
-                }
-            }
-            sourceIndex = (sourceIndex + chunk) & mask
-            destinationOffset += chunk
-            remaining -= chunk
-        }
-    }
-
     private func renderInterpolatedFrames(
         intoLeft outLeft: UnsafeMutablePointer<Float>,
         outRight: UnsafeMutablePointer<Float>,
         frameCount: Int,
+        startIndex: Int,
         neededFrames: Int,
         startPhase: Double,
         step: Double
@@ -468,13 +417,15 @@ final class StereoInputRingBuffer {
             } else {
                 let fraction = Float(localPhase - Double(base))
                 let leftValue = interpolatedSample(
-                    samples: readScratchLeft,
+                    samples: left,
+                    startIndex: startIndex,
                     baseIndex: base,
                     fraction: fraction,
                     validCount: neededFrames
                 )
                 let rightValue = interpolatedSample(
-                    samples: readScratchRight,
+                    samples: right,
+                    startIndex: startIndex,
                     baseIndex: base,
                     fraction: fraction,
                     validCount: neededFrames
@@ -510,15 +461,32 @@ final class StereoInputRingBuffer {
     @inline(__always)
     private func interpolatedSample(
         samples: [Float],
+        startIndex: Int,
         baseIndex: Int,
         fraction: Float,
         validCount: Int
     ) -> Float {
         guard validCount > 0 else { return 0.0 }
-        let p0 = samples[max(0, baseIndex - 1)]
-        let p1 = samples[min(validCount - 1, baseIndex)]
-        let p2 = samples[min(validCount - 1, baseIndex + 1)]
-        let p3 = samples[min(validCount - 1, baseIndex + 2)]
+        let p0 = ringSample(
+            samples: samples,
+            startIndex: startIndex,
+            offset: max(0, baseIndex - 1)
+        )
+        let p1 = ringSample(
+            samples: samples,
+            startIndex: startIndex,
+            offset: min(validCount - 1, baseIndex)
+        )
+        let p2 = ringSample(
+            samples: samples,
+            startIndex: startIndex,
+            offset: min(validCount - 1, baseIndex + 1)
+        )
+        let p3 = ringSample(
+            samples: samples,
+            startIndex: startIndex,
+            offset: min(validCount - 1, baseIndex + 2)
+        )
 
         let a0 = (-0.5 * p0) + (1.5 * p1) - (1.5 * p2) + (0.5 * p3)
         let a1 = p0 - (2.5 * p1) + (2.0 * p2) - (0.5 * p3)
@@ -528,6 +496,11 @@ final class StereoInputRingBuffer {
         let x2 = x * x
         let x3 = x2 * x
         return ((a0 * x3) + (a1 * x2) + (a2 * x) + a3)
+    }
+
+    @inline(__always)
+    private func ringSample(samples: [Float], startIndex: Int, offset: Int) -> Float {
+        samples[(startIndex + offset) & mask]
     }
 
     private func physicalIndex(for cursor: UInt64) -> Int {

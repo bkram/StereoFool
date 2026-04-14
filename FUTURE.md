@@ -1,8 +1,8 @@
-# StereoFool Future Roadmap
+# MPX Prime Future Roadmap
 
 ## Cross-Platform Vision
 
-The goal is to make StereoFool a truly cross-platform FM audio processor that runs on:
+The goal is to make MPX Prime a truly cross-platform FM audio processor that runs on:
 - macOS (current)
 - Linux
 - Windows

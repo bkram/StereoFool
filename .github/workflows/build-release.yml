@@ -29,13 +29,13 @@ jobs:
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: StereoFool
-          path: macOS/dist/StereoFool-*.dmg
+          name: MPXPrime
+          path: macOS/dist/MPX Prime-*.dmg
           retention-days: 90
 
       - name: Upload App Bundle
         uses: actions/upload-artifact@v4
         with:
-          name: StereoFool.app
-          path: macOS/dist/StereoFool.app
+          name: MPXPrime.app
+          path: macOS/dist/MPX Prime.app
           retention-days: 90

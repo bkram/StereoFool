@@ -16,23 +16,23 @@ private let kLevelsWindowWidth: CGFloat = 860
 private let kLevelsWindowHeight: CGFloat = 560
 private let kLevelsWindowMinWidth: CGFloat = 760
 private let kLevelsWindowMinHeight: CGFloat = 500
-private let kStereoFoolIconSymbol = "\u{1F3A7}"
+private let kMPXPrimeIconSymbol = "\u{1F3A7}"
 private let kScopesWindowTitle = "Scopes"
 private let kMPXSpectrumWindowTitle = "MPX Spectrum"
 private let kAudioSpectrumWindowTitle = "Audio Spectrum"
 private let kLevelsWindowTitle = "Levels"
-private let kMainWindowAutosaveName = "StereoFool.MainWindow"
-private let kScopesWindowAutosaveName = "StereoFool.ScopesWindow"
-private let kSpectrumWindowAutosaveName = "StereoFool.SpectrumWindow"
-private let kPreMPXSpectrumWindowAutosaveName = "StereoFool.PreMPXSpectrumWindow"
-private let kLevelsWindowAutosaveName = "StereoFool.LevelsWindow"
-private let kAboutWindowAutosaveName = "StereoFool.AboutWindow"
-private let kHelpWindowAutosaveName = "StereoFool.HelpWindow"
-private let kSettingsWindowAutosaveName = "StereoFool.SettingsWindow"
+private let kMainWindowAutosaveName = "MPXPrime.MainWindow"
+private let kScopesWindowAutosaveName = "MPXPrime.ScopesWindow"
+private let kSpectrumWindowAutosaveName = "MPXPrime.SpectrumWindow"
+private let kPreMPXSpectrumWindowAutosaveName = "MPXPrime.PreMPXSpectrumWindow"
+private let kLevelsWindowAutosaveName = "MPXPrime.LevelsWindow"
+private let kAboutWindowAutosaveName = "MPXPrime.AboutWindow"
+private let kHelpWindowAutosaveName = "MPXPrime.HelpWindow"
+private let kSettingsWindowAutosaveName = "MPXPrime.SettingsWindow"
 private let kRestartRequiredSettingsListText =
     "Restart required for sample rate, block size, source mode, monitor output routing, input/output/monitor device changes, mono mode, pre-emphasis, pilot/sum/diff levels, program lowpass, and other encoder-structure changes."
 
-private func makeStereoFoolAppIcon(size: CGFloat = 512) -> NSImage {
+private func makeMPXPrimeAppIcon(size: CGFloat = 512) -> NSImage {
     let image = NSImage(size: NSSize(width: size, height: size))
     image.lockFocus()
 
@@ -73,7 +73,7 @@ private func makeStereoFoolAppIcon(size: CGFloat = 512) -> NSImage {
         .foregroundColor: NSColor(calibratedWhite: 0.98, alpha: 1.0),
         .shadow: shadowStyle,
     ]
-    let symbol = NSAttributedString(string: kStereoFoolIconSymbol, attributes: symbolAttributes)
+    let symbol = NSAttributedString(string: kMPXPrimeIconSymbol, attributes: symbolAttributes)
     let symbolSize = symbol.size()
     let symbolRect = NSRect(
         x: center.x - (symbolSize.width / 2),
@@ -587,7 +587,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private let configPath: String
     private let runSeconds: Double?
     private var window: NSWindow?
-    private var model: StereoFoolViewModel?
+    private var model: MPXPrimeViewModel?
     private var scopesWindow: NSWindow?
     private var spectrumWindow: NSWindow?
     private var preMPXSpectrumWindow: NSWindow?
@@ -618,6 +618,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             sender.orderOut(nil)
             return false
         } else if sender == scopesWindow {
+            model?.scopesWindowVisible = false
             sender.orderOut(nil)
             return false
         } else if sender == spectrumWindow {
@@ -629,6 +630,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             sender.orderOut(nil)
             return false
         } else if sender == levelsWindow {
+            model?.levelsWindowVisible = false
             sender.orderOut(nil)
             return false
         } else if sender == aboutWindow {
@@ -651,10 +653,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        NSApp.applicationIconImage = makeStereoFoolAppIcon()
+        NSApp.applicationIconImage = makeMPXPrimeAppIcon()
         NSApp.activate(ignoringOtherApps: true)
         
-        let vm = StereoFoolViewModel(configPath: configPath)
+        let vm = MPXPrimeViewModel(configPath: configPath)
         model = vm
         setupMainMenu()
 
@@ -668,7 +670,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             defer: false
         )
         w.center()
-        w.title = "StereoFool"
+        w.title = "MPX Prime"
         w.titleVisibility = .visible
         w.minSize = NSSize(width: 900, height: 620)
         w.delegate = self
@@ -706,7 +708,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     }
 
     private func setupMainMenu() {
-        let appName = Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "StereoFool"
+        let appName = Bundle.main.infoDictionary?["CFBundleName"] as? String ?? "MPX Prime"
         let mainMenu = NSMenu()
 
         // App Menu (unchanged)
@@ -804,7 +806,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let helpItem = NSMenuItem(title: "Help", action: nil, keyEquivalent: "")
         let helpMenu = NSMenu(title: "Help")
         
-        let openHelp = NSMenuItem(title: "StereoFool Help", action: #selector(showHelp), keyEquivalent: "/")
+        let openHelp = NSMenuItem(title: "MPX Prime Help", action: #selector(showHelp), keyEquivalent: "/")
         openHelp.target = self
         openHelp.keyEquivalentModifierMask = [.command, .shift]
         helpMenu.addItem(openHelp)
@@ -832,7 +834,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let aboutView = AboutSectionView()
         let hostingController = NSHostingController(rootView: aboutView)
         let w = NSWindow(contentViewController: hostingController)
-        w.title = "About StereoFool"
+        w.title = "About MPX Prime"
         w.styleMask = [.titled, .closable]
         w.setContentSize(NSSize(width: 450, height: 500))
         w.isReleasedWhenClosed = false
@@ -851,7 +853,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let helpView = HelpWindowView()
         let hostingController = NSHostingController(rootView: helpView)
         let w = NSWindow(contentViewController: hostingController)
-        w.title = "StereoFool Help"
+        w.title = "MPX Prime Help"
         w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         w.setContentSize(NSSize(width: 560, height: 560))
         w.minSize = NSSize(width: 520, height: 420)
@@ -924,7 +926,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             defer: false
         )
         w.center()
-        w.title = "StereoFool"
+        w.title = "MPX Prime"
         w.titleVisibility = .visible
         w.minSize = NSSize(width: 900, height: 620)
         w.delegate = self
@@ -938,6 +940,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc private func showScopesWindow() {
         if let existing = scopesWindow {
             revealWindow(existing)
+            model?.scopesWindowVisible = true
             return
         }
         guard let vm = model else { return }
@@ -953,6 +956,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         restoreFrame(for: w, autosaveName: kScopesWindowAutosaveName)
         w.makeKeyAndOrderFront(nil)
         scopesWindow = w
+        model?.scopesWindowVisible = true
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
@@ -1005,6 +1009,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc private func showLevelsWindow() {
         if let existing = levelsWindow {
             revealWindow(existing)
+            model?.levelsWindowVisible = true
             return
         }
         guard let vm = model else { return }
@@ -1020,6 +1025,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         restoreFrame(for: w, autosaveName: kLevelsWindowAutosaveName)
         w.makeKeyAndOrderFront(nil)
         levelsWindow = w
+        model?.levelsWindowVisible = true
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
@@ -1052,7 +1058,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 }
 
 @MainActor
-final class StereoFoolViewModel: ObservableObject {
+final class MPXPrimeViewModel: ObservableObject {
     private struct RuntimeSnapshot {
         var config: AppConfig
         var sourceMode: String
@@ -1159,12 +1165,14 @@ final class StereoFoolViewModel: ObservableObject {
     @Published var mpxSpectrumDB: [Float] = Array(repeating: -100.0, count: 640)
     @Published var mpxSpectrumMaxHz: Double = 92_000.0
     @Published var mpxSpectrumNyquistHz: Double = 0.0
+    @Published var scopesWindowVisible: Bool = false
     @Published var spectrumWindowVisible: Bool = false
     @Published var preMPXSpectrumLeftDB: [Float] = Array(repeating: -100.0, count: 48)
     @Published var preMPXSpectrumRightDB: [Float] = Array(repeating: -100.0, count: 48)
     @Published var preMPXSpectrumMaxHz: Double = 16_000.0
     @Published var preMPXSpectrumNyquistHz: Double = 0.0
     @Published var preMPXSpectrumWindowVisible: Bool = false
+    @Published var levelsWindowVisible: Bool = false
 
     private let configPath: String
     private let nowPlayingState: NowPlayingState
@@ -1208,12 +1216,18 @@ final class StereoFoolViewModel: ObservableObject {
     private var spectrumUpdateInFlight: Bool = false
     private var lastPreMPXSpectrumRefreshTime: TimeInterval?
     private var preMPXSpectrumUpdateInFlight: Bool = false
-    private let spectrumQueue = DispatchQueue(label: "StereoFool.MPXSpectrum", qos: .userInitiated)
+    private let spectrumQueue = DispatchQueue(label: "MPXPrime.MPXSpectrum", qos: .userInitiated)
     private let spectrumAnalyzer = MPXSpectrumAnalyzer()
     private let preMPXSpectrumAnalyzer = MPXSpectrumAnalyzer()
     private var spectrumInputScratch: [Float] = Array(repeating: 0.0, count: 4096)
-    private var preMPXSpectrumLeftScratch: [Float] = Array(repeating: 0.0, count: 4096)
-    private var preMPXSpectrumRightScratch: [Float] = Array(repeating: 0.0, count: 4096)
+    private var preMPXSpectrumLeftScratch: [Float] = Array(
+        repeating: 0.0,
+        count: AudioOutputEngine.preMPXSpectrumFrameCount
+    )
+    private var preMPXSpectrumRightScratch: [Float] = Array(
+        repeating: 0.0,
+        count: AudioOutputEngine.preMPXSpectrumFrameCount
+    )
 
     init(configPath: String) {
         self.configPath = configPath
@@ -1415,6 +1429,82 @@ final class StereoFoolViewModel: ObservableObject {
                 self.setConfigValue(\.rdsGaussianTaps, odd, runtimeDisposition: .restart)
             }
         )
+    }
+
+    func rtBufferTextBinding(_ index: Int) -> Binding<String> {
+        Binding(
+            get: { self.rtBufferText(at: index) },
+            set: { self.setRTBufferText(at: index, text: $0) }
+        )
+    }
+
+    func rtBufferEnabledBinding(_ index: Int) -> Binding<Bool> {
+        Binding(
+            get: { self.rtBufferEnabled(at: index) },
+            set: { self.setRTBufferEnabled(at: index, enabled: $0) }
+        )
+    }
+
+    func rtBufferLabel(_ index: Int) -> String {
+        String(UnicodeScalar(65 + max(0, min(3, index))) ?? "A")
+    }
+
+    var enabledRTBufferIndices: [Int] {
+        (0..<4).filter { index in
+            rtBufferEnabled(at: index)
+                && !rtBufferText(at: index).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    private func rtBufferText(at index: Int) -> String {
+        switch index {
+        case 0: return config.rdsRTA
+        case 1: return config.rdsRTB
+        case 2: return config.rdsRTC
+        case 3: return config.rdsRTD
+        default: return ""
+        }
+    }
+
+    private func rtBufferEnabled(at index: Int) -> Bool {
+        switch index {
+        case 0: return config.rdsRTBufferAEnabled
+        case 1: return config.rdsRTBufferBEnabled
+        case 2: return config.rdsRTBufferCEnabled
+        case 3: return config.rdsRTBufferDEnabled
+        default: return false
+        }
+    }
+
+    private func setRTBufferText(at index: Int, text: String) {
+        publishConfigChange()
+        switch index {
+        case 0: config.rdsRTA = text
+        case 1: config.rdsRTB = text
+        case 2: config.rdsRTC = text
+        case 3: config.rdsRTD = text
+        default: break
+        }
+        saveConfig(restartRequired: true)
+    }
+
+    private func setRTBufferEnabled(at index: Int, enabled: Bool) {
+        publishConfigChange()
+        switch index {
+        case 0: config.rdsRTBufferAEnabled = enabled
+        case 1: config.rdsRTBufferBEnabled = enabled
+        case 2: config.rdsRTBufferCEnabled = enabled
+        case 3: config.rdsRTBufferDEnabled = enabled
+        default: break
+        }
+        let enabledBuffers = enabledRTBufferIndices
+        if enabledBuffers.isEmpty {
+            config.rdsRTActiveBuffer = 0
+        } else if !enabledBuffers.contains(config.rdsRTActiveBuffer) {
+            config.rdsRTActiveBuffer = enabledBuffers[0]
+        }
+        saveConfig(restartRequired: false)
+        applyLiveRDSConfigIfRunning()
     }
 
     func applyOrbassPreset(id: String) {
@@ -1712,6 +1802,12 @@ final class StereoFoolViewModel: ObservableObject {
             config.rdsRTCycleAB = defaults.rdsRTCycleAB
             config.rdsRTA = defaults.rdsRTA
             config.rdsRTB = defaults.rdsRTB
+            config.rdsRTC = defaults.rdsRTC
+            config.rdsRTD = defaults.rdsRTD
+            config.rdsRTBufferAEnabled = defaults.rdsRTBufferAEnabled
+            config.rdsRTBufferBEnabled = defaults.rdsRTBufferBEnabled
+            config.rdsRTBufferCEnabled = defaults.rdsRTBufferCEnabled
+            config.rdsRTBufferDEnabled = defaults.rdsRTBufferDEnabled
             config.rdsRTCR = defaults.rdsRTCR
             config.rdsRTCentered = defaults.rdsRTCentered
             config.rdsRTMode = defaults.rdsRTMode
@@ -1854,6 +1950,13 @@ final class StereoFoolViewModel: ObservableObject {
         runningEngine.applyRuntimeConfig(runtimeConfig)
         pendingRuntimeApply = false
         statusText = "Live DSP parameters applied"
+    }
+
+    private func applyLiveRDSConfigIfRunning() {
+        guard isRunning, let runningEngine else { return }
+        runningEngine.applyRDSRuntimeConfig(config)
+        pendingRuntimeApply = false
+        statusText = "Live RDS text parameters applied"
     }
 
     private func captureRuntimeSnapshot() -> RuntimeSnapshot {
@@ -2038,6 +2141,7 @@ final class StereoFoolViewModel: ObservableObject {
         var health = MonitoringStreamHealth.stopped
 
         if let engine = runningEngine {
+            updateEngineAnalysisCapture(engine: engine)
             let cap = engine.captureStats
             var runtime =
                 "Running · Render \(Int(engine.renderSampleRate)) Hz · Hardware \(Int(engine.hardwareSampleRate)) Hz"
@@ -2045,6 +2149,8 @@ final class StereoFoolViewModel: ObservableObject {
                 runtime += " · Input \(Int(inRate)) Hz"
             }
             runtime += " · Source \(engine.sourceDescription)"
+            runtime += " · Applies \(engine.liveRuntimeApplyCount)"
+            runtime += " · Skipped \(engine.skippedRuntimeApplyCount)"
             if let transport = engine.transportSnapshot {
                 runtime += String(
                     format: " · Path %@ step %.4fx trim %.4f",
@@ -2067,8 +2173,10 @@ final class StereoFoolViewModel: ObservableObject {
             if let stats = engine.inputStats {
                 if let transport = engine.transportSnapshot {
                     inputRingText = String(
-                        format: "Input Ring: %d frames buffered · Overflows %llu · Underflows %llu · %@ %.4fx trim %.4f",
+                        format: "Input Ring: %d frames buffered · Prime %d · Target %d · Overflows %llu · Underflows %llu · %@ %.4fx trim %.4f",
                         stats.bufferedFrames,
+                        engine.inputPrimeFrames,
+                        engine.inputTargetFrames,
                         stats.overflows,
                         stats.underflows,
                         transport.resampleMode,
@@ -2077,7 +2185,7 @@ final class StereoFoolViewModel: ObservableObject {
                     )
                 } else {
                     inputRingText =
-                        "Input Ring: \(stats.bufferedFrames) frames buffered · Overflows \(stats.overflows) · Underflows \(stats.underflows)"
+                        "Input Ring: \(stats.bufferedFrames) frames buffered · Prime \(engine.inputPrimeFrames) · Target \(engine.inputTargetFrames) · Overflows \(stats.overflows) · Underflows \(stats.underflows)"
                 }
                 let target = max(1, engine.inputTargetFrames)
                 inputBufferMax = Double(target * 2)
@@ -2153,7 +2261,10 @@ final class StereoFoolViewModel: ObservableObject {
                 engineStartReference = now
             }
 
-            updateScopes(engine: engine, inputPeak: inputPeak, outputPeak: outputPeak)
+            let scopesVisible = selectedSection == .monitoring || scopesWindowVisible
+            if scopesVisible {
+                updateScopes(engine: engine, inputPeak: inputPeak, outputPeak: outputPeak)
+            }
             if selectedSection == .monitoring || spectrumWindowVisible {
                 updateMPXSpectrum(engine: engine, now: now)
             }
@@ -2403,6 +2514,20 @@ final class StereoFoolViewModel: ObservableObject {
         updateRDSFields(elapsed: elapsed)
     }
 
+    private func updateEngineAnalysisCapture(engine: AudioOutputEngine) {
+        let scopesVisible = selectedSection == .monitoring || scopesWindowVisible
+        let outputHistoryVisible = scopesVisible || spectrumWindowVisible
+        let loudnessVisible =
+            monitorEnabled && (selectedSection == .monitoring || levelsWindowVisible)
+        engine.setAnalysisCapture(
+            inputScope: scopesVisible,
+            outputHistory: outputHistoryVisible,
+            preMPXHistory: preMPXSpectrumWindowVisible,
+            outputImageMetrics: selectedSection == .monitoring,
+            loudness: loudnessVisible
+        )
+    }
+
     private func updateScopes(engine: AudioOutputEngine, inputPeak: Float, outputPeak: Float) {
         let snapshot = engine.scopeSnapshot(windowMS: scopeTimebaseMS)
         if snapshot.input.isEmpty || snapshot.output.isEmpty {
@@ -2475,7 +2600,7 @@ final class StereoFoolViewModel: ObservableObject {
         let raw = engine.preMPXStereoWindow(
             intoLeft: &preMPXSpectrumLeftScratch,
             right: &preMPXSpectrumRightScratch,
-            frameCount: 4096
+            frameCount: AudioOutputEngine.preMPXSpectrumFrameCount
         )
         let sampleRate = raw.sampleRate
         let validCount = raw.count
@@ -2569,17 +2694,21 @@ final class StereoFoolViewModel: ObservableObject {
 
     private func currentRTText(elapsed: Double) -> String {
         let nowPlayingSnapshot = nowPlayingState.currentSnapshot()
+        let enabledBuffers = enabledRTBufferIndices
         let text: String
-        if config.rdsRTManualBuffers {
-            if config.rdsRTCycle {
-                let cycle = max(1.0, config.rdsRTCycleTime)
-                let idx = Int(elapsed / cycle) % 2
-                let raw = idx == 0 ? config.rdsRTA : config.rdsRTB
-                text = NowPlayingFormatter.expandTemplate(raw, snapshot: nowPlayingSnapshot)
-            } else {
-                let raw = config.rdsRTActiveBuffer == 0 ? config.rdsRTA : config.rdsRTB
-                text = NowPlayingFormatter.expandTemplate(raw, snapshot: nowPlayingSnapshot)
+        if !enabledBuffers.isEmpty {
+            var sequence: [(duration: Double, text: String)] = []
+            for index in enabledBuffers {
+                let raw = rtBufferText(at: index)
+                let expanded = NowPlayingFormatter.expandTemplate(raw, snapshot: nowPlayingSnapshot)
+                sequence.append(
+                    contentsOf: Self.parseRTBufferDisplaySequence(
+                        expanded,
+                        defaultDuration: max(1.0, config.rdsRTCycleTime)
+                    )
+                )
             }
+            text = Self.currentTimedDisplayText(sequence: sequence, elapsed: elapsed)
         } else {
             let expanded = NowPlayingFormatter.expandTemplate(config.rdsRTText, snapshot: nowPlayingSnapshot)
             text = Self.currentTimedDisplayText(expanded, elapsed: elapsed)
@@ -2594,6 +2723,13 @@ final class StereoFoolViewModel: ObservableObject {
 
     private static func currentTimedDisplayText(_ raw: String, elapsed: Double) -> String {
         let seq = parseTimedDisplaySequence(raw)
+        return currentTimedDisplayText(sequence: seq, elapsed: elapsed)
+    }
+
+    private static func currentTimedDisplayText(
+        sequence seq: [(duration: Double, text: String)],
+        elapsed: Double
+    ) -> String {
         guard !seq.isEmpty else { return "" }
         if seq.count == 1 {
             return seq[0].text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2609,6 +2745,20 @@ final class StereoFoolViewModel: ObservableObject {
             }
         }
         return seq.last?.text.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func parseRTBufferDisplaySequence(
+        _ raw: String,
+        defaultDuration: Double
+    ) -> [(duration: Double, text: String)] {
+        let sequence = parseTimedDisplaySequence(raw)
+        guard !containsTimedDisplayCommand(raw) else { return sequence }
+        let duration = max(0.1, defaultDuration)
+        return sequence.map { (duration, $0.text) }
+    }
+
+    private static func containsTimedDisplayCommand(_ raw: String) -> Bool {
+        raw.range(of: #"(^|[\s/])\d+(?:\.\d+)?s:"#, options: .regularExpression) != nil
     }
 
     private static func parseTimedDisplaySequence(_ raw: String) -> [(
@@ -3277,7 +3427,7 @@ extension String {
 }
 
 private struct RootView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         HSplitView {
@@ -3354,7 +3504,7 @@ private struct Card<Content: View>: View {
 }
 
 private struct MonitoringDashboardView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         ScrollView {
@@ -3436,7 +3586,7 @@ private struct MonitoringDashboardView: View {
 }
 
 private struct MonitoringTransportHeader: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
@@ -3592,7 +3742,7 @@ private struct MonitoringDetailValue: View {
 }
 
 private struct MonitoringRuntimeSectionView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -3693,7 +3843,7 @@ private struct MonitoringRuntimeSectionView: View {
 }
 
 private struct MonitoringRDSSnapshotSectionView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         MonitoringRDSPanel(rows: model.rdsRows)
@@ -3807,7 +3957,7 @@ private struct MonitoringRDSPanel: View {
 }
 
 private struct MonitoringLevelsSectionView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
     private let holdOptions: [Double] = [0.5, 1.0, 1.5, 2.0, 3.0]
     private let fallOptions: [Double] = [6.0, 12.0, 18.0, 24.0, 30.0]
 
@@ -3876,7 +4026,7 @@ private struct MonitoringLevelsSectionView: View {
 }
 
 private struct MonitoringDSPStatusSectionView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -3925,7 +4075,7 @@ private struct MonitoringDSPStatusSectionView: View {
 }
 
 private struct DSPOverviewPanel: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     private var limiterMetrics: [(String, String)] {
         metrics(from: model.limiterDetailText)
@@ -4017,7 +4167,7 @@ private struct DSPOverviewPanel: View {
 }
 
 private struct MonitoringCalibrationSectionView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -4297,7 +4447,7 @@ private struct DSPStateIndicator: View {
 }
 
 private struct RuntimeCardView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Runtime") {
@@ -4412,7 +4562,7 @@ private struct RuntimeCardView: View {
 }
 
 private struct RDSSnapshotCardView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "RDS Snapshot") {
@@ -4422,7 +4572,7 @@ private struct RDSSnapshotCardView: View {
 }
 
 private struct RDSAdvancedCardView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Scheduler & Advanced") {
@@ -4450,7 +4600,7 @@ private struct RDSAdvancedCardView: View {
 }
 
 private struct LevelsCardView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Levels") {
@@ -4481,7 +4631,7 @@ private struct LevelsCardView: View {
 }
 
 private struct LoudnessCardView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Loudness") {
@@ -4678,7 +4828,7 @@ private struct MeterBar: View {
 }
 
 private struct DSPStatusCardView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "DSP Overview") {
@@ -4688,7 +4838,7 @@ private struct DSPStatusCardView: View {
 }
 
 private struct ScopesCardView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
     private let scopeTimebasesMS: [Double] = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
     var body: some View {
@@ -4997,7 +5147,7 @@ private struct KeyValueGrid: View {
 }
 
 private struct ProcessingSectionView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -5043,7 +5193,7 @@ private struct ProcessingSectionView: View {
 }
 
 private struct ProcessingCoreTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Core Processing") {
@@ -5088,7 +5238,7 @@ private struct ProcessingCoreTab: View {
 }
 
 private struct ProcessingAGCTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Wideband AGC") {
@@ -5106,7 +5256,7 @@ private struct ProcessingAGCTab: View {
 }
 
 private struct ProcessingOrbassTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Orbass") {
@@ -5136,7 +5286,7 @@ private struct ProcessingOrbassTab: View {
 }
 
 private struct ProcessingMultibandTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Multiband Dynamics") {
@@ -5195,7 +5345,7 @@ private struct ProcessingMultibandTab: View {
 }
 
 private struct ProcessingWidenerTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Stereo Widener") {
@@ -5231,7 +5381,7 @@ private struct ProcessingWidenerTab: View {
 }
 
 private struct ProcessingLimiterTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Composite Limiter") {
@@ -5263,7 +5413,7 @@ private struct ProcessingLimiterTab: View {
 }
 
 private struct LevelsOnlyView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         ScrollView {
@@ -5273,6 +5423,7 @@ private struct LevelsOnlyView: View {
                     subtitle: "Input, post-AGC, and output meters."
                 )
                 LevelsCardView(model: model)
+                LoudnessCardView(model: model)
             }
             .padding(20)
         }
@@ -5280,7 +5431,7 @@ private struct LevelsOnlyView: View {
 }
 
 private struct SystemSettingsSectionContent: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     private let sampleRates: [Double] = [44_100, 48_000, 88_200, 96_000, 176_400, 192_000]
     private let blockSizes: [Int] = [1024, 2048, 4096, 8192]
@@ -5331,7 +5482,7 @@ private struct SystemSettingsSectionContent: View {
 }
 
 private struct InterfacesSettingsSectionContent: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Group {
@@ -5417,7 +5568,7 @@ private struct InterfacesSettingsSectionContent: View {
 }
 
 private struct RDSSectionView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         VStack(spacing: 0) {
@@ -5461,7 +5612,7 @@ private struct RDSSectionView: View {
 }
 
 private struct RDSProgramTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Program Service") {
@@ -5506,35 +5657,52 @@ private struct HexCodeField: View {
 }
 
 private struct RDSRadiotextTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Radiotext & RT+") {
-            Toggle("Manual RT Buffers", isOn: model.configBinding(\.rdsRTManualBuffers))
-            if model.value(for: \.rdsRTManualBuffers) {
-                TextField("RT Buffer A", text: model.configBinding(\.rdsRTA))
-                TextField("RT Buffer B", text: model.configBinding(\.rdsRTB))
-                Picker("Active Buffer", selection: model.configBinding(\.rdsRTActiveBuffer)) {
-                    Text("A").tag(0)
-                    Text("B").tag(1)
+            TextField("Single Radiotext", text: model.configBinding(\.rdsRTText))
+            Text("Used when no RT buffer entries are checked.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("RT Buffers")
+                    .font(.headline)
+                Text("Checked messages are active. If multiple are checked, they rotate in order using Cycle Time.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(0..<4, id: \.self) { index in
+                    HStack(spacing: 12) {
+                        Toggle(
+                            "Msg \(index + 1)",
+                            isOn: model.rtBufferEnabledBinding(index)
+                        )
+                        .toggleStyle(.checkbox)
+                        .frame(width: 72, alignment: .leading)
+                        TextField(
+                            "Radiotext message \(index + 1)",
+                            text: model.rtBufferTextBinding(index)
+                        )
+                    }
                 }
-            } else {
-                TextField("Radiotext", text: model.configBinding(\.rdsRTText))
+                if model.enabledRTBufferIndices.isEmpty {
+                    Text("No checked RT messages. Legacy single-field Radiotext will be used until you enable one.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
+            .padding(.top, 4)
             Picker("RT Mode", selection: model.configBinding(\.rdsRTMode)) {
                 Text("2A (64 chars)").tag("2A")
                 Text("2B (32 chars)").tag("2B")
             }
             .pickerStyle(.segmented)
-            Toggle("Cycle A/B", isOn: model.configBinding(\.rdsRTCycle))
-            Toggle("Cycle Same Message A/B", isOn: model.configBinding(\.rdsRTCycleAB))
             DoubleSliderRow(
                 title: "Cycle Time", value: model.configBinding(\.rdsRTCycleTime),
                 range: 1...20, format: "%.1f s")
-            IntStepperRow(
-                title: "AB Cycle Count",
-                value: model.configBinding(\.rdsRTABCycleCount), range: 1...99, step: 1,
-                format: "%d")
             Toggle("Center RT", isOn: model.configBinding(\.rdsRTCentered))
             Toggle("Append CR", isOn: model.configBinding(\.rdsRTCR))
             Toggle("Enable RT+", isOn: model.configBinding(\.rdsEnableRTPlus))
@@ -5585,7 +5753,7 @@ private struct RDSRadiotextTab: View {
 }
 
 private struct RDSLongPSTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Long PS") {
@@ -5598,7 +5766,7 @@ private struct RDSLongPSTab: View {
 }
 
 private struct RDSFlagsTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "Flags") {
@@ -5632,7 +5800,7 @@ private struct RDSFlagsTab: View {
 }
 
 private struct RDSCarrierTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "RDS Carrier") {
@@ -5671,7 +5839,7 @@ private struct RDSCarrierTab: View {
 }
 
 private struct RDSAdvancedTab: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Card(title: "RDS Carrier") {
@@ -5693,7 +5861,7 @@ private struct RDSAdvancedTab: View {
 }
 
 private struct SettingsSectionView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         Form {
@@ -5734,7 +5902,7 @@ private struct SettingsSectionView: View {
 }
 
 private struct SettingsWindowView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         SettingsSectionView(model: model)
@@ -5824,7 +5992,7 @@ private struct InlineRestartRequiredNote: View {
 private struct HelpInputLevelsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recommended operating targets for the current StereoFool FM chain. Feed it clean, consistent program audio and let the processor create the final density.")
+            Text("Recommended operating targets for the current MPX Prime FM chain. Feed it clean, consistent program audio and let the processor create the final density.")
                 .foregroundStyle(.secondary)
                 .font(.callout)
 
@@ -5914,7 +6082,7 @@ private struct HelpRDSTextView: View {
                 .padding(.top, 8)
 
             CodeBlock("""
-5s:StereoFool - 5s:FM Coder
+5s:MPX Prime - 5s:FM Coder
 20s:Station Name/10s:Now Playing
 8s:Tune to 88.5/8s:My Frequency
 """)
@@ -5982,7 +6150,7 @@ private struct HelpSectionView: View {
                     Text("Examples:").font(.caption.bold())
                     Spacer()
                 }
-                Text("5s:StereoFool - 5s:FM Coder").font(.caption.monospaced())
+                Text("5s:MPX Prime - 5s:FM Coder").font(.caption.monospaced())
                 Text("20s:Station Name/10s:Now Playing").font(.caption.monospaced())
                 Text("8s:Tune to 88.5/8s:My Frequency").font(.caption.monospaced())
             }
@@ -5997,7 +6165,7 @@ private struct AboutSectionView: View {
         Form {
             Section {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("StereoFool")
+                    Text("MPX Prime")
                         .font(.title2.weight(.semibold))
                     Text("Version \(AppConfig.appVersion)")
                         .font(.caption)
@@ -6005,7 +6173,7 @@ private struct AboutSectionView: View {
                     Text("Copyright © 2026 Bkram Developments")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    Link("https://github.com/bkram/StereoFool", destination: URL(string: "https://github.com/bkram/StereoFool")!)
+                    Link("Project Repository", destination: URL(string: "https://github.com/bkram/StereoFool")!)
                         .font(.caption)
                 }
                 .padding(.vertical, 4)
@@ -6030,7 +6198,7 @@ private struct DisclaimerBox: View {
                     .font(.headline)
             }
             
-            Text("StereoFool is a native macOS FM composite (MPX) generator with stereo encoding, optional RDS, and decoded monitor output.")
+            Text("MPX Prime is a native macOS FM composite (MPX) generator with stereo encoding, optional RDS, and decoded monitor output.")
                 .font(.caption)
 
             Text("This software is provided for experimental and educational purposes only and is not suitable for production broadcast use.")
@@ -6079,7 +6247,7 @@ private struct DisclaimerBox: View {
 }
 
 private struct PendingApplyCard: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     
 
@@ -6152,7 +6320,7 @@ private struct IntStepperRow: View {
 }
 
 struct ScopesOnlyView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
     private let scopeTimebasesMS: [Double] = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
     var body: some View {
@@ -6213,7 +6381,7 @@ struct ScopesOnlyView: View {
 }
 
 struct SpectrumOnlyView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         VStack(spacing: 16) {
@@ -6238,7 +6406,7 @@ struct SpectrumOnlyView: View {
 }
 
 struct PreMPXSpectrumOnlyView: View {
-    @ObservedObject var model: StereoFoolViewModel
+    @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {

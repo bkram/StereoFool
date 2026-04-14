@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build StereoFool release DMG with universal binary
+# Build MPX Prime release DMG with universal binary
 
 set -e
 
@@ -7,11 +7,18 @@ cd "$(dirname "$0")"
 
 VERSION=${1:-0.8}
 OUTPUT_DIR="macOS/dist"
-APP_NAME="StereoFool"
-ICON_FILE="macOS/Resources/StereoFool.icns"
-ENTITLEMENTS="macOS/StereoFool.entitlements"
+APP_NAME="MPX Prime"
+EXECUTABLE_NAME="MPXPrime"
+CONFIG_NAME="MPX Prime.ini"
+ICON_FILE="macOS/Resources/MPXPrime.icns"
+ENTITLEMENTS="macOS/MPXPrime.entitlements"
+export DEVELOPER_DIR=${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
+export CLANG_MODULE_CACHE_PATH=${CLANG_MODULE_CACHE_PATH:-/tmp/swift-module-cache}
+export SWIFTPM_MODULECACHE_OVERRIDE=${SWIFTPM_MODULECACHE_OVERRIDE:-/tmp/swift-module-cache}
+BUILD_JOBS=${BUILD_JOBS:-$(sysctl -n hw.ncpu 2>/dev/null || echo 1)}
 
-echo "Building StereoFool $VERSION release (universal binary)..."
+echo "Building MPX Prime $VERSION release (universal binary)..."
+echo "Using $BUILD_JOBS parallel build jobs..."
 
 # Clean output directory
 rm -rf "$OUTPUT_DIR"
@@ -19,10 +26,10 @@ mkdir -p "$OUTPUT_DIR"
 
 # Build release binary for both architectures with entitlements
 echo "Building arm64..."
-swift build --package-path macOS -c release --arch arm64
+xcrun swift build --package-path macOS -c release --arch arm64 -j "$BUILD_JOBS"
 
 echo "Building x86_64..."
-swift build --package-path macOS -c release --arch x86_64
+xcrun swift build --package-path macOS -c release --arch x86_64 -j "$BUILD_JOBS"
 
 # Create .app bundle structure
 APP_DIR="$OUTPUT_DIR/$APP_NAME.app"
@@ -33,21 +40,9 @@ mkdir -p "$APP_DIR/Contents/Resources"
 # Copy universal binary to app bundle
 echo "Creating universal binary..."
 lipo -create \
-    "macOS/.build/arm64-apple-macosx/release/StereoFool" \
-    "macOS/.build/x86_64-apple-macosx/release/StereoFool" \
-    -output "$APP_DIR/Contents/MacOS/StereoFool"
-
-# Ad-hoc sign the app (gives it a stable identity for permissions)
-echo "Ad-hoc signing app bundle..."
-codesign --force --deep --sign - "$APP_DIR"
-
-# Verify signature
-echo "Verifying signature..."
-if spctl --assess --type exec "$APP_DIR" 2>&1 | grep -q "accepted"; then
-    echo "Signature: accepted (ad-hoc)"
-else
-    echo "Note: App uses ad-hoc signature. Run: xattr -cr '$APP_DIR' if needed."
-fi
+    "macOS/.build/arm64-apple-macosx/release/MPXPrime" \
+    "macOS/.build/x86_64-apple-macosx/release/MPXPrime" \
+    -output "$APP_DIR/Contents/MacOS/$EXECUTABLE_NAME"
 
 if [ -f "$ICON_FILE" ]; then
     cp "$ICON_FILE" "$APP_DIR/Contents/Resources/"
@@ -60,11 +55,13 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>StereoFool</string>
+    <string>${EXECUTABLE_NAME}</string>
     <key>CFBundleIdentifier</key>
-    <string>com.stereofool.app</string>
+    <string>com.mpxprime.app</string>
     <key>CFBundleName</key>
-    <string>StereoFool</string>
+    <string>${APP_NAME}</string>
+    <key>CFBundleDisplayName</key>
+    <string>${APP_NAME}</string>
     <key>CFBundleVersion</key>
     <string>${VERSION}</string>
     <key>CFBundleShortVersionString</key>
@@ -72,13 +69,13 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleIconFile</key>
-    <string>StereoFool.icns</string>
+    <string>MPXPrime.icns</string>
     <key>LSMinimumSystemVersion</key>
     <string>15.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>StereoFool needs microphone access to capture audio input for FM signal processing.</string>
+    <string>MPX Prime needs microphone access to capture audio input for FM signal processing.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>NSHumanReadableCopyright</key>
@@ -88,11 +85,11 @@ cat > "$APP_DIR/Contents/Info.plist" << EOF
 EOF
 
 # Embed entitlements in the app bundle
-cp "$ENTITLEMENTS" "$APP_DIR/Contents/Resources/StereoFool.entitlements"
+cp "$ENTITLEMENTS" "$APP_DIR/Contents/Resources/MPXPrime.entitlements"
 
 # Create default config
-cat > "$OUTPUT_DIR/StereoFool.ini" << 'EOF'
-[ stereofool ]
+cat > "$OUTPUT_DIR/$CONFIG_NAME" << 'EOF'
+[ mpxprime ]
 input_gain_db = 0.0
 output_gain_db = 0.0
 preemphasis_us = 75
@@ -121,11 +118,23 @@ orbass_drive = 1.0
 EOF
 
 # Copy default config to app resources
-cp "$OUTPUT_DIR/StereoFool.ini" "$APP_DIR/Contents/Resources/"
+cp "$OUTPUT_DIR/$CONFIG_NAME" "$APP_DIR/Contents/Resources/"
+
+# Ad-hoc sign the completed app bundle so macOS sees a valid bundle structure.
+echo "Ad-hoc signing app bundle..."
+codesign --force --deep --sign - "$APP_DIR"
+
+# Verify signature
+echo "Verifying signature..."
+if spctl --assess --type exec "$APP_DIR" 2>&1 | grep -q "accepted"; then
+    echo "Signature: accepted (ad-hoc)"
+else
+    echo "Note: App uses ad-hoc signature. Run: xattr -cr '$APP_DIR' if needed."
+fi
 
 # Create DMG
 echo "Creating DMG..."
-DMG_PATH="$OUTPUT_DIR/StereoFool-$VERSION.dmg"
+DMG_PATH="$OUTPUT_DIR/MPX Prime-$VERSION.dmg"
 hdiutil create -volname "$APP_NAME" -srcfolder "$APP_DIR" -ov -format UDZO "$DMG_PATH" || {
     echo "Failed to create DMG, keeping .app bundle"
 }

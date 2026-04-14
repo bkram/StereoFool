@@ -1,5 +1,5 @@
 import XCTest
-@testable import StereoFool
+@testable import MPXPrime
 
 final class StereoInputRingBufferTests: XCTestCase {
     func testStereoWriteReadRoundTrip() {

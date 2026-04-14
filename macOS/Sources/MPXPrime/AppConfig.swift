@@ -10,12 +10,12 @@ struct AppConfig {
             in: .userDomainMask
         ).first {
             return appSupport
-                .appendingPathComponent("StereoFool", isDirectory: true)
-                .appendingPathComponent("StereoFool.ini", isDirectory: false)
+                .appendingPathComponent("MPX Prime", isDirectory: true)
+                .appendingPathComponent("MPX Prime.ini", isDirectory: false)
                 .path
         }
         return ((NSHomeDirectory() as NSString)
-            .appendingPathComponent("Library/Application Support/StereoFool/StereoFool.ini")
+            .appendingPathComponent("Library/Application Support/MPX Prime/MPX Prime.ini")
             as NSString)
             .standardizingPath
     }
@@ -49,6 +49,9 @@ struct AppConfig {
     var limitLookaheadMS: Double = 5.0
     var limitLookaheadEnabled: Bool = true
     var compositeLimiterEnabled: Bool = true
+    var audioCompositeSoftClipEnabled: Bool = true
+    var audioCompositeSmootherEnabled: Bool = true
+    var finalMPXSoftClipEnabled: Bool = true
     var mpxDeviationKHz: Double = 75.0
     var enRDS: Bool = true
     var widebandAGCEnabled: Bool = false
@@ -115,11 +118,17 @@ struct AppConfig {
         "3s:Stereo- 3s:Fool 3s:MAC 3s:App 3s:FM 3s:MPX 3s:+RDS"
     var rdsPSCentered: Bool = true
     var rdsRTText: String =
-        "10s:StereoFool FM MPX Generator/10s:Native macOS Swift App"
+        "10s:MPX Prime FM MPX Generator/10s:Native macOS Swift App"
     var rdsRTManualBuffers: Bool = false
     var rdsRTCycleAB: Bool = false
-    var rdsRTA: String = "StereoFool: FM MPX + RDS Audio Processor"
-    var rdsRTB: String = "StereoFool: FM MPX Generator"
+    var rdsRTA: String = "MPX Prime: FM MPX + RDS Audio Processor"
+    var rdsRTB: String = "MPX Prime: FM MPX Generator"
+    var rdsRTC: String = ""
+    var rdsRTD: String = ""
+    var rdsRTBufferAEnabled: Bool = true
+    var rdsRTBufferBEnabled: Bool = true
+    var rdsRTBufferCEnabled: Bool = false
+    var rdsRTBufferDEnabled: Bool = false
     var rdsRTCR: Bool = true
     var rdsRTCentered: Bool = false
     var rdsRTMode: String = "2A"
@@ -130,7 +139,7 @@ struct AppConfig {
     var rdsPTYN: String = "-STEREO-"
     var rdsEnablePTYN: Bool = true
     var rdsPTYNCentered: Bool = false
-    var rdsLongPS32: String = "StereoFool Stereo and RDS Coder"
+    var rdsLongPS32: String = "MPX Prime Stereo and RDS Coder"
     var rdsEnableLPS: Bool = true
     var rdsLPSCentered: Bool = false
     var rdsLPSCR: Bool = true
@@ -196,6 +205,18 @@ struct AppConfig {
             "limit_lookahead_enabled", defaultValue: cfg.limitLookaheadEnabled)
         cfg.compositeLimiterEnabled = mpx.bool(
             "composite_clipper_enabled", defaultValue: cfg.compositeLimiterEnabled)
+        cfg.audioCompositeSoftClipEnabled = mpx.bool(
+            "audio_composite_softclip_enabled",
+            defaultValue: cfg.audioCompositeSoftClipEnabled
+        )
+        cfg.audioCompositeSmootherEnabled = mpx.bool(
+            "audio_composite_smoother_enabled",
+            defaultValue: cfg.audioCompositeSmootherEnabled
+        )
+        cfg.finalMPXSoftClipEnabled = mpx.bool(
+            "final_mpx_softclip_enabled",
+            defaultValue: cfg.finalMPXSoftClipEnabled
+        )
         cfg.mpxDeviationKHz = mpx.double("mpx_deviation_khz", defaultValue: cfg.mpxDeviationKHz)
         cfg.enRDS = mpx.bool("en_rds", defaultValue: rds.bool("en_rds", defaultValue: cfg.enRDS))
         cfg.widebandAGCEnabled = mpx.bool(
@@ -296,6 +317,12 @@ struct AppConfig {
         cfg.rdsRTCycleAB = rds.bool("rt_cycle_ab", defaultValue: cfg.rdsRTCycleAB)
         cfg.rdsRTA = rds.string("rt_a", defaultValue: cfg.rdsRTA)
         cfg.rdsRTB = rds.string("rt_b", defaultValue: cfg.rdsRTB)
+        cfg.rdsRTC = rds.string("rt_c", defaultValue: cfg.rdsRTC)
+        cfg.rdsRTD = rds.string("rt_d", defaultValue: cfg.rdsRTD)
+        cfg.rdsRTBufferAEnabled = rds.bool("rt_a_enabled", defaultValue: cfg.rdsRTBufferAEnabled)
+        cfg.rdsRTBufferBEnabled = rds.bool("rt_b_enabled", defaultValue: cfg.rdsRTBufferBEnabled)
+        cfg.rdsRTBufferCEnabled = rds.bool("rt_c_enabled", defaultValue: cfg.rdsRTBufferCEnabled)
+        cfg.rdsRTBufferDEnabled = rds.bool("rt_d_enabled", defaultValue: cfg.rdsRTBufferDEnabled)
         cfg.rdsRTCR = rds.bool("rt_cr", defaultValue: cfg.rdsRTCR)
         cfg.rdsRTCentered = rds.bool("rt_centered", defaultValue: cfg.rdsRTCentered)
         cfg.rdsRTMode = rds.string("rt_mode", defaultValue: cfg.rdsRTMode)
@@ -342,7 +369,7 @@ struct AppConfig {
         cfg.rdsPTY = max(0, min(31, cfg.rdsPTY))
         cfg.rdsRTMode = (cfg.rdsRTMode.uppercased() == "2B") ? "2B" : "2A"
         cfg.rdsRTCycleTime = max(1.0, min(60.0, cfg.rdsRTCycleTime))
-        cfg.rdsRTActiveBuffer = max(0, min(1, cfg.rdsRTActiveBuffer))
+        cfg.rdsRTActiveBuffer = max(0, min(3, cfg.rdsRTActiveBuffer))
         cfg.rdsRTABCycleCount = max(1, min(99, cfg.rdsRTABCycleCount))
         cfg.rdsECC = Self.sanitizedHexByte(cfg.rdsECC)
         cfg.rdsLIC = Self.sanitizedHexByte(cfg.rdsLIC)
@@ -385,6 +412,9 @@ struct AppConfig {
             "limit_lookahead_enabled = \(Self.boolString(limitLookaheadEnabled))",
             "limit_lookahead_ms = \(Self.formatFloat(limitLookaheadMS))",
             "composite_clipper_enabled = \(Self.boolString(compositeLimiterEnabled))",
+            "audio_composite_softclip_enabled = \(Self.boolString(audioCompositeSoftClipEnabled))",
+            "audio_composite_smoother_enabled = \(Self.boolString(audioCompositeSmootherEnabled))",
+            "final_mpx_softclip_enabled = \(Self.boolString(finalMPXSoftClipEnabled))",
             "mpx_deviation_khz = \(Self.formatFloat(mpxDeviationKHz))",
             "en_rds = \(Self.boolString(enRDS))",
             "wideband_agc_enabled = \(Self.boolString(widebandAGCEnabled))",
@@ -460,12 +490,18 @@ struct AppConfig {
             "rt_cycle_ab = \(Self.boolString(rdsRTCycleAB))",
             "rt_a = \(rdsRTA)",
             "rt_b = \(rdsRTB)",
+            "rt_c = \(rdsRTC)",
+            "rt_d = \(rdsRTD)",
+            "rt_a_enabled = \(Self.boolString(rdsRTBufferAEnabled))",
+            "rt_b_enabled = \(Self.boolString(rdsRTBufferBEnabled))",
+            "rt_c_enabled = \(Self.boolString(rdsRTBufferCEnabled))",
+            "rt_d_enabled = \(Self.boolString(rdsRTBufferDEnabled))",
             "rt_cr = \(Self.boolString(rdsRTCR))",
             "rt_centered = \(Self.boolString(rdsRTCentered))",
             "rt_mode = \(rdsRTMode)",
             "rt_cycle = \(Self.boolString(rdsRTCycle))",
             "rt_cycle_time = \(Self.formatFloat(max(1.0, min(60.0, rdsRTCycleTime))))",
-            "rt_active_buffer = \(max(0, min(1, rdsRTActiveBuffer)))",
+            "rt_active_buffer = \(max(0, min(3, rdsRTActiveBuffer)))",
             "rt_ab_cycle_count = \(max(1, min(99, rdsRTABCycleCount)))",
             "ptyn = \(rdsPTYN)",
             "en_ptyn = \(Self.boolString(rdsEnablePTYN))",

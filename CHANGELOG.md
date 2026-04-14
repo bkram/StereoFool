@@ -51,16 +51,16 @@
 - FFT spectrum window toggle (96 kHz full / 60 kHz FM band)
 - Reset Processing to Defaults button
 - Default PTY set to Science
-- Native StereoFool app icon assets for runtime and release builds
+- Native MPX Prime app icon assets for runtime and release builds
 
 ### Changed
-- Updated default RDS text to "StereoFool: FM MPX + RDS Audio Processor"
+- Updated default RDS text to "MPX Prime: FM MPX + RDS Audio Processor"
 - Unified window sizes for Scopes, Spectrum, and Levels windows (700x500, min 600x450)
 - Processing section refactored with HIG-compliant plain Section style
 - MPX spectrum display simplified (removed 19 kHz pilot marker)
 - Window size constants centralized for easy configuration
 - Main navigation reduced to Monitoring, Processing, and RDS; app-level controls moved into Settings
-- Default config path changed to `~/Library/Application Support/StereoFool/StereoFool.ini`
+- Default config path changed to `~/Library/Application Support/MPX Prime/MPX Prime.ini`
 - Default program lowpass changed to `16.4 kHz`
 - Monitoring view and Settings were updated for more native macOS behavior and layout
 
