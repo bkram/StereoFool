@@ -1,8 +1,10 @@
-import XCTest
+import Testing
+import Foundation
 @testable import MPXPrime
 
-final class StereoInputRingBufferTests: XCTestCase {
-    func testStereoWriteReadRoundTrip() {
+@Suite("StereoInputRingBuffer")
+struct StereoInputRingBufferTests {
+    @Test func stereoWriteReadRoundTrip() {
         let ring = StereoInputRingBuffer(capacityFrames: 8)
         let left: [Float] = [1, 2, 3, 4]
         let right: [Float] = [11, 12, 13, 14]
@@ -24,12 +26,12 @@ final class StereoInputRingBufferTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(missing, 0)
-        XCTAssertEqual(outLeft, left)
-        XCTAssertEqual(outRight, right)
+        #expect(missing == 0)
+        #expect(outLeft == left)
+        #expect(outRight == right)
     }
 
-    func testMonoWriteDuplicatesChannels() {
+    @Test func monoWriteDuplicatesChannels() {
         let ring = StereoInputRingBuffer(capacityFrames: 8)
         let mono: [Float] = [0.25, 0.5, 0.75]
         mono.withUnsafeBufferPointer { buffer in
@@ -48,12 +50,12 @@ final class StereoInputRingBufferTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(missing, 0)
-        XCTAssertEqual(outLeft, mono)
-        XCTAssertEqual(outRight, mono)
+        #expect(missing == 0)
+        #expect(outLeft == mono)
+        #expect(outRight == mono)
     }
 
-    func testWraparoundReadWrite() {
+    @Test func wraparoundReadWrite() {
         let ring = StereoInputRingBuffer(capacityFrames: 512)
         let firstLeft: [Float] = Array(0..<500).map(Float.init)
         let firstRight: [Float] = Array(1000..<1500).map(Float.init)
@@ -95,12 +97,12 @@ final class StereoInputRingBufferTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(missing, 0)
-        XCTAssertEqual(outLeft, Array(496..<532).map(Float.init))
-        XCTAssertEqual(outRight, Array(1496..<1532).map(Float.init))
+        #expect(missing == 0)
+        #expect(outLeft == Array(496..<532).map(Float.init))
+        #expect(outRight == Array(1496..<1532).map(Float.init))
     }
 
-    func testOverflowKeepsNewestFrames() {
+    @Test func overflowKeepsNewestFrames() {
         let ring = StereoInputRingBuffer(capacityFrames: 512)
         let left: [Float] = Array(0..<520).map(Float.init)
         let right: [Float] = Array(1000..<1520).map(Float.init)
@@ -122,13 +124,13 @@ final class StereoInputRingBufferTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(missing, 0)
-        XCTAssertEqual(outLeft, Array(8..<520).map(Float.init))
-        XCTAssertEqual(outRight, Array(1008..<1520).map(Float.init))
-        XCTAssertEqual(ring.stats().overflows, 8)
+        #expect(missing == 0)
+        #expect(outLeft == Array(8..<520).map(Float.init))
+        #expect(outRight == Array(1008..<1520).map(Float.init))
+        #expect(ring.stats().overflows == 8)
     }
 
-    func testUnderflowCountsAndZeroFills() {
+    @Test func underflowCountsAndZeroFills() {
         let ring = StereoInputRingBuffer(capacityFrames: 8)
         let left: [Float] = [1, 2]
         let right: [Float] = [11, 12]
@@ -150,13 +152,13 @@ final class StereoInputRingBufferTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(missing, 2)
-        XCTAssertEqual(outLeft, [1, 2, 0, 0])
-        XCTAssertEqual(outRight, [11, 12, 0, 0])
-        XCTAssertEqual(ring.stats().underflows, 2)
+        #expect(missing == 2)
+        #expect(outLeft == [1, 2, 0, 0])
+        #expect(outRight == [11, 12, 0, 0])
+        #expect(ring.stats().underflows == 2)
     }
 
-    func testBufferedFramesAndStats() {
+    @Test func bufferedFramesAndStats() {
         let ring = StereoInputRingBuffer(capacityFrames: 8)
         let left: [Float] = [1, 2, 3]
         let right: [Float] = [11, 12, 13]
@@ -166,14 +168,14 @@ final class StereoInputRingBufferTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(ring.bufferedFrames(), 3)
+        #expect(ring.bufferedFrames() == 3)
         let stats = ring.stats()
-        XCTAssertEqual(stats.bufferedFrames, 3)
-        XCTAssertEqual(stats.overflows, 0)
-        XCTAssertEqual(stats.underflows, 0)
+        #expect(stats.bufferedFrames == 3)
+        #expect(stats.overflows == 0)
+        #expect(stats.underflows == 0)
     }
 
-    func testReadAdaptiveMatchedRateDirectPath() {
+    @Test func readAdaptiveMatchedRateDirectPath() {
         let ring = StereoInputRingBuffer(capacityFrames: 8)
         let left: [Float] = [1, 2, 3, 4]
         let right: [Float] = [11, 12, 13, 14]
@@ -198,12 +200,12 @@ final class StereoInputRingBufferTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(missing, 0)
-        XCTAssertEqual(outLeft, left)
-        XCTAssertEqual(outRight, right)
+        #expect(missing == 0)
+        #expect(outLeft == left)
+        #expect(outRight == right)
     }
 
-    func testReadAdaptiveFractionalPathMaintainsContinuity() {
+    @Test func readAdaptiveFractionalPathMaintainsContinuity() {
         let ring = StereoInputRingBuffer(capacityFrames: 16)
         let left: [Float] = Array(0..<12).map(Float.init)
         let right: [Float] = Array(100..<112).map(Float.init)
@@ -228,16 +230,16 @@ final class StereoInputRingBufferTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(missing, 0)
-        XCTAssertEqual(outLeft[0], 0, accuracy: 0.0001)
-        XCTAssertGreaterThan(outLeft[1], outLeft[0])
-        XCTAssertGreaterThan(outLeft[2], outLeft[1])
-        XCTAssertGreaterThan(outLeft[3], outLeft[2])
-        XCTAssertEqual(outRight[0], 100, accuracy: 0.0001)
-        XCTAssertGreaterThan(outRight[1], outRight[0])
+        #expect(missing == 0)
+        #expect(abs(outLeft[0] - 0) <= 0.0001)
+        #expect(outLeft[1] > outLeft[0])
+        #expect(outLeft[2] > outLeft[1])
+        #expect(outLeft[3] > outLeft[2])
+        #expect(abs(outRight[0] - 100) <= 0.0001)
+        #expect(outRight[1] > outRight[0])
     }
 
-    func testReadAdaptiveMatchedRateReportsDirectMode() {
+    @Test func readAdaptiveMatchedRateReportsDirectMode() {
         let ring = StereoInputRingBuffer(capacityFrames: 32)
         let left: [Float] = Array(0..<16).map(Float.init)
         let right: [Float] = Array(100..<116).map(Float.init)
@@ -263,14 +265,14 @@ final class StereoInputRingBufferTests: XCTestCase {
         }
 
         let snapshot = ring.transportSnapshot()
-        XCTAssertEqual(snapshot.resampleMode, "direct")
-        XCTAssertEqual(snapshot.sampleStep, 1.0, accuracy: 0.000001)
-        XCTAssertEqual(snapshot.ratioTrim, 0.0, accuracy: 0.000001)
-        XCTAssertEqual(outLeft, left)
-        XCTAssertEqual(outRight, right)
+        #expect(snapshot.resampleMode == "direct")
+        #expect(abs(snapshot.sampleStep - 1.0) <= 0.000001)
+        #expect(abs(snapshot.ratioTrim - 0.0) <= 0.000001)
+        #expect(outLeft == left)
+        #expect(outRight == right)
     }
 
-    func testAdaptiveCubicInterpolationBeatsLinearForHighFrequencySine() {
+    @Test func adaptiveCubicInterpolationBeatsLinearForHighFrequencySine() {
         let ring = StereoInputRingBuffer(capacityFrames: 128)
         let omega = 2.0 * Double.pi * 0.22
         let sourceCount = 96
@@ -294,9 +296,9 @@ final class StereoInputRingBufferTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(missing, 0)
+        #expect(missing == 0)
         let expected = (0..<32).map { Float(sin(Double($0) * 1.5 * omega)) }
-        let cubicError = rmsError(actual: outLeft, expected: expected)
+        let cubicError = Self.rmsError(actual: outLeft, expected: expected)
         let linearReference = (0..<32).map { index -> Float in
             let position = Double(index) * 1.5
             let base = Int(position.rounded(.down))
@@ -306,13 +308,13 @@ final class StereoInputRingBufferTests: XCTestCase {
             let b = source[next]
             return a + ((b - a) * frac)
         }
-        let linearError = rmsError(actual: linearReference, expected: expected)
+        let linearError = Self.rmsError(actual: linearReference, expected: expected)
 
-        XCTAssertLessThan(cubicError, linearError)
-        XCTAssertEqual(ring.transportSnapshot().resampleMode, "adaptive-cubic")
+        #expect(cubicError < linearError)
+        #expect(ring.transportSnapshot().resampleMode == "adaptive-cubic")
     }
 
-    func testLargeWriteLargerThanCapacityKeepsNewestTail() {
+    @Test func largeWriteLargerThanCapacityKeepsNewestTail() {
         let ring = StereoInputRingBuffer(capacityFrames: 512)
         let left: [Float] = Array(0..<600).map(Float.init)
         let right: [Float] = Array(200..<800).map(Float.init)
@@ -334,13 +336,13 @@ final class StereoInputRingBufferTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(missing, 0)
-        XCTAssertEqual(outLeft, Array(88..<600).map(Float.init))
-        XCTAssertEqual(outRight, Array(288..<800).map(Float.init))
-        XCTAssertEqual(ring.stats().overflows, 88)
+        #expect(missing == 0)
+        #expect(outLeft == Array(88..<600).map(Float.init))
+        #expect(outRight == Array(288..<800).map(Float.init))
+        #expect(ring.stats().overflows == 88)
     }
 
-    private func rmsError(actual: [Float], expected: [Float]) -> Float {
+    private static func rmsError(actual: [Float], expected: [Float]) -> Float {
         let count = min(actual.count, expected.count)
         guard count > 0 else { return 0.0 }
         let sum = (0..<count).reduce(Float.zero) { partial, index in

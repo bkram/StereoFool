@@ -6,6 +6,16 @@ MPX Prime is a native macOS FM composite (MPX) generator written in Swift and Sw
 
 MPX Prime is experimental and not suitable for production broadcast use. It targets core behavior from EN 50067 / IEC 62106 and common FM stereo practice, but it is not certified and no compliance warranty is implied.
 
+## Positioning
+
+MPX Prime sits between the open-source hobbyist FM generators (mpxgen, PiFmRds, and similar) and the commercial broadcast processors (Omnia, Orban Optimod, Stereotool, BreakawayOne). It is neither a thin MPX baseband generator nor a certified commercial processor.
+
+**Compared to open-source FM generators**, MPX Prime runs a real processing chain in front of the encoder — phase rotator, wideband AGC, 4-band parametric EQ, Orbass, mono bass, stereo widener, 3- or 5-band multiband compressor with per-band expander and limiter, bass clipper, distortion-cancelled clipper, and BS.412 — and enforces the professional broadcast invariant that pilot and RDS bypass all limiting stages (post-limiter subcarrier injection). Add to that a 4× oversampled composite true-peak limiter with 12th-order Butterworth reconstruction, pilot-locked RDS with 301-tap biphase + optional Gaussian shaping, lock-free real-time DSP, and an offline verification harness with scenario / stereo / width tables. Open-source generators typically emit a valid MPX waveform without any of that.
+
+**Compared to commercial processors**, MPX Prime's topology matches what those vendors publish, and several individual stages (phase rotator, multiband with stereo linking, post-limiter subcarrier injection, BS.412) are implemented at professional quality. What's simpler is the last 5% — heavier oversampling around the clipping nonlinearities, distortion-shaped composite clippers as a primary loudness lever, dynamic pre-emphasis, 19 kHz pilot notching on the audio path, linear-phase 15 kHz brick-walls, and input-side restoration (declipper, dehumfilter, delossifier). Those gaps are tracked as Phase 7 in [`plan.md`](plan.md).
+
+In short: well past the hobbyist baseline, approaching the commercial floor. Use MPX Prime for experimentation, prosumer broadcast-style encoding, and study of FM signal processing — not for certified production broadcast.
+
 ## Current app structure
 
 - `Monitoring`: live status, transport, interfaces summary, DSP status, RDS snapshot

@@ -30,7 +30,13 @@ struct AppConfig {
     //   monoBassEnabled/FreqHz,
     //   stereoWidenEnabled/Width/Center/Mix,
     //   multiband Enabled/Mode/X1-X4Hz/Thresholds/Ratios/Attack/Release/
-    //     KneeDB/LinkStrength/MakeupDB/ReleaseProgramDependent
+    //     KneeDB/LinkStrength/MakeupDB/ReleaseProgramDependent,
+    //   phaseRotationEnabled/FreqHz, parametricEQEnabled/B1-B4(Freq/Gain/Q),
+    //   multibandLimiterEnabled/ThresholdDB/AttackMS/ReleaseMS,
+    //   downwardExpanderEnabled/ThresholdDB/Ratio/AttackMS/ReleaseMS,
+    //   bassClipperEnabled/CrossoverHz/ThresholdDB/Drive,
+    //   dcClipperEnabled/CeilingDB/CancelFreqHz,
+    //   bs412Enabled/ThresholdDB/WindowSeconds
     //
     // Live-apply RDS (via RDSRuntimeConfig):
     //   rdsRT*/rdsPS*/rdsLongPS*/rdsPTYN* text and formatting,
@@ -129,6 +135,39 @@ struct AppConfig {
     var multibandLinkStrength: Double = 0.52
     var multibandReleaseProgramDependent: Bool = true
     var multibandMakeupDB: Double = 0.0
+    var phaseRotationEnabled: Bool = false
+    var phaseRotationFreqHz: Double = 200.0
+    var parametricEQEnabled: Bool = false
+    // Bands 1 and 4 are shelves (no Q); bands 2 and 3 are peaking (Q exposed).
+    var peqB1FreqHz: Double = 80.0
+    var peqB1GainDB: Double = 0.0
+    var peqB2FreqHz: Double = 500.0
+    var peqB2GainDB: Double = 0.0
+    var peqB2Q: Double = 1.0
+    var peqB3FreqHz: Double = 3000.0
+    var peqB3GainDB: Double = 0.0
+    var peqB3Q: Double = 1.0
+    var peqB4FreqHz: Double = 8000.0
+    var peqB4GainDB: Double = 0.0
+    var multibandLimiterEnabled: Bool = false
+    var multibandLimiterThresholdDB: Double = -3.0
+    var multibandLimiterAttackMS: Double = 0.5
+    var multibandLimiterReleaseMS: Double = 50.0
+    var downwardExpanderEnabled: Bool = false
+    var expanderThresholdDB: Double = -45.0
+    var expanderRatio: Double = 2.0
+    var expanderAttackMS: Double = 10.0
+    var expanderReleaseMS: Double = 200.0
+    var bassClipperEnabled: Bool = false
+    var bassClipperCrossoverHz: Double = 150.0
+    var bassClipperThresholdDB: Double = -3.0
+    var bassClipperDrive: Double = 1.5
+    var dcClipperEnabled: Bool = false
+    var dcClipperCeilingDB: Double = -1.0
+    var dcClipperCancelFreqHz: Double = 2000.0
+    var bs412Enabled: Bool = false
+    var bs412ThresholdDB: Double = -10.0
+    var bs412WindowSeconds: Double = 60.0
     var rdsLevel: Double = 2.0
     var rdsPI: String = "82FF"
     var rdsPTY: Int = 8
@@ -331,6 +370,56 @@ struct AppConfig {
         )
         cfg.multibandMakeupDB = mpx.double(
             "multiband_makeup_db", defaultValue: cfg.multibandMakeupDB)
+        cfg.phaseRotationEnabled = mpx.bool(
+            "phase_rotation_enabled", defaultValue: cfg.phaseRotationEnabled)
+        cfg.phaseRotationFreqHz = mpx.double(
+            "phase_rotation_freq_hz", defaultValue: cfg.phaseRotationFreqHz)
+        cfg.parametricEQEnabled = mpx.bool(
+            "parametric_eq_enabled", defaultValue: cfg.parametricEQEnabled)
+        cfg.peqB1FreqHz = mpx.double("peq_b1_freq_hz", defaultValue: cfg.peqB1FreqHz)
+        cfg.peqB1GainDB = mpx.double("peq_b1_gain_db", defaultValue: cfg.peqB1GainDB)
+        cfg.peqB2FreqHz = mpx.double("peq_b2_freq_hz", defaultValue: cfg.peqB2FreqHz)
+        cfg.peqB2GainDB = mpx.double("peq_b2_gain_db", defaultValue: cfg.peqB2GainDB)
+        cfg.peqB2Q = mpx.double("peq_b2_q", defaultValue: cfg.peqB2Q)
+        cfg.peqB3FreqHz = mpx.double("peq_b3_freq_hz", defaultValue: cfg.peqB3FreqHz)
+        cfg.peqB3GainDB = mpx.double("peq_b3_gain_db", defaultValue: cfg.peqB3GainDB)
+        cfg.peqB3Q = mpx.double("peq_b3_q", defaultValue: cfg.peqB3Q)
+        cfg.peqB4FreqHz = mpx.double("peq_b4_freq_hz", defaultValue: cfg.peqB4FreqHz)
+        cfg.peqB4GainDB = mpx.double("peq_b4_gain_db", defaultValue: cfg.peqB4GainDB)
+        cfg.multibandLimiterEnabled = mpx.bool(
+            "multiband_limiter_enabled", defaultValue: cfg.multibandLimiterEnabled)
+        cfg.multibandLimiterThresholdDB = mpx.double(
+            "multiband_limiter_threshold_db", defaultValue: cfg.multibandLimiterThresholdDB)
+        cfg.multibandLimiterAttackMS = mpx.double(
+            "multiband_limiter_attack_ms", defaultValue: cfg.multibandLimiterAttackMS)
+        cfg.multibandLimiterReleaseMS = mpx.double(
+            "multiband_limiter_release_ms", defaultValue: cfg.multibandLimiterReleaseMS)
+        cfg.downwardExpanderEnabled = mpx.bool(
+            "downward_expander_enabled", defaultValue: cfg.downwardExpanderEnabled)
+        cfg.expanderThresholdDB = mpx.double(
+            "expander_threshold_db", defaultValue: cfg.expanderThresholdDB)
+        cfg.expanderRatio = mpx.double("expander_ratio", defaultValue: cfg.expanderRatio)
+        cfg.expanderAttackMS = mpx.double("expander_attack_ms", defaultValue: cfg.expanderAttackMS)
+        cfg.expanderReleaseMS = mpx.double("expander_release_ms", defaultValue: cfg.expanderReleaseMS)
+        cfg.bassClipperEnabled = mpx.bool(
+            "bass_clipper_enabled", defaultValue: cfg.bassClipperEnabled)
+        cfg.bassClipperCrossoverHz = mpx.double(
+            "bass_clipper_crossover_hz", defaultValue: cfg.bassClipperCrossoverHz)
+        cfg.bassClipperThresholdDB = mpx.double(
+            "bass_clipper_threshold_db", defaultValue: cfg.bassClipperThresholdDB)
+        cfg.bassClipperDrive = mpx.double(
+            "bass_clipper_drive", defaultValue: cfg.bassClipperDrive)
+        cfg.dcClipperEnabled = mpx.bool(
+            "dc_clipper_enabled", defaultValue: cfg.dcClipperEnabled)
+        cfg.dcClipperCeilingDB = mpx.double(
+            "dc_clipper_ceiling_db", defaultValue: cfg.dcClipperCeilingDB)
+        cfg.dcClipperCancelFreqHz = mpx.double(
+            "dc_clipper_cancel_freq_hz", defaultValue: cfg.dcClipperCancelFreqHz)
+        cfg.bs412Enabled = mpx.bool("bs412_enabled", defaultValue: cfg.bs412Enabled)
+        cfg.bs412ThresholdDB = mpx.double(
+            "bs412_threshold_db", defaultValue: cfg.bs412ThresholdDB)
+        cfg.bs412WindowSeconds = mpx.double(
+            "bs412_window_seconds", defaultValue: cfg.bs412WindowSeconds)
         cfg.rdsLevel = rds.double("rds_level", defaultValue: cfg.rdsLevel)
         cfg.rdsPI = rds.string("pi", defaultValue: cfg.rdsPI)
         cfg.rdsPTY = rds.int("pty", defaultValue: cfg.rdsPTY)
@@ -490,6 +579,45 @@ struct AppConfig {
         multibandLinkStrength = max(0.0, min(1.0, multibandLinkStrength))
         multibandMakeupDB = max(-12.0, min(12.0, multibandMakeupDB))
 
+        // Phase rotator
+        phaseRotationFreqHz = max(50.0, min(500.0, phaseRotationFreqHz))
+
+        // Parametric EQ
+        peqB1FreqHz = max(20.0, min(500.0, peqB1FreqHz))
+        peqB1GainDB = max(-12.0, min(12.0, peqB1GainDB))
+        peqB2FreqHz = max(100.0, min(5000.0, peqB2FreqHz))
+        peqB2GainDB = max(-12.0, min(12.0, peqB2GainDB))
+        peqB2Q = max(0.1, min(10.0, peqB2Q))
+        peqB3FreqHz = max(500.0, min(12000.0, peqB3FreqHz))
+        peqB3GainDB = max(-12.0, min(12.0, peqB3GainDB))
+        peqB3Q = max(0.1, min(10.0, peqB3Q))
+        peqB4FreqHz = max(1000.0, min(16000.0, peqB4FreqHz))
+        peqB4GainDB = max(-12.0, min(12.0, peqB4GainDB))
+
+        // Multiband limiter
+        multibandLimiterThresholdDB = max(-20.0, min(0.0, multibandLimiterThresholdDB))
+        multibandLimiterAttackMS = max(0.01, min(10.0, multibandLimiterAttackMS))
+        multibandLimiterReleaseMS = max(10.0, min(500.0, multibandLimiterReleaseMS))
+
+        // Downward expander
+        expanderThresholdDB = max(-60.0, min(-20.0, expanderThresholdDB))
+        expanderRatio = max(1.0, min(8.0, expanderRatio))
+        expanderAttackMS = max(0.1, min(100.0, expanderAttackMS))
+        expanderReleaseMS = max(10.0, min(2000.0, expanderReleaseMS))
+
+        // Bass clipper
+        bassClipperCrossoverHz = max(60.0, min(300.0, bassClipperCrossoverHz))
+        bassClipperThresholdDB = max(-12.0, min(0.0, bassClipperThresholdDB))
+        bassClipperDrive = max(0.5, min(3.0, bassClipperDrive))
+
+        // Distortion-cancelled clipper
+        dcClipperCeilingDB = max(-6.0, min(0.0, dcClipperCeilingDB))
+        dcClipperCancelFreqHz = max(500.0, min(4000.0, dcClipperCancelFreqHz))
+
+        // BS.412
+        bs412ThresholdDB = max(-20.0, min(0.0, bs412ThresholdDB))
+        bs412WindowSeconds = max(1.0, min(120.0, bs412WindowSeconds))
+
         // Engine
         sampleRate = max(44_100.0, min(384_000.0, sampleRate))
         blockSize = max(1024, min(8192, blockSize))
@@ -593,6 +721,38 @@ struct AppConfig {
             "multiband_link_strength = \(Self.formatFloat(multibandLinkStrength))",
             "multiband_release_program_dependent = \(Self.boolString(multibandReleaseProgramDependent))",
             "multiband_makeup_db = \(Self.formatFloat(multibandMakeupDB))",
+            "phase_rotation_enabled = \(Self.boolString(phaseRotationEnabled))",
+            "phase_rotation_freq_hz = \(Self.formatFloat(phaseRotationFreqHz))",
+            "parametric_eq_enabled = \(Self.boolString(parametricEQEnabled))",
+            "peq_b1_freq_hz = \(Self.formatFloat(peqB1FreqHz))",
+            "peq_b1_gain_db = \(Self.formatFloat(peqB1GainDB))",
+            "peq_b2_freq_hz = \(Self.formatFloat(peqB2FreqHz))",
+            "peq_b2_gain_db = \(Self.formatFloat(peqB2GainDB))",
+            "peq_b2_q = \(Self.formatFloat(peqB2Q))",
+            "peq_b3_freq_hz = \(Self.formatFloat(peqB3FreqHz))",
+            "peq_b3_gain_db = \(Self.formatFloat(peqB3GainDB))",
+            "peq_b3_q = \(Self.formatFloat(peqB3Q))",
+            "peq_b4_freq_hz = \(Self.formatFloat(peqB4FreqHz))",
+            "peq_b4_gain_db = \(Self.formatFloat(peqB4GainDB))",
+            "multiband_limiter_enabled = \(Self.boolString(multibandLimiterEnabled))",
+            "multiband_limiter_threshold_db = \(Self.formatFloat(multibandLimiterThresholdDB))",
+            "multiband_limiter_attack_ms = \(Self.formatFloat(multibandLimiterAttackMS))",
+            "multiband_limiter_release_ms = \(Self.formatFloat(multibandLimiterReleaseMS))",
+            "downward_expander_enabled = \(Self.boolString(downwardExpanderEnabled))",
+            "expander_threshold_db = \(Self.formatFloat(expanderThresholdDB))",
+            "expander_ratio = \(Self.formatFloat(expanderRatio))",
+            "expander_attack_ms = \(Self.formatFloat(expanderAttackMS))",
+            "expander_release_ms = \(Self.formatFloat(expanderReleaseMS))",
+            "bass_clipper_enabled = \(Self.boolString(bassClipperEnabled))",
+            "bass_clipper_crossover_hz = \(Self.formatFloat(bassClipperCrossoverHz))",
+            "bass_clipper_threshold_db = \(Self.formatFloat(bassClipperThresholdDB))",
+            "bass_clipper_drive = \(Self.formatFloat(bassClipperDrive))",
+            "dc_clipper_enabled = \(Self.boolString(dcClipperEnabled))",
+            "dc_clipper_ceiling_db = \(Self.formatFloat(dcClipperCeilingDB))",
+            "dc_clipper_cancel_freq_hz = \(Self.formatFloat(dcClipperCancelFreqHz))",
+            "bs412_enabled = \(Self.boolString(bs412Enabled))",
+            "bs412_threshold_db = \(Self.formatFloat(bs412ThresholdDB))",
+            "bs412_window_seconds = \(Self.formatFloat(bs412WindowSeconds))",
             "test_tone_mode = \(testToneMode)",
             "test_tone_freq = \(Self.formatFloat(testToneFreq))",
         ]

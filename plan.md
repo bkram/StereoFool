@@ -1,5 +1,9 @@
 # MPX Prime FM/MPX Roadmap
 
+## What MPX Prime is
+
+MPX Prime is a native macOS FM composite (MPX) generator written in Swift and SwiftUI. It takes live audio input or a test tone, applies optional broadcast-style processing, generates stereo FM baseband with 19 kHz pilot and optional 57 kHz RDS, and sends MPX (plus an optional decoded monitor signal) to Core Audio devices.
+
 ## Goal
 
 Bring MPX Prime closer to a broadcast-grade FM composite generator and processor by:
@@ -11,6 +15,17 @@ Bring MPX Prime closer to a broadcast-grade FM composite generator and processor
 - improving calibration, metering, and verification
 
 This plan is based on current MPX Prime behavior plus publicly available official material from Telos/Omnia, Orban, Stereo Tool, and Breakaway.
+
+## Current strengths
+
+Items worth preserving when refactoring — the roadmap is additive, not a rewrite.
+
+- Clear separation of concerns across SwiftUI app / engine / generator
+- Feature breadth matches professional FM processors (stereo encoding, RDS, calibration, verifier, preset sweep)
+- Real-time audio pipeline: lock-free ring buffer, allocation-free render callback, Accelerate-backed metering
+- Comprehensive offline verification harness with preset sweep and long-run mode
+- FFT/spectrum scratch buffers cached; only rebuilt on size change
+- Modern Swift (Combine, atomics, async/await at the edges)
 
 ## Research summary
 
@@ -109,7 +124,6 @@ MPX Prime's Swift DSP is now credible and effective, but there are still impleme
 
 Loose ends:
 
-- the final composite limiter path is improved, but it is still an evolved approximation rather than a deliberately designed composite clipper with one clear architecture
 - widener, mono bass, Orbass, and multiband interaction still needs broader preset-level validation on real program material beyond the current focused sweep
 - pilot/RDS/headroom telemetry exists, but there is still no explicit deviation estimator or exciter-calibration workflow
 - RDS string preparation work that should move further off the render path
@@ -144,21 +158,41 @@ Constraints:
 - do not rely on reverse engineering or copied parser behavior
 - preserve MPX Prime-specific macro support (`{artist}`, `{title}`, `{date}`, `{time}`, etc.)
 
+### 8. Oversampling strategy and commercial-grade clipping are not yet at par
+
+MPX Prime's topology matches public material from Omnia, Orban, Stereotool, and BreakawayOne, but the algorithms *inside* that topology are a mix of professional-grade and simplified. The biggest single gap is oversampling around the nonlinearities: the distortion-cancelled clipper and bass clipper both run at native sample rate. Their `tanh` generates harmonics above Nyquist that alias straight back into the audio band, and the LP-filtered error-subtract cancels LF IMD without addressing HF aliasing.
+
+A secondary gap is that the composite stage is a *true-peak limiter*, not a *composite clipper*. Commercial processors use a distortion-shaped, heavily-oversampled composite clipper as the main loudness lever (Orban's half-cosine-interpolated, Omnia's Bass/Composite Tools, Stereotool's iterative HDC). MPX Prime's current composite stage will hit peak targets, but will not deliver the same subjective loudness density at the same deviation.
+
+See Phase 7 in the implementation plan below for the concrete gap-closing work.
+
 ## Target architecture
 
-### Proposed FM chain
+### Current FM chain
 
-1. Input trim / source conditioning
-2. Wideband AGC gain rider
-3. Tone shaping and enhancement
-4. Bass management / stereo image conditioning
-5. Multiband / other audio-domain dynamics
-6. Pre-emphasis
-7. Stereo coder
-8. Pilot and RDS injection
-9. Oversampled composite limiter / composite clipper
-10. MPX output calibration trim
-11. Hardware output
+This matches what the generator actually runs today. All optional stages are disabled by default. See `ARCHITECTURE.md` for the authoritative ordered list.
+
+1. Input trim / source conditioning (input gain + mono fold)
+2. Phase rotation (4-pole allpass, optional)
+3. Wideband AGC gain rider
+4. Input HPF + program lowpass
+5. HF trim + 4-band parametric EQ (optional)
+6. Orbass + mono-bass + stereo widener
+7. Multiband compressor (3- or 5-band LR4) with optional per-band downward expander and per-band fast limiter
+8. Bass clipper (LR4 split + tanh, optional)
+9. Distortion-cancelled clipper (Orban-style LF cancellation, optional)
+10. Encoder HF guard + encoder program lowpass (~15 kHz)
+11. Stereo-image protection
+12. Pre-encode audio limiter (L/R domain, stereo-linked true-peak)
+13. Stereo encoder with pre-emphasis (M/S, 38 kHz DSB-SC subcarrier)
+14. Audio-composite limiter (4× oversampled true-peak)
+15. BS.412 MPX power limiter (optional, EU compliance)
+16. Safety limiter (audio composite only — no pilot, no RDS)
+17. Pilot and RDS injection (post-limiter, constant amplitude)
+18. MPX output calibration trim
+19. Hardware output
+
+The two-stage limiter architecture (steps 12 + 14) follows Omnia/Orban/Stereotool practice: the pre-encode limiter does primary peak control in the L/R domain before pre-emphasis amplifies peaks further, while the composite limiter catches overshoots from stereo encoding. Pilot and RDS bypass all limiting stages entirely (step 17) so receivers always see constant-amplitude reference signals.
 
 ### Control separation
 
@@ -177,48 +211,20 @@ Users should not need to abuse AGC target to get acceptable loudness.
 
 Status: mostly complete
 
-Completed:
-
-1. Output trim measurably changes MPX output level.
-2. AGC target no longer forces hot settings for normal modulation.
-3. Live DSP controls work without forcing engine restarts.
-4. Config validation clamps all gain parameters to safe ranges (`AppConfig.validate()`).
-
 Still open:
 
 1. Add one internal gain-structure note per stage in code comments so future tuning stays coherent.
 
 ### Phase 2. Add a proper final composite stage
 
-Status: partially complete
+Status: complete. See `ARCHITECTURE.md` for the architecture. Follow-ups that live on:
 
-Completed:
-
-1. Pure calculation functions extracted: `makeFinalCompositeThresholds()`, `makeDrivenAudioComposite()`, `makeOutputComposite()`, `updateSubcarrierReservation()`.
-2. Composite protection chain implemented: pre-limiter soft clipping, composite limiter, post-limiter soft clipping, safety limiter.
-3. Named constants for pre/post limiter headroom and floor values.
-
-Next work:
-
-1. Keep stateful pieces in place until the pure calculations are isolated and verified:
-   - reservation envelope
-   - composite limiter state
-   - smoother state
-   - safety limiter state
-4. After each micro-step, rerun the offline verifier and compare:
-   - worst MPX peak
-   - worst safety limiter GR
-   - worst composite margin
-   - scenario table deltas
-5. Revisit whether the main loudness limiter should remain fully audio-composite only, with the full-MPX limiter reserved strictly for safety.
-6. Preserve pilot lock and RDS readability while increasing usable composite loudness.
-7. Strengthen long-run width/compliance regression checks beyond the current focused mode.
-8. Move from in-code signature checks toward stored baseline artifacts if they prove useful.
+1. Strengthen long-run width/compliance regression checks beyond the current focused mode.
+2. Move from in-code signature checks toward stored baseline artifacts if they prove useful.
 
 Success criteria:
 
 - higher subjective loudness without excessive HF splatter
-- pilot and RDS remain stable
 - output still respects configured deviation targets
 - bright/dense material stays inside the explicit verifier width/compliance envelope
 - structural cleanup of the final stage does not change verifier output unless intentionally retuned
@@ -259,13 +265,11 @@ Success criteria:
 
 ### Phase 5. Tighten AGC role and defaults
 
-Status: mostly complete
+Status: mostly complete (current AGC target `-16 dB`; AGC treated as a slow leveler, not a loudness stage).
 
-1. Keep wideband AGC as a slow leveler, not a loudness stage.
-2. Re-evaluate defaults after Phase 1 and Phase 2 are in place.
-   Current implemented default:
-   - `-16 dB`
-3. Consider adding hidden or advanced controls later if needed:
+Next work (optional, only if real-program feedback justifies):
+
+1. Consider adding hidden or advanced controls:
    - deadband/window
    - silence gate threshold
    - low-level recovery speed
@@ -293,16 +297,112 @@ Next work:
     - later, optionally add compliance-oriented views similar in spirit to Stereo Tool's FM tooling
 4. Grow `--verify-long` from a focused manual tool into a stricter regression gate with saved expected envelopes or stored baseline artifacts.
 
+### Phase 7. Close the commercial DSP gap
+
+Status: open
+
+The topology is already professional-grade. What's missing is the 5% of oversampling, distortion-shaping, and receiver-compatibility detail that commercial vendors spent decades refining. Do these in order — earlier items have the largest audible-impact-per-effort ratio and de-risk later work.
+
+#### 7.1. Oversample the existing nonlinearities
+
+The single highest-impact change. Both `DistortionCancelledClipper` (`MPXGenerator.swift:627–670`) and `BassClipper` (`MPXGenerator.swift:596–625`) run at native rate. Their `tanh` harmonics alias back into the audio band, and the LP-based error cancellation only addresses LF products.
+
+1. Extract the 4× Lagrange upsample + BiquadCascade6 reconstruction pattern already present in `CompositeTruePeakLimiter` (`MPXGenerator.swift:141–208`) into a reusable `OversampledNonlinearity<Clipper>` block.
+2. Wrap `DistortionCancelledClipper` at 8× internally (upsample → clip → error-extract → error-LP → subtract → downsample).
+3. Wrap `BassClipper` at 4×–8× internally (4× is probably enough because the clipper already operates on an LR4-filtered low band with limited high-frequency content).
+4. Verify after each wrap that `--verify` shows no increase in the `>60k/In` or `>67k/In` width metrics — aliased harmonics landing above 60 kHz is actually *fine* (guard band), aliased harmonics landing in-band is what we're fixing.
+
+Success criteria:
+
+- subjective clipping artifacts on bright/dense material reduce audibly with all new stages enabled
+- `bright_dense` and `vocal_sibilant` RMS-drift verifier warnings improve without tightening thresholds
+- `>60k/In` stays in-spec with bass and DC clippers driven hard
+
+#### 7.2. Verify pre-emphasis ordering
+
+The pre-encode limiter (`MPXGenerator.swift:211–230`) runs before stereo encoding. Pre-emphasis is applied during stereo encoding (`MPXGenerator.swift:3711–3712`), i.e. *after* the pre-encode limiter. A 10–12 dB HF boost at 15 kHz therefore passes through the pre-encode limiter unchanged and becomes extra peak burden for the composite limiter downstream.
+
+1. Confirm by inspection (and by a `--verify` scenario with strong 12 kHz content) whether pre-emphasis peaks are escaping the pre-encode limiter.
+2. If confirmed: move pre-emphasis before the pre-encode limiter, or add a second peak-control stage after pre-emphasis, matching the commercial "pre-emphasis → HF-aware limiter → encoder" ordering.
+3. Re-run `--verify` for regressions on `hf_edge_12k` and `bright_dense`.
+
+This is likely a code-level fix, not a new-algorithm gap. Treat as P0 verification.
+
+#### 7.3. Add a real composite clipper stage
+
+Currently the composite domain only has a *limiter* (attack/release with gain reduction). Commercial processors add a distortion-shaped, heavily oversampled *composite clipper* as the primary loudness lever.
+
+1. Implement a composite clipper as a time-domain nonlinearity operating on audio composite (not full MPX — must preserve subcarrier bypass invariant).
+2. Oversample 8×–16× around the clip so aliased harmonics land above 53 kHz (pilot/RDS guard band).
+3. Use a distortion-shaping curve (half-cosine interpolation, Orban-style, or iterative refinement like Stereotool).
+4. Place between the existing composite limiter and BS.412 so the clipper sees already-peak-controlled material.
+5. Expose as a new enabled-by-default Processing tab.
+
+Success criteria:
+
+- measurable loudness increase at the same deviation
+- pilot and RDS stability architecturally unchanged (post-limiter injection still holds)
+- `bright_dense` and `transient_push` stay inside verifier width envelopes
+
+#### 7.4. Add a 19 kHz pilot notch on the audio path
+
+Commercial processors notch out program content at 19 kHz ±100 Hz so receiver stereo decoders don't confuse program content for pilot. MPX Prime currently relies on the 15 kHz program LP + encoder HF guard, which attenuates but doesn't notch.
+
+1. Add a narrow Q biquad notch at 19 kHz in the encoder-facing audio path (after encoder program LP, before stereo encoding).
+2. Expose Q and depth as config; defaults should match Orban guidance (Q ~50, depth >40 dB).
+
+Low-risk, high-receiver-compatibility win.
+
+#### 7.5. Replace the 15 kHz program LP with a linear-phase FIR brick-wall
+
+`programLP` is currently a Butterworth biquad — smooth rolloff, significant content remaining at 19 kHz. Commercial processors use 15 kHz linear-phase FIR brick-walls with ~120 dB stop-band.
+
+1. Design the FIR once at engine-start for the active sample rate; cache coefficients.
+2. Measure added latency; if it exceeds the monitor-path budget, keep the FIR only on the transmit path and leave the biquad LP on the monitor path.
+
+Depends on: having stored-baseline verifier artifacts (Phase 6.4) because this will shift the verifier signatures even on disabled-by-default settings, through the spectrum tests.
+
+#### 7.6. Dynamic pre-emphasis ("Smart HF")
+
+Static pre-emphasis boosts HF transients into the clipper regardless of program content. Omnia's "Smart HF" and Orban's HF limiter relax pre-emphasis during HF-heavy transients to reduce clipper workload.
+
+1. Add a lookahead-based HF envelope follower on the L/R signal before pre-emphasis.
+2. Dynamically scale the pre-emphasis curve (or add post-emphasis gain reduction) when HF envelope exceeds threshold.
+3. Target a few dB of dynamic relaxation on bright transients; verify that de-emphasis at the receiver still recovers the original HF envelope within tolerance.
+
+Optional but high subjective-quality impact.
+
+#### 7.7. Pilot-synchronized limiter control
+
+Amplitude modulation of the composite limiter's control envelope can induce sidebands around the 19 kHz pilot if modulation rates approach pilot subharmonics. Post-limiter injection prevents direct pilot modulation but not upstream sideband generation.
+
+1. Measure: run a strong low-frequency-heavy signal through the chain with the composite limiter driven hard; FFT the output around 19 kHz and check for artifact sidebands.
+2. If present: phase-lock the limiter's release control to a pilot subharmonic, or add a narrow notch at 19 kHz in the limiter's sidechain.
+
+Defer until measurement justifies the complexity.
+
+#### 7.8. Deviation estimator and exciter calibration
+
+Currently users see a peak meter in dBFS. Commercial processors show estimated deviation in kHz directly, calibrated to the exciter's input level.
+
+1. Add a calibration workflow: user enters exciter input sensitivity and target deviation (75 kHz for ITU Region 2, 50 kHz for Region 1).
+2. Convert MPX peak → estimated deviation using that calibration.
+3. Surface in the monitoring card and in `--verify` output.
+
+Already identified as an open gap in `Current open gaps` #1; this is the concrete implementation path.
+
+#### 7.9. Input-side restoration (optional, long-term)
+
+Commercial processors include declipper / dehumfilter / delossifier / dehisser stages for conditioning degraded sources (Omnia "Undo", Stereotool's equivalents). These are genuinely complex algorithms and take significant effort.
+
+Defer unless MPX Prime starts being used for streaming sources where pre-processed audio arrives degraded.
+
 ### Swift DSP cleanup checklist
 
 This section is intentionally concrete and implementation-focused.
 
-1. ~~Treat the current final composite path as the verified baseline until a tighter refactor plan is complete.~~ Done.
-2. Refactor the final composite path only in micro-steps:
-   - ~~pure ceiling math first~~ Done (`makeFinalCompositeThresholds`, `makeDrivenAudioComposite`, `makeOutputComposite`).
-   - ~~budget-margin math second~~ Done.
-   - stateful limiter packaging last
-   - rerun `--verify` after every micro-step
+1. Refactor the final composite path's remaining stateful limiter packaging in micro-steps, rerunning `--verify` after each.
+2. Extract the 4× Lagrange-upsample + BiquadCascade6-reconstruction pattern from `CompositeTruePeakLimiter` into a reusable `OversampledNonlinearity<Clipper>` block; wrap `DistortionCancelledClipper` and `BassClipper` with it (see Phase 7.1).
 3. Validate and retune:
    - Orbass presets
    - mono-bass defaults
@@ -311,14 +411,12 @@ This section is intentionally concrete and implementation-focused.
 4. Add deterministic offline tests for:
    - stereo-to-mono collapse behavior
    - now-playing RT / RT+ formatting edge cases
-5. ~~Keep the MPX width/compliance checks as a regression gate~~ Done (verifier checks `maxAbove60kRatioDB` and `maxAbove67kRatioDB`). Extend with longer-run cases.
+5. Extend MPX width/compliance checks with longer-run cases beyond the current focused regression gate.
 6. Extend the RDS timed-text parser with a documented compatible subset:
-   - ~~`Ns:` duration segments~~ Done.
    - `Nt:` transmit-count segments
    - escapes for separators
    - optional wrap markers if they are still judged useful
 7. Move remaining non-DSP work off the audio callback where practical (RDS string preparation still on render path).
-8. Keep shrinking the final composite cleanup into verifier-backed micro-steps until the stateful stage can be isolated safely.
 
 Success criteria:
 
@@ -334,23 +432,19 @@ These are the current practical defaults after the recent gain-structure and fin
 - Wideband AGC release: `800-1500 ms`
 - Wideband AGC max/min gain: `+12 / -12 dB`
 - Final Drive: `6 dB`
-- Composite limiter: enabled
+- Pre-encode audio limiter: enabled (threshold `0.85`, release `50 ms`)
+- Composite limiter: enabled (threshold derived from safety threshold, release `32 ms`)
 - Pilot: approximately `8-10%`
 - RDS: approximately `3-4%`
+- Pilot and RDS: injected post-limiter for constant amplitude
 - Final loudness should come primarily from `Final Drive` plus composite protection, not AGC target
 
 ## Immediate next step
 
-Recently completed:
-
-1. ~~Remove per-callback heap allocations from capture/input conversion paths.~~ Done. `MonitorLoudnessAnalyzer` rewritten with fixed-size ring buffer and atomic cursor for lock-free audio-to-UI handoff. Scratch buffers pre-allocated.
-2. ~~Add stronger config/input validation in `AppConfig`.~~ Done. `validate()` method clamps all 50+ audio-critical parameters to safe ranges. Live-apply vs restart-required settings documented in code.
-
-The next quality improvement should be:
-
-1. Do a release smoke pass for live-apply versus restart-required settings on difficult real material.
-2. Add gain-structure code comments at each DSP stage.
-3. Validate Orbass, mono bass, widener, and multiband interaction on difficult real material.
+1. **Verify pre-emphasis ordering vs. pre-encode limiter (Phase 7.2).** Likely a code-level bug: pre-emphasis appears to run after the pre-encode limiter, which means a 10–12 dB HF boost is passed through unmeasured and becomes extra peak burden for the composite limiter. Run `--verify` with strong 12 kHz content and inspect the chain — fix if confirmed.
+2. Do a release smoke pass for live-apply versus restart-required settings on difficult real material.
+3. Add gain-structure code comments at each DSP stage.
+4. Validate Orbass, mono bass, widener, and multiband interaction on difficult real material.
 
 ## Tactical backlog
 
@@ -358,9 +452,7 @@ This section merges the actionable items that used to be split across `bugs.md` 
 
 ### Release-blocking / first fixes
 
-1. ~~Remove per-callback heap allocations from the capture/input conversion paths.~~ Done.
-2. ~~Add stronger config/input validation in `AppConfig`.~~ Done.
-3. Add a smoke-test pass for live-apply vs restart-required settings so MPX does not stop unexpectedly during ordinary DSP edits.
+1. Add a smoke-test pass for live-apply vs restart-required settings so MPX does not stop unexpectedly during ordinary DSP edits.
 
 ### Current sprint tasks
 
@@ -373,11 +465,53 @@ This section merges the actionable items that used to be split across `bugs.md` 
 1. Reduce duplicated filter configuration logic in the biquad/crossover helpers.
 2. Replace undocumented DSP magic numbers with named constants and brief references.
 3. Simplify and test the RDS group scheduler modes more deterministically.
-4. Expand the XCTest suite beyond ring-buffer behavior into MPX generation, filters, and config round-trip coverage.
+4. Expand the XCTest suite beyond ring-buffer behavior into MPX generation, filters, and config round-trip coverage. The SwiftPM test target already exists but contains no real test files — the infrastructure is in place, it just needs to be populated.
 5. Split the monolithic SwiftUI view model into smaller focused view models over time.
-6. Loosen tight coupling between the audio engine and concrete generator types.
-7. ~~Sanitize external now-playing script output before using it in RT/RT+ paths.~~ Done (`NowPlayingScriptRunner.parseSnapshot` safely parses output).
-8. Harden config file watching/reload behavior against race conditions.
+6. Loosen tight coupling between the audio engine and concrete generator types. Add basic dependency-injection seams for system-facing services (now-playing, device discovery) so those paths become testable in isolation.
+7. Harden config file watching/reload behavior against race conditions.
+
+## Code-quality priorities
+
+A second view on the backlog, organized by risk/safety priority rather than by subsystem. This captures the same direction of travel as the tactical backlog but makes the priority gradient explicit.
+
+### P0 — Confidence and safety
+
+1. Add deterministic unit tests for the major DSP primitives and stages. Cover filters, limiters, stereo coding, pilot/RDS generation, AGC behavior, and config-driven bypass paths.
+2. Add golden-output regression tests for the verification harness. Use fixed inputs and stored tolerances so DSP refactors are safer than eyeballing table deltas.
+3. Fix the verification harness bandwidth metric so RDS does not produce misleading occupied-width failures. Isolation runs show the `bright_dense` occupied-bandwidth warning disappears when `en_rds = False`, meaning the current `occupied999Hz` check is counting service subcarriers instead of isolating audio-composite width.
+4. Add config round-trip and invalid-input tests for `AppConfig`. Verify clamping, defaults, malformed INI handling, and incompatible setting combinations.
+5. Define and test live-apply versus restart-required behavior as code, not just UI guidance. There should be one authoritative decision path for whether a setting can apply live.
+
+### P1 — Structural cleanup
+
+1. Split `MPXGenerator.swift` into stage-focused components — suggested split: oscillators/subcarriers, filters, AGC/dynamics, stereo encoder, RDS encoder, composite limiter/power control, analysis helpers.
+2. Split `AudioOutputEngine.swift` by concern — device routing, capture/input transport, render loop glue, metering, monitoring analysis.
+3. Split `SwiftUIControlApp.swift` into smaller views and focused state holders. Keep window management separate from feature views; separate feature views from shared controls.
+4. Reduce hidden coupling between engine, config, generator, and UI state. Prefer narrow DTO-style runtime config snapshots over broad shared mutable objects.
+
+### P2 — Harden behavior
+
+1. Strengthen validation rules in `AppConfig`. Reject or normalize invalid ranges, invalid text fields, illegal combinations, and impossible sample-rate/block-size choices.
+2. Re-tune final-stage composite headroom for decoded-audio stability on vocal/transient material. Isolation runs show the remaining `vocal_sibilant` and `transient_push` RMS-drift warnings are not primarily caused by AGC or multiband, and they improve materially when `sum_level` is reduced from `1.0` to `0.9`.
+3. Harden device and routing edge cases. Test missing devices, changed UIDs, rate mismatches, startup with no valid route, and monitor/output transitions.
+4. Harden now-playing script integration further. Sanitize external output, bound field lengths, and handle malformed key/value content deterministically. (`NowPlayingScriptRunner.parseSnapshot` already does basic sanitization — extend from there.)
+5. Make error reporting more structured. Distinguish user-facing configuration/routing failures from internal runtime failures.
+
+### P3 — Maintainability and performance follow-through
+
+1. Replace more hot-path scalar loops with Accelerate where it materially helps and does not obscure correctness.
+2. Add explicit internal documentation for critical DSP invariants. Focus on stage ordering, level assumptions, limiter expectations, and RDS/stereo subcarrier rules.
+3. Add small benchmarks or profiling notes for the hottest paths so performance regressions are detectable before they become audible.
+4. Create a clearer internal module map. Even while MPX Prime stays a single SwiftPM target, the source tree should reflect subsystem boundaries.
+
+### Done when
+
+- Core DSP stages have deterministic automated tests.
+- The verification harness has regression baselines for known signals.
+- Runtime config behavior is explicit and testable; live-apply vs restart is enforced in code.
+- `MPXGenerator`, `AudioOutputEngine`, and `SwiftUIControlApp` are each materially smaller and more focused.
+- Invalid config and routing failures are predictable and bounded.
+- Routine refactors can be done with substantially lower regression risk.
 
 ## Design constraints
 
@@ -394,17 +528,9 @@ The following items represent opportunities to improve CPU efficiency while main
 2. **RDS string preparation** - Cache RDS byte preparation and avoid repeated string allocations in RDS group generation
 3. **Stereo image processing** - Optimize the remaining mid/side energy calculations with vDSP where it stays maintainable
 4. **Memory access patterns** - Keep tightening cache-friendly access in input conversion, history capture, and tight DSP support paths
-5. ~~**Buffer reuse** - Eliminate any remaining per-call scratch churn in capture and analysis paths~~ Done. Scratch buffers pre-allocated; `MonitorLoudnessAnalyzer` uses fixed ring buffer.
-6. **Approximation where appropriate** - Use fast math approximations only where profiling shows real value and verification stays clean
+5. **Approximation where appropriate** - Use fast math approximations only where profiling shows real value and verification stays clean
 
 These optimizations should be approached incrementally with verification using the offline verifier to ensure no regression in MPX quality or compliance.
-
-Current remaining performance focus:
-
-- further vDSP utilization in DSP processing loops
-- additional RDS string preparation caching
-- remaining stereo-image and scope-helper optimization
-- ensuring cache-friendly access patterns in tight DSP loops
 
 ## Real-Time Performance Plan
 
@@ -417,12 +543,6 @@ This section turns the remaining performance work into an explicit execution pla
 ### Phase P1. Make the callback safer under load
 
 Status: mostly complete
-
-Completed:
-
-1. Removed render-thread busy waiting from `StereoInputRingBuffer`.
-2. Removed unconditional runtime-config lock acquisition from the audio callback by adding an atomic pending fast path.
-3. Replaced unbounded `MonitorLoudnessAnalyzer` array with fixed-size ring buffer and atomic cursor for lock-free audio-to-UI handoff.
 
 Next work:
 
@@ -437,11 +557,6 @@ Success criteria:
 ### Phase P2. Cut obvious per-sample waste
 
 Status: partially complete
-
-Completed:
-
-1. Precomputed monitor-demod coefficients that depend only on sample rate or fixed timing constants.
-2. Precomputed Orbass smoothing and adaptation coefficients that did not need per-sample recalculation.
 
 Next work:
 
@@ -460,16 +575,6 @@ Success criteria:
 
 Status: partially complete
 
-Completed:
-
-1. Made scope/history capture and loudness measurement visibility-aware.
-2. Removed non-throttled stereo-meter passes that only fed throttled UI updates.
-3. Centralized throttled render analysis in one helper and split stereo levels from stereo image metrics so hidden-monitor states do less work.
-4. Extended Accelerate use in hot analysis helpers:
-   - vectorized input format conversion where practical
-   - chunked/vectorized scope and history write helpers
-   - cheaper stereo image metrics derived from existing level totals plus dot products
-
 Next work:
 
 1. Reduce any remaining duplicate passes over the same render buffer where that can be done without making the code opaque.
@@ -486,20 +591,6 @@ Success criteria:
 ### Phase P4. Tighten memory and data movement
 
 Status: partially complete
-
-Completed:
-
-1. Removed adaptive-read scratch copying in the input ring buffer by interpolating directly from stable published ring data.
-2. Made mono capture conversion more cache-friendly:
-   - mono `Int16` / `Int32` input now converts into a single mono scratch buffer
-   - mono `Float32` input no longer expands into temporary stereo buffers before ring writes
-3. Reduced history-buffer write amplification:
-   - stereo and mono scope history writes now use chunked/vectorized helpers
-   - pre-MPX raw stereo history writes now use chunk copies plus in-place clipping
-4. Reduced history-buffer readback cost:
-   - raw window extraction now uses contiguous chunk copies instead of per-sample wrapped reads
-   - scope-window extraction now scans contiguous chunks instead of doing modulo work per sample
-5. Gave the pre-MPX spectrum path its own shorter history depth instead of reusing the full scope-history retention.
 
 Next work:
 
@@ -538,11 +629,7 @@ Success criteria:
 
 ### Recommended execution order
 
-1. ~~Remove ring-buffer busy waiting and callback locks.~~ Done.
-2. ~~Precompute monitor-demod and Orbass coefficients.~~ Done.
-3. ~~Gate scope and loudness work by visibility and usage.~~ Done.
-4. ~~Revisit adaptive-read scratch copying only after the safety work above is complete.~~ Done.
-5. Capture baseline Instruments data and keep it current.
+1. Capture baseline Instruments data and keep it current.
 
 ## References
 

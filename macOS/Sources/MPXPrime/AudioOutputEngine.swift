@@ -307,7 +307,8 @@ final class AudioOutputEngine {
     private var pendingPostAGCRightPeak: Float = 0.0
     private var pendingOutputPeak: Float = 0.0
     private var lastMeterReadUptime: TimeInterval?
-    private var inputScopeHistory: [Float] = []
+    private var inputScopeLeftHistory: [Float] = []
+    private var inputScopeRightHistory: [Float] = []
     private var outputScopeHistory: [Float] = []
     private var preMPXLeftHistory: [Float] = []
     private var preMPXRightHistory: [Float] = []
@@ -713,7 +714,8 @@ final class AudioOutputEngine {
         meterSnapshot.loudnessShortTermLUFS = -120.0
         meterSnapshot.loudnessIntegratedLUFS = -120.0
         loudnessAnalyzer?.reset()
-        inputScopeHistory = []
+        inputScopeLeftHistory = []
+        inputScopeRightHistory = []
         outputScopeHistory = []
         preMPXLeftHistory = []
         preMPXRightHistory = []
@@ -1469,7 +1471,39 @@ final class AudioOutputEngine {
             multibandHighAttackMS: Float(config.multibandHighAttackMS),
             multibandLowReleaseMS: Float(config.multibandLowReleaseMS),
             multibandMidReleaseMS: Float(config.multibandMidReleaseMS),
-            multibandHighReleaseMS: Float(config.multibandHighReleaseMS)
+            multibandHighReleaseMS: Float(config.multibandHighReleaseMS),
+            phaseRotationEnabled: config.phaseRotationEnabled,
+            phaseRotationFreqHz: Float(config.phaseRotationFreqHz),
+            parametricEQEnabled: config.parametricEQEnabled,
+            peqB1FreqHz: Float(config.peqB1FreqHz),
+            peqB1GainDB: Float(config.peqB1GainDB),
+            peqB2FreqHz: Float(config.peqB2FreqHz),
+            peqB2GainDB: Float(config.peqB2GainDB),
+            peqB2Q: Float(config.peqB2Q),
+            peqB3FreqHz: Float(config.peqB3FreqHz),
+            peqB3GainDB: Float(config.peqB3GainDB),
+            peqB3Q: Float(config.peqB3Q),
+            peqB4FreqHz: Float(config.peqB4FreqHz),
+            peqB4GainDB: Float(config.peqB4GainDB),
+            multibandLimiterEnabled: config.multibandLimiterEnabled,
+            multibandLimiterThresholdDB: Float(config.multibandLimiterThresholdDB),
+            multibandLimiterAttackMS: Float(config.multibandLimiterAttackMS),
+            multibandLimiterReleaseMS: Float(config.multibandLimiterReleaseMS),
+            downwardExpanderEnabled: config.downwardExpanderEnabled,
+            expanderThresholdDB: Float(config.expanderThresholdDB),
+            expanderRatio: Float(config.expanderRatio),
+            expanderAttackMS: Float(config.expanderAttackMS),
+            expanderReleaseMS: Float(config.expanderReleaseMS),
+            bassClipperEnabled: config.bassClipperEnabled,
+            bassClipperCrossoverHz: Float(config.bassClipperCrossoverHz),
+            bassClipperThresholdDB: Float(config.bassClipperThresholdDB),
+            bassClipperDrive: Float(config.bassClipperDrive),
+            dcClipperEnabled: config.dcClipperEnabled,
+            dcClipperCeilingDB: Float(config.dcClipperCeilingDB),
+            dcClipperCancelFreqHz: Float(config.dcClipperCancelFreqHz),
+            bs412Enabled: config.bs412Enabled,
+            bs412ThresholdDB: Float(config.bs412ThresholdDB),
+            bs412WindowSeconds: Float(config.bs412WindowSeconds)
         )
         runtimeConfigLock.lock()
         if lastQueuedRuntimeConfig == runtime {
@@ -1613,14 +1647,21 @@ final class AudioOutputEngine {
         return (cbs, fr)
     }
 
-    var scopeSnapshot: (input: [Float], output: [Float]) {
+    var scopeSnapshot: (inputLeft: [Float], inputRight: [Float], output: [Float]) {
         scopeSnapshot(windowMS: 20.0)
     }
 
-    func scopeSnapshot(windowMS: Double) -> (input: [Float], output: [Float]) {
+    func scopeSnapshot(windowMS: Double) -> (inputLeft: [Float], inputRight: [Float], output: [Float]) {
         meterLock.lock()
-        let input = Self.renderScopeWindow(
-            from: inputScopeHistory,
+        let inputLeft = Self.renderScopeWindow(
+            from: inputScopeLeftHistory,
+            writeIndex: inputScopeWriteIndex,
+            validFrames: inputScopeValidFrames,
+            sampleRate: inputScopeSampleRate,
+            windowMS: windowMS
+        )
+        let inputRight = Self.renderScopeWindow(
+            from: inputScopeRightHistory,
             writeIndex: inputScopeWriteIndex,
             validFrames: inputScopeValidFrames,
             sampleRate: inputScopeSampleRate,
@@ -1634,7 +1675,7 @@ final class AudioOutputEngine {
             windowMS: windowMS
         )
         meterLock.unlock()
-        return (input, output)
+        return (inputLeft, inputRight, output)
     }
 
     func outputSignalWindow(into destination: inout [Float], frameCount: Int) -> (count: Int, sampleRate: Double) {
@@ -1646,6 +1687,31 @@ final class AudioOutputEngine {
             validFrames: outputScopeValidFrames,
             frameCount: frameCount,
             into: &destination
+        )
+        meterLock.unlock()
+        return (count, sr)
+    }
+
+    func inputStereoWindow(
+        intoLeft leftDestination: inout [Float],
+        right rightDestination: inout [Float],
+        frameCount: Int
+    ) -> (count: Int, sampleRate: Double) {
+        meterLock.lock()
+        let sr = max(1_000.0, inputScopeSampleRate)
+        let count = Self.renderRawWindow(
+            from: inputScopeLeftHistory,
+            writeIndex: inputScopeWriteIndex,
+            validFrames: inputScopeValidFrames,
+            frameCount: frameCount,
+            into: &leftDestination
+        )
+        _ = Self.renderRawWindow(
+            from: inputScopeRightHistory,
+            writeIndex: inputScopeWriteIndex,
+            validFrames: inputScopeValidFrames,
+            frameCount: count,
+            into: &rightDestination
         )
         meterLock.unlock()
         return (count, sr)
@@ -1918,11 +1984,12 @@ final class AudioOutputEngine {
         left: UnsafePointer<Float>, right: UnsafePointer<Float>, frameCount: Int
     ) {
         guard frameCount > 0 else { return }
-        appendStereoScopeSamples(
+        appendStereoRawSamples(
             left: left,
             right: right,
             frameCount: frameCount,
-            into: &inputScopeHistory,
+            leftHistory: &inputScopeLeftHistory,
+            rightHistory: &inputScopeRightHistory,
             writeIndex: &inputScopeWriteIndex,
             validFrames: &inputScopeValidFrames
         )
@@ -1930,10 +1997,12 @@ final class AudioOutputEngine {
 
     private func updateInputScopeSnapshot(mono: UnsafePointer<Float>, frameCount: Int) {
         guard frameCount > 0 else { return }
-        appendMonoScopeSamples(
-            samples: mono,
+        appendStereoRawSamples(
+            left: mono,
+            right: mono,
             frameCount: frameCount,
-            into: &inputScopeHistory,
+            leftHistory: &inputScopeLeftHistory,
+            rightHistory: &inputScopeRightHistory,
             writeIndex: &inputScopeWriteIndex,
             validFrames: &inputScopeValidFrames
         )
@@ -1990,7 +2059,8 @@ final class AudioOutputEngine {
         preMPXValidFrames = 0
         preMPXSampleRate = safeRenderRate
 
-        inputScopeHistory = Array(repeating: 0.0, count: inputCapacity)
+        inputScopeLeftHistory = Array(repeating: 0.0, count: inputCapacity)
+        inputScopeRightHistory = Array(repeating: 0.0, count: inputCapacity)
         inputScopeWriteIndex = 0
         inputScopeValidFrames = 0
         inputScopeSampleRate = safeInputRate

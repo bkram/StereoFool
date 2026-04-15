@@ -1,8 +1,10 @@
-import XCTest
+import Testing
+import Foundation
 @testable import MPXPrime
 
-final class MPXAnalysisTapTests: XCTestCase {
-    func testAnalysisBuffersPreserveStereoOrdering() {
+@Suite("MPXAnalysisTap")
+struct MPXAnalysisTapTests {
+    @Test func analysisBuffersPreserveStereoOrdering() {
         var config = AppConfig()
         config.processingBypass = true
         config.widebandAGCEnabled = false
@@ -48,13 +50,13 @@ final class MPXAnalysisTapTests: XCTestCase {
         let meanPreLeft = stableRange.reduce(Float.zero) { $0 + preMPXLeft[$1] } / Float(stableRange.count)
         let meanPreRight = stableRange.reduce(Float.zero) { $0 + preMPXRight[$1] } / Float(stableRange.count)
 
-        XCTAssertEqual(meanPostLeft, 0.20, accuracy: 0.01)
-        XCTAssertEqual(meanPostRight, 0.60, accuracy: 0.01)
-        XCTAssertGreaterThan(meanPreRight, meanPreLeft)
-        XCTAssertGreaterThan(meanPreRight - meanPreLeft, 0.20)
+        #expect(abs(meanPostLeft - 0.20) <= 0.01)
+        #expect(abs(meanPostRight - 0.60) <= 0.01)
+        #expect(meanPreRight > meanPreLeft)
+        #expect(meanPreRight - meanPreLeft > 0.20)
     }
 
-    func testMonitorBypassAnalysisTracksDirectStereoPath() {
+    @Test func monitorBypassAnalysisTracksDirectStereoPath() {
         var config = AppConfig()
         config.processingBypass = true
         config.widebandAGCEnabled = false
@@ -94,9 +96,9 @@ final class MPXAnalysisTapTests: XCTestCase {
             }
         }
 
-        XCTAssertEqual(inputLeft[frameCount - 1], postAGCLeft[frameCount - 1], accuracy: 0.0001)
-        XCTAssertEqual(inputRight[frameCount - 1], postAGCRight[frameCount - 1], accuracy: 0.0001)
-        XCTAssertEqual(preMPXLeft[frameCount - 1], postAGCLeft[frameCount - 1], accuracy: 0.0001)
-        XCTAssertEqual(preMPXRight[frameCount - 1], postAGCRight[frameCount - 1], accuracy: 0.0001)
+        #expect(abs(inputLeft[frameCount - 1] - postAGCLeft[frameCount - 1]) <= 0.0001)
+        #expect(abs(inputRight[frameCount - 1] - postAGCRight[frameCount - 1]) <= 0.0001)
+        #expect(abs(preMPXLeft[frameCount - 1] - postAGCLeft[frameCount - 1]) <= 0.0001)
+        #expect(abs(preMPXRight[frameCount - 1] - postAGCRight[frameCount - 1]) <= 0.0001)
     }
 }

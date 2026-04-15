@@ -324,6 +324,76 @@ struct Biquad {
         setNormalized(pb0, pb1, pb2, pa0, pa1, pa2)
     }
 
+    mutating func configureAllpass(freqHz: Float, sampleRate: Float, q: Float = 0.7071068) {
+        let sr = max(8_000.0, sampleRate)
+        let nyquist = (sr * 0.5) - 10.0
+        let f0 = clampf(freqHz, 8.0, max(16.0, nyquist))
+        let w0 = twoPi * f0 / sr
+        let c = cosf(w0)
+        let s = sinf(w0)
+        let alpha = s / (2.0 * max(0.1, q))
+
+        let pb0 = 1.0 - alpha
+        let pb1 = -2.0 * c
+        let pb2 = 1.0 + alpha
+        let pa0 = 1.0 + alpha
+        let pa1 = -2.0 * c
+        let pa2 = 1.0 - alpha
+        setNormalized(pb0, pb1, pb2, pa0, pa1, pa2)
+    }
+
+    mutating func configurePeakingEQ(freqHz: Float, gainDB: Float, sampleRate: Float, q: Float = 1.0) {
+        if fabsf(gainDB) < 0.01 {
+            configureIdentity()
+            return
+        }
+        let sr = max(8_000.0, sampleRate)
+        let nyquist = (sr * 0.5) - 10.0
+        let f0 = clampf(freqHz, 8.0, max(16.0, nyquist))
+        let w0 = twoPi * f0 / sr
+        let c = cosf(w0)
+        let s = sinf(w0)
+        let A = powf(10.0, gainDB / 40.0)
+        let alpha = s / (2.0 * max(0.1, q))
+
+        let pb0 = 1.0 + (alpha * A)
+        let pb1 = -2.0 * c
+        let pb2 = 1.0 - (alpha * A)
+        let pa0 = 1.0 + (alpha / A)
+        let pa1 = -2.0 * c
+        let pa2 = 1.0 - (alpha / A)
+        setNormalized(pb0, pb1, pb2, pa0, pa1, pa2)
+    }
+
+    mutating func configureLowShelf(
+        gainDB: Float, cutoffHz: Float, sampleRate: Float, slope: Float = 1.0
+    ) {
+        if fabsf(gainDB) < 0.01 {
+            configureIdentity()
+            return
+        }
+        let sr = max(8_000.0, sampleRate)
+        let nyquist = (sr * 0.5) - 200.0
+        let fc = clampf(cutoffHz, 20.0, max(40.0, nyquist))
+        let w0 = twoPi * fc / sr
+        let c = cosf(w0)
+        let s = sinf(w0)
+        let A = powf(10.0, gainDB / 40.0)
+        let invA = 1.0 / max(1e-6, A)
+        let slopeSafe = max(0.1, slope)
+        let alphaTerm = max(0.0, ((A + invA) * ((1.0 / slopeSafe) - 1.0)) + 2.0)
+        let alpha = (s * 0.5) * sqrtf(alphaTerm)
+        let sqrtA = sqrtf(max(1e-6, A))
+
+        let pb0 = A * ((A + 1.0) - ((A - 1.0) * c) + (2.0 * sqrtA * alpha))
+        let pb1 = 2.0 * A * ((A - 1.0) - ((A + 1.0) * c))
+        let pb2 = A * ((A + 1.0) - ((A - 1.0) * c) - (2.0 * sqrtA * alpha))
+        let pa0 = (A + 1.0) + ((A - 1.0) * c) + (2.0 * sqrtA * alpha)
+        let pa1 = -2.0 * ((A - 1.0) + ((A + 1.0) * c))
+        let pa2 = (A + 1.0) + ((A - 1.0) * c) - (2.0 * sqrtA * alpha)
+        setNormalized(pb0, pb1, pb2, pa0, pa1, pa2)
+    }
+
     mutating func configureHighShelf(
         gainDB: Float, cutoffHz: Float, sampleRate: Float, slope: Float = 1.0
     ) {
@@ -394,8 +464,328 @@ struct StereoBiquad {
         right.configureHighShelf(gainDB: gainDB, cutoffHz: cutoffHz, sampleRate: sampleRate)
     }
 
+    mutating func configureLowShelf(gainDB: Float, cutoffHz: Float, sampleRate: Float) {
+        left.configureLowShelf(gainDB: gainDB, cutoffHz: cutoffHz, sampleRate: sampleRate)
+        right.configureLowShelf(gainDB: gainDB, cutoffHz: cutoffHz, sampleRate: sampleRate)
+    }
+
+    mutating func configurePeakingEQ(freqHz: Float, gainDB: Float, sampleRate: Float, q: Float = 1.0) {
+        left.configurePeakingEQ(freqHz: freqHz, gainDB: gainDB, sampleRate: sampleRate, q: q)
+        right.configurePeakingEQ(freqHz: freqHz, gainDB: gainDB, sampleRate: sampleRate, q: q)
+    }
+
+    mutating func configureAllpass(freqHz: Float, sampleRate: Float, q: Float = 0.7071068) {
+        left.configureAllpass(freqHz: freqHz, sampleRate: sampleRate, q: q)
+        right.configureAllpass(freqHz: freqHz, sampleRate: sampleRate, q: q)
+    }
+
     mutating func process(left: Float, right: Float) -> (Float, Float) {
         return (self.left.process(left), self.right.process(right))
+    }
+}
+
+// MARK: - Phase Rotator (4-pole allpass chain)
+// Reduces waveform asymmetry (especially male voice) by ~3-4 dB,
+// yielding free headroom for downstream AGC, compressors, and limiters.
+// Standard in Orban Optimod, Stereotool, BreakawayOne.
+struct PhaseRotator {
+    private var ap1 = Biquad()
+    private var ap2 = Biquad()
+    private var ap3 = Biquad()
+    private var ap4 = Biquad()
+
+    mutating func configure(freqHz: Float, sampleRate: Float) {
+        let q: Float = 0.7071068
+        ap1.configureAllpass(freqHz: freqHz, sampleRate: sampleRate, q: q)
+        ap2.configureAllpass(freqHz: freqHz, sampleRate: sampleRate, q: q)
+        ap3.configureAllpass(freqHz: freqHz, sampleRate: sampleRate, q: q)
+        ap4.configureAllpass(freqHz: freqHz, sampleRate: sampleRate, q: q)
+    }
+
+    @inline(__always)
+    mutating func process(_ x: Float) -> Float {
+        ap4.process(ap3.process(ap2.process(ap1.process(x))))
+    }
+}
+
+struct StereoPhaseRotator {
+    var left = PhaseRotator()
+    var right = PhaseRotator()
+
+    mutating func configure(freqHz: Float, sampleRate: Float) {
+        left.configure(freqHz: freqHz, sampleRate: sampleRate)
+        right.configure(freqHz: freqHz, sampleRate: sampleRate)
+    }
+
+    @inline(__always)
+    mutating func process(left l: Float, right r: Float) -> (Float, Float) {
+        (self.left.process(l), self.right.process(r))
+    }
+}
+
+// MARK: - Parametric EQ (4-band: low shelf + 2 peaking + high shelf)
+struct ParametricEQ4Band {
+    private var band1 = StereoBiquad()  // low shelf
+    private var band2 = StereoBiquad()  // peaking
+    private var band3 = StereoBiquad()  // peaking
+    private var band4 = StereoBiquad()  // high shelf
+
+    // Shelf bands (1 and 4) use the RBJ default slope=1.0 (Butterworth
+    // shelf); they expose no Q control since the shelf biquad is slope-
+    // parameterized, not Q-parameterized. Only the peaking bands (2 and 3)
+    // take a Q.
+    mutating func configure(
+        sampleRate: Float,
+        b1FreqHz: Float, b1GainDB: Float,
+        b2FreqHz: Float, b2GainDB: Float, b2Q: Float,
+        b3FreqHz: Float, b3GainDB: Float, b3Q: Float,
+        b4FreqHz: Float, b4GainDB: Float
+    ) {
+        band1.configureLowShelf(gainDB: b1GainDB, cutoffHz: b1FreqHz, sampleRate: sampleRate)
+        band2.configurePeakingEQ(freqHz: b2FreqHz, gainDB: b2GainDB, sampleRate: sampleRate, q: b2Q)
+        band3.configurePeakingEQ(freqHz: b3FreqHz, gainDB: b3GainDB, sampleRate: sampleRate, q: b3Q)
+        band4.configureHighShelf(gainDB: b4GainDB, cutoffHz: b4FreqHz, sampleRate: sampleRate)
+    }
+
+    @inline(__always)
+    mutating func process(left l: Float, right r: Float) -> (Float, Float) {
+        var out = band1.process(left: l, right: r)
+        out = band2.process(left: out.0, right: out.1)
+        out = band3.process(left: out.0, right: out.1)
+        out = band4.process(left: out.0, right: out.1)
+        return out
+    }
+}
+
+// MARK: - Per-Band Fast Peak Limiter
+// Fast-attack, high-ratio brick-wall limiter for per-band transient control.
+// Operates after multiband compressor, before band summation.
+struct BandLimiter {
+    private var thresholdLin: Float = 1.0
+    private var attackCoeff: Float = 0.0
+    private var releaseCoeff: Float = 0.0
+    // Stereo-linked envelope: both channels are limited together based on the
+    // max(|L|, |R|) peak, so a single envelope is sufficient.
+    private var env: Float = 0.0
+
+    mutating func configure(sampleRate: Float, thresholdDB: Float, attackMS: Float, releaseMS: Float) {
+        thresholdLin = powf(10.0, min(0.0, thresholdDB) / 20.0)
+        let sr = max(8_000.0, sampleRate)
+        attackCoeff = expf(-1.0 / (max(0.01, attackMS) * 0.001 * sr))
+        releaseCoeff = expf(-1.0 / (max(1.0, releaseMS) * 0.001 * sr))
+    }
+
+    @inline(__always)
+    mutating func process(left: Float, right: Float) -> (Float, Float) {
+        let peak = max(fabsf(left), fabsf(right))
+        let coeff = peak > env ? attackCoeff : releaseCoeff
+        env = (coeff * env) + ((1.0 - coeff) * peak)
+        if env > thresholdLin {
+            let gain = thresholdLin / env
+            return (left * gain, right * gain)
+        }
+        return (left, right)
+    }
+}
+
+// MARK: - Bass Clipper
+// Dedicated clipper for low-frequency content, placed after multiband and
+// before the final limiter/clipper. Pre-clips bass peaks independently so
+// the final stages see less LF energy, dramatically reducing bass-induced IMD.
+struct BassClipper {
+    private var splitL = LinkwitzRiley4()
+    private var splitR = LinkwitzRiley4()
+    private var thresholdLin: Float = 0.8
+    private var drive: Float = 1.0
+
+    mutating func configure(sampleRate: Float, crossoverHz: Float, thresholdDB: Float, drive drv: Float) {
+        splitL.configure(cutoffHz: crossoverHz, sampleRate: sampleRate)
+        splitR.configure(cutoffHz: crossoverHz, sampleRate: sampleRate)
+        thresholdLin = powf(10.0, min(0.0, thresholdDB) / 20.0)
+        drive = max(0.1, drv)
+    }
+
+    @inline(__always)
+    mutating func process(left: Float, right: Float) -> (Float, Float) {
+        let sL = splitL.process(left)
+        let sR = splitR.process(right)
+        let clippedLowL = clipBass(sL.low)
+        let clippedLowR = clipBass(sR.low)
+        return (clippedLowL + sL.high, clippedLowR + sR.high)
+    }
+
+    @inline(__always)
+    private func clipBass(_ x: Float) -> Float {
+        let driven = x * drive
+        let ax = fabsf(driven)
+        if ax <= thresholdLin { return x }
+        let clipped = thresholdLin * tanhf(driven / thresholdLin)
+        return clipped / drive
+    }
+}
+
+// MARK: - Distortion-Cancelled Clipper (L/R domain)
+// Oversampled clipper with low-frequency distortion cancellation based on
+// Orban's published principle: clip, extract error, lowpass error below ~2kHz,
+// subtract. This cancels LF IMD while leaving HF distortion (which is
+// psychoacoustically masked by the signal).
+struct DistortionCancelledClipper {
+    private var ceiling: Float = 0.95
+    private var errorLPL = Biquad()
+    private var errorLPR = Biquad()
+    private var errorLP2L = Biquad()
+    private var errorLP2R = Biquad()
+
+    mutating func configure(sampleRate: Float, ceilingDB: Float, cancelFreqHz: Float) {
+        ceiling = powf(10.0, min(0.0, ceilingDB) / 20.0)
+        let q: Float = 0.7071068
+        errorLPL.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: sampleRate, q: q)
+        errorLPR.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: sampleRate, q: q)
+        errorLP2L.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: sampleRate, q: q)
+        errorLP2R.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: sampleRate, q: q)
+    }
+
+    @inline(__always)
+    mutating func process(left: Float, right: Float) -> (Float, Float) {
+        let clippedL = hardClip(left)
+        let clippedR = hardClip(right)
+        let errorL = clippedL - left
+        let errorR = clippedR - right
+        // 4th-order LP on error (two cascaded 2nd-order sections)
+        let filteredErrorL = errorLP2L.process(errorLPL.process(errorL))
+        let filteredErrorR = errorLP2R.process(errorLPR.process(errorR))
+        // Subtract LF distortion, keep HF distortion (masked)
+        return (clippedL - filteredErrorL, clippedR - filteredErrorR)
+    }
+
+    @inline(__always)
+    private func hardClip(_ x: Float) -> Float {
+        let ax = fabsf(x)
+        if ax <= ceiling { return x }
+        // Soft transition above ceiling using tanh
+        let excess = (ax - ceiling) / max(0.01, ceiling * 0.15)
+        let limited = ceiling + (ceiling * 0.05 * tanhf(excess))
+        return copysignf(limited, x)
+    }
+}
+
+// MARK: - BS.412 MPX Power Limiter
+// Rolling 60-second average power measurement with slow gain reduction.
+// ITU-R BS.412 requires average MPX power to not exceed a threshold
+// (typically -10 dBr relative to unmodulated carrier deviation).
+struct BS412PowerLimiter {
+    private var powerAccumulator: Double = 0.0
+    private var sampleCount: Int = 0
+    private var windowSamples: Int = 0
+    private var ringBuffer: [Float] = []
+    private var ringIndex: Int = 0
+    private var ringFull: Bool = false
+    private var currentGain: Float = 1.0
+    private var targetGain: Float = 1.0
+    private var thresholdPower: Float = 0.0
+    private var attackCoeff: Float = 0.0
+    private var releaseCoeff: Float = 0.0
+    // Decimated power tracking: measure every N samples to reduce overhead
+    private var decimationCounter: Int = 0
+    private let decimationFactor: Int = 64
+    private var decimationAccumulator: Float = 0.0
+
+    mutating func configure(sampleRate: Float, thresholdDB: Float, windowSeconds: Float = 60.0) {
+        let sr = max(8_000.0, sampleRate)
+        // Ring buffer stores decimated power values
+        let totalSamples = Int(sr * max(1.0, windowSeconds))
+        windowSamples = totalSamples / decimationFactor
+        if ringBuffer.count != windowSamples {
+            ringBuffer = [Float](repeating: 0.0, count: max(1, windowSamples))
+            ringIndex = 0
+            ringFull = false
+            powerAccumulator = 0.0
+        }
+        // Threshold: power level in linear (squared amplitude)
+        thresholdPower = powf(10.0, thresholdDB / 10.0)
+        // Slow attack (1s), moderate release (5s)
+        attackCoeff = expf(-1.0 / (1.0 * sr))
+        releaseCoeff = expf(-1.0 / (5.0 * sr))
+        decimationCounter = 0
+        decimationAccumulator = 0.0
+    }
+
+    @inline(__always)
+    mutating func process(_ x: Float) -> Float {
+        let sample2 = x * x
+        decimationAccumulator += sample2
+
+        decimationCounter += 1
+        if decimationCounter >= decimationFactor {
+            let avgPower = decimationAccumulator / Float(decimationFactor)
+            // Update ring buffer
+            if ringFull {
+                powerAccumulator -= Double(ringBuffer[ringIndex])
+            }
+            ringBuffer[ringIndex] = avgPower
+            powerAccumulator += Double(avgPower)
+            ringIndex += 1
+            if ringIndex >= windowSamples {
+                ringIndex = 0
+                ringFull = true
+            }
+            // Compute average power
+            let count = ringFull ? windowSamples : ringIndex
+            if count > 0 {
+                let avgWindowPower = Float(powerAccumulator / Double(count))
+                if avgWindowPower > thresholdPower && avgWindowPower > 1e-10 {
+                    targetGain = sqrtf(thresholdPower / avgWindowPower)
+                } else {
+                    targetGain = 1.0
+                }
+            }
+            decimationCounter = 0
+            decimationAccumulator = 0.0
+        }
+
+        // Smooth gain transitions
+        let coeff = targetGain < currentGain ? attackCoeff : releaseCoeff
+        currentGain = (coeff * currentGain) + ((1.0 - coeff) * targetGain)
+        return x * currentGain
+    }
+
+    var gainReductionDB: Float {
+        20.0 * log10f(max(1e-6, currentGain))
+    }
+}
+
+// MARK: - Downward Expander (per-band)
+// Reduces gain on quiet bands to prevent AGC from lifting noise floor.
+struct DownwardExpander {
+    private var thresholdLin: Float = 0.001
+    private var ratio: Float = 2.0
+    private var attackCoeff: Float = 0.0
+    private var releaseCoeff: Float = 0.0
+    // Stereo-linked detector: both channels share one envelope driven by
+    // max(|L|, |R|), so a single gain value is applied to the band.
+    private var env: Float = 0.0
+
+    mutating func configure(sampleRate: Float, thresholdDB: Float, ratio r: Float,
+                            attackMS: Float, releaseMS: Float) {
+        thresholdLin = powf(10.0, thresholdDB / 20.0)
+        ratio = max(1.0, r)
+        let sr = max(8_000.0, sampleRate)
+        attackCoeff = expf(-1.0 / (max(0.1, attackMS) * 0.001 * sr))
+        releaseCoeff = expf(-1.0 / (max(1.0, releaseMS) * 0.001 * sr))
+    }
+
+    @inline(__always)
+    mutating func expanderGain(left: Float, right: Float) -> Float {
+        let peak = max(fabsf(left), fabsf(right))
+        let coeff = peak > env ? attackCoeff : releaseCoeff
+        env = (coeff * env) + ((1.0 - coeff) * peak)
+        if env < thresholdLin && env > 1e-10 {
+            // Below threshold: reduce gain by expansion ratio
+            let belowDB = 20.0 * log10f(env / thresholdLin)
+            let expandedDB = belowDB * ratio
+            return powf(10.0, expandedDB / 20.0)
+        }
+        return 1.0
     }
 }
 
@@ -2849,6 +3239,39 @@ final class MPXGenerator {
         let multibandLowReleaseMS: Float
         let multibandMidReleaseMS: Float
         let multibandHighReleaseMS: Float
+        let phaseRotationEnabled: Bool
+        let phaseRotationFreqHz: Float
+        let parametricEQEnabled: Bool
+        // Bands 1 and 4 are shelves (no Q control); bands 2 and 3 are peaking.
+        let peqB1FreqHz: Float
+        let peqB1GainDB: Float
+        let peqB2FreqHz: Float
+        let peqB2GainDB: Float
+        let peqB2Q: Float
+        let peqB3FreqHz: Float
+        let peqB3GainDB: Float
+        let peqB3Q: Float
+        let peqB4FreqHz: Float
+        let peqB4GainDB: Float
+        let multibandLimiterEnabled: Bool
+        let multibandLimiterThresholdDB: Float
+        let multibandLimiterAttackMS: Float
+        let multibandLimiterReleaseMS: Float
+        let downwardExpanderEnabled: Bool
+        let expanderThresholdDB: Float
+        let expanderRatio: Float
+        let expanderAttackMS: Float
+        let expanderReleaseMS: Float
+        let bassClipperEnabled: Bool
+        let bassClipperCrossoverHz: Float
+        let bassClipperThresholdDB: Float
+        let bassClipperDrive: Float
+        let dcClipperEnabled: Bool
+        let dcClipperCeilingDB: Float
+        let dcClipperCancelFreqHz: Float
+        let bs412Enabled: Bool
+        let bs412ThresholdDB: Float
+        let bs412WindowSeconds: Float
     }
 
     struct RDSRuntimeConfig: Equatable {
@@ -2894,6 +3317,23 @@ final class MPXGenerator {
     private var widebandAGCAttackMS: Float
     private var widebandAGCReleaseMS: Float
     private var widebandAGC = WidebandAGCRider()
+
+    private var phaseRotationEnabled: Bool
+    private var phaseRotationFreqHz: Float
+    private var phaseRotator = StereoPhaseRotator()
+
+    private var parametricEQEnabled: Bool
+    private var peqB1FreqHz: Float
+    private var peqB1GainDB: Float
+    private var peqB2FreqHz: Float
+    private var peqB2GainDB: Float
+    private var peqB2Q: Float
+    private var peqB3FreqHz: Float
+    private var peqB3GainDB: Float
+    private var peqB3Q: Float
+    private var peqB4FreqHz: Float
+    private var peqB4GainDB: Float
+    private var parametricEQ = ParametricEQ4Band()
 
     private let hpfHz: Float
     private let hfTrimDB: Float
@@ -2985,6 +3425,54 @@ final class MPXGenerator {
     private var mb5Comp4R = MonoCompressor()
     private var mb5Comp5L = MonoCompressor()
     private var mb5Comp5R = MonoCompressor()
+
+    // Multiband limiter: per-band fast peak limiters after compression
+    private var multibandLimiterEnabled: Bool
+    private var multibandLimiterThresholdDB: Float
+    private var multibandLimiterAttackMS: Float
+    private var multibandLimiterReleaseMS: Float
+    private var mbLimLow = BandLimiter()
+    private var mbLimMid = BandLimiter()
+    private var mbLimHigh = BandLimiter()
+    private var mbLim5B1 = BandLimiter()
+    private var mbLim5B2 = BandLimiter()
+    private var mbLim5B3 = BandLimiter()
+    private var mbLim5B4 = BandLimiter()
+    private var mbLim5B5 = BandLimiter()
+
+    // Downward expander: per-band noise reduction
+    private var downwardExpanderEnabled: Bool
+    private var expanderThresholdDB: Float
+    private var expanderRatio: Float
+    private var expanderAttackMS: Float
+    private var expanderReleaseMS: Float
+    private var mbExpLow = DownwardExpander()
+    private var mbExpMid = DownwardExpander()
+    private var mbExpHigh = DownwardExpander()
+    private var mbExp5B1 = DownwardExpander()
+    private var mbExp5B2 = DownwardExpander()
+    private var mbExp5B3 = DownwardExpander()
+    private var mbExp5B4 = DownwardExpander()
+    private var mbExp5B5 = DownwardExpander()
+
+    // Bass clipper: dedicated LF clipper before final limiter
+    private var bassClipperEnabled: Bool
+    private var bassClipperCrossoverHz: Float
+    private var bassClipperThresholdDB: Float
+    private var bassClipperDrive: Float
+    private var bassClipper = BassClipper()
+
+    // Distortion-cancelled clipper: L/R domain with LF distortion cancellation
+    private var dcClipperEnabled: Bool
+    private var dcClipperCeilingDB: Float
+    private var dcClipperCancelFreqHz: Float
+    private var dcClipper = DistortionCancelledClipper()
+
+    // BS.412 MPX power limiter
+    private var bs412Enabled: Bool
+    private var bs412ThresholdDB: Float
+    private var bs412WindowSeconds: Float
+    private var bs412Limiter = BS412PowerLimiter()
 
     private var stereoWidenEnabled: Bool
     private var monoBassEnabled: Bool
@@ -3116,6 +3604,21 @@ final class MPXGenerator {
         self.widebandAGCAttackMS = Float(config.widebandAGCAttackMS)
         self.widebandAGCReleaseMS = Float(config.widebandAGCReleaseMS)
 
+        self.phaseRotationEnabled = config.phaseRotationEnabled
+        self.phaseRotationFreqHz = clampf(Float(config.phaseRotationFreqHz), 50.0, 500.0)
+
+        self.parametricEQEnabled = config.parametricEQEnabled
+        self.peqB1FreqHz = clampf(Float(config.peqB1FreqHz), 20.0, 500.0)
+        self.peqB1GainDB = clampf(Float(config.peqB1GainDB), -12.0, 12.0)
+        self.peqB2FreqHz = clampf(Float(config.peqB2FreqHz), 100.0, 5000.0)
+        self.peqB2GainDB = clampf(Float(config.peqB2GainDB), -12.0, 12.0)
+        self.peqB2Q = clampf(Float(config.peqB2Q), 0.1, 10.0)
+        self.peqB3FreqHz = clampf(Float(config.peqB3FreqHz), 500.0, 12000.0)
+        self.peqB3GainDB = clampf(Float(config.peqB3GainDB), -12.0, 12.0)
+        self.peqB3Q = clampf(Float(config.peqB3Q), 0.1, 10.0)
+        self.peqB4FreqHz = clampf(Float(config.peqB4FreqHz), 1000.0, 16000.0)
+        self.peqB4GainDB = clampf(Float(config.peqB4GainDB), -12.0, 12.0)
+
         self.hpfHz = clampf(Float(config.hpfHz), 10.0, 200.0)
         self.hfTrimDB = clampf(Float(config.hfTrimDB), -12.0, 0.0)
         self.hfTrimHz = clampf(Float(config.hfTrimHz), 500.0, 12_000.0)
@@ -3167,6 +3670,30 @@ final class MPXGenerator {
         self.multibandMidReleaseMS = Float(config.multibandMidReleaseMS)
         self.multibandHighReleaseMS = Float(config.multibandHighReleaseMS)
 
+        self.multibandLimiterEnabled = config.multibandLimiterEnabled
+        self.multibandLimiterThresholdDB = clampf(Float(config.multibandLimiterThresholdDB), -20.0, 0.0)
+        self.multibandLimiterAttackMS = clampf(Float(config.multibandLimiterAttackMS), 0.01, 10.0)
+        self.multibandLimiterReleaseMS = clampf(Float(config.multibandLimiterReleaseMS), 10.0, 500.0)
+
+        self.downwardExpanderEnabled = config.downwardExpanderEnabled
+        self.expanderThresholdDB = clampf(Float(config.expanderThresholdDB), -60.0, -20.0)
+        self.expanderRatio = clampf(Float(config.expanderRatio), 1.0, 8.0)
+        self.expanderAttackMS = clampf(Float(config.expanderAttackMS), 0.1, 100.0)
+        self.expanderReleaseMS = clampf(Float(config.expanderReleaseMS), 10.0, 2000.0)
+
+        self.bassClipperEnabled = config.bassClipperEnabled
+        self.bassClipperCrossoverHz = clampf(Float(config.bassClipperCrossoverHz), 60.0, 300.0)
+        self.bassClipperThresholdDB = clampf(Float(config.bassClipperThresholdDB), -12.0, 0.0)
+        self.bassClipperDrive = clampf(Float(config.bassClipperDrive), 0.5, 3.0)
+
+        self.dcClipperEnabled = config.dcClipperEnabled
+        self.dcClipperCeilingDB = clampf(Float(config.dcClipperCeilingDB), -6.0, 0.0)
+        self.dcClipperCancelFreqHz = clampf(Float(config.dcClipperCancelFreqHz), 500.0, 4000.0)
+
+        self.bs412Enabled = config.bs412Enabled
+        self.bs412ThresholdDB = clampf(Float(config.bs412ThresholdDB), -20.0, 0.0)
+        self.bs412WindowSeconds = clampf(Float(config.bs412WindowSeconds), 1.0, 120.0)
+
         self.stereoWidenEnabled = config.stereoWidenEnabled
         self.monoBassEnabled = config.monoBassEnabled
         self.monoBassFreqHz = clampf(Float(config.monoBassFreqHz), 60.0, 250.0)
@@ -3195,10 +3722,21 @@ final class MPXGenerator {
         )
         inputHPF.configureHighpass(cutoffHz: hpfHz, sampleRate: self.sampleRate)
         hfTrim.configureHighShelf(gainDB: hfTrimDB, cutoffHz: hfTrimHz, sampleRate: self.sampleRate)
+        phaseRotator.configure(freqHz: phaseRotationFreqHz, sampleRate: self.sampleRate)
+        configureParametricEQ()
         configureOrbassFilters()
         configureMultibandFilters()
         configureMultibandCompressors()
+        configureMultibandLimiters()
+        configureDownwardExpanders()
         configureStereoWidener()
+        bassClipper.configure(
+            sampleRate: self.sampleRate,
+            crossoverHz: bassClipperCrossoverHz,
+            thresholdDB: bassClipperThresholdDB,
+            drive: bassClipperDrive
+        )
+        configureDistortionCancelledClipper()
         lookaheadLimiter.configure(
             sampleRate: self.sampleRate,
             lookaheadMS: limitLookaheadMS,
@@ -3216,6 +3754,11 @@ final class MPXGenerator {
             sampleRate: self.sampleRate,
             threshold: preEncodeThreshold,
             releaseMS: preEncodeReleaseMS
+        )
+        bs412Limiter.configure(
+            sampleRate: self.sampleRate,
+            thresholdDB: bs412ThresholdDB,
+            windowSeconds: bs412WindowSeconds
         )
         updateDerivedRates()
         configureMonitorDemod()
@@ -3240,10 +3783,21 @@ final class MPXGenerator {
         )
         inputHPF.configureHighpass(cutoffHz: hpfHz, sampleRate: sampleRate)
         hfTrim.configureHighShelf(gainDB: hfTrimDB, cutoffHz: hfTrimHz, sampleRate: sampleRate)
+        phaseRotator.configure(freqHz: phaseRotationFreqHz, sampleRate: sampleRate)
+        configureParametricEQ()
         configureOrbassFilters()
         configureMultibandFilters()
         configureMultibandCompressors()
+        configureMultibandLimiters()
+        configureDownwardExpanders()
         configureStereoWidener()
+        bassClipper.configure(
+            sampleRate: sampleRate,
+            crossoverHz: bassClipperCrossoverHz,
+            thresholdDB: bassClipperThresholdDB,
+            drive: bassClipperDrive
+        )
+        configureDistortionCancelledClipper()
         lookaheadLimiter.configure(
             sampleRate: sampleRate,
             lookaheadMS: limitLookaheadMS,
@@ -3259,6 +3813,11 @@ final class MPXGenerator {
             sampleRate: sampleRate,
             threshold: preEncodeThreshold,
             releaseMS: preEncodeReleaseMS
+        )
+        bs412Limiter.configure(
+            sampleRate: sampleRate,
+            thresholdDB: bs412ThresholdDB,
+            windowSeconds: bs412WindowSeconds
         )
         rdsCoder?.setSampleRate(sampleRate)
         updateDerivedRates()
@@ -3387,6 +3946,121 @@ final class MPXGenerator {
         }
         if multibandStructureChanged || multibandCompressorChanged {
             configureMultibandCompressors()
+        }
+
+        // Phase rotator
+        let phaseRotChanged =
+            phaseRotationEnabled != config.phaseRotationEnabled
+            || fabsf(phaseRotationFreqHz - config.phaseRotationFreqHz) > 0.0001
+        phaseRotationEnabled = config.phaseRotationEnabled
+        phaseRotationFreqHz = clampf(config.phaseRotationFreqHz, 50.0, 500.0)
+        if phaseRotChanged {
+            phaseRotator.configure(freqHz: phaseRotationFreqHz, sampleRate: sampleRate)
+        }
+
+        // Parametric EQ
+        let peqChanged =
+            parametricEQEnabled != config.parametricEQEnabled
+            || fabsf(peqB1FreqHz - config.peqB1FreqHz) > 0.0001
+            || fabsf(peqB1GainDB - config.peqB1GainDB) > 0.0001
+            || fabsf(peqB2FreqHz - config.peqB2FreqHz) > 0.0001
+            || fabsf(peqB2GainDB - config.peqB2GainDB) > 0.0001
+            || fabsf(peqB2Q - config.peqB2Q) > 0.0001
+            || fabsf(peqB3FreqHz - config.peqB3FreqHz) > 0.0001
+            || fabsf(peqB3GainDB - config.peqB3GainDB) > 0.0001
+            || fabsf(peqB3Q - config.peqB3Q) > 0.0001
+            || fabsf(peqB4FreqHz - config.peqB4FreqHz) > 0.0001
+            || fabsf(peqB4GainDB - config.peqB4GainDB) > 0.0001
+        parametricEQEnabled = config.parametricEQEnabled
+        peqB1FreqHz = clampf(config.peqB1FreqHz, 20.0, 500.0)
+        peqB1GainDB = clampf(config.peqB1GainDB, -12.0, 12.0)
+        peqB2FreqHz = clampf(config.peqB2FreqHz, 100.0, 5000.0)
+        peqB2GainDB = clampf(config.peqB2GainDB, -12.0, 12.0)
+        peqB2Q = clampf(config.peqB2Q, 0.1, 10.0)
+        peqB3FreqHz = clampf(config.peqB3FreqHz, 500.0, 12000.0)
+        peqB3GainDB = clampf(config.peqB3GainDB, -12.0, 12.0)
+        peqB3Q = clampf(config.peqB3Q, 0.1, 10.0)
+        peqB4FreqHz = clampf(config.peqB4FreqHz, 1000.0, 16000.0)
+        peqB4GainDB = clampf(config.peqB4GainDB, -12.0, 12.0)
+        if peqChanged {
+            configureParametricEQ()
+        }
+
+        // Multiband limiter
+        let mbLimChanged =
+            multibandLimiterEnabled != config.multibandLimiterEnabled
+            || fabsf(multibandLimiterThresholdDB - config.multibandLimiterThresholdDB) > 0.0001
+            || fabsf(multibandLimiterAttackMS - config.multibandLimiterAttackMS) > 0.0001
+            || fabsf(multibandLimiterReleaseMS - config.multibandLimiterReleaseMS) > 0.0001
+        multibandLimiterEnabled = config.multibandLimiterEnabled
+        multibandLimiterThresholdDB = clampf(config.multibandLimiterThresholdDB, -20.0, 0.0)
+        multibandLimiterAttackMS = clampf(config.multibandLimiterAttackMS, 0.01, 10.0)
+        multibandLimiterReleaseMS = clampf(config.multibandLimiterReleaseMS, 10.0, 500.0)
+        if mbLimChanged {
+            configureMultibandLimiters()
+        }
+
+        // Downward expander
+        let expChanged =
+            downwardExpanderEnabled != config.downwardExpanderEnabled
+            || fabsf(expanderThresholdDB - config.expanderThresholdDB) > 0.0001
+            || fabsf(expanderRatio - config.expanderRatio) > 0.0001
+            || fabsf(expanderAttackMS - config.expanderAttackMS) > 0.0001
+            || fabsf(expanderReleaseMS - config.expanderReleaseMS) > 0.0001
+        downwardExpanderEnabled = config.downwardExpanderEnabled
+        expanderThresholdDB = clampf(config.expanderThresholdDB, -60.0, -20.0)
+        expanderRatio = clampf(config.expanderRatio, 1.0, 8.0)
+        expanderAttackMS = clampf(config.expanderAttackMS, 0.1, 100.0)
+        expanderReleaseMS = clampf(config.expanderReleaseMS, 10.0, 2000.0)
+        if expChanged {
+            configureDownwardExpanders()
+        }
+
+        // Bass clipper
+        let bassClipChanged =
+            bassClipperEnabled != config.bassClipperEnabled
+            || fabsf(bassClipperCrossoverHz - config.bassClipperCrossoverHz) > 0.0001
+            || fabsf(bassClipperThresholdDB - config.bassClipperThresholdDB) > 0.0001
+            || fabsf(bassClipperDrive - config.bassClipperDrive) > 0.0001
+        bassClipperEnabled = config.bassClipperEnabled
+        bassClipperCrossoverHz = clampf(config.bassClipperCrossoverHz, 60.0, 300.0)
+        bassClipperThresholdDB = clampf(config.bassClipperThresholdDB, -12.0, 0.0)
+        bassClipperDrive = clampf(config.bassClipperDrive, 0.5, 3.0)
+        if bassClipChanged {
+            bassClipper.configure(
+                sampleRate: sampleRate,
+                crossoverHz: bassClipperCrossoverHz,
+                thresholdDB: bassClipperThresholdDB,
+                drive: bassClipperDrive
+            )
+        }
+
+        // Distortion-cancelled clipper
+        let dcClipChanged =
+            dcClipperEnabled != config.dcClipperEnabled
+            || fabsf(dcClipperCeilingDB - config.dcClipperCeilingDB) > 0.0001
+            || fabsf(dcClipperCancelFreqHz - config.dcClipperCancelFreqHz) > 0.0001
+        dcClipperEnabled = config.dcClipperEnabled
+        dcClipperCeilingDB = clampf(config.dcClipperCeilingDB, -6.0, 0.0)
+        dcClipperCancelFreqHz = clampf(config.dcClipperCancelFreqHz, 500.0, 4000.0)
+        if dcClipChanged {
+            configureDistortionCancelledClipper()
+        }
+
+        // BS.412
+        let bs412Changed =
+            bs412Enabled != config.bs412Enabled
+            || fabsf(bs412ThresholdDB - config.bs412ThresholdDB) > 0.0001
+            || fabsf(bs412WindowSeconds - config.bs412WindowSeconds) > 0.0001
+        bs412Enabled = config.bs412Enabled
+        bs412ThresholdDB = clampf(config.bs412ThresholdDB, -20.0, 0.0)
+        bs412WindowSeconds = clampf(config.bs412WindowSeconds, 1.0, 120.0)
+        if bs412Changed {
+            bs412Limiter.configure(
+                sampleRate: sampleRate,
+                thresholdDB: bs412ThresholdDB,
+                windowSeconds: bs412WindowSeconds
+            )
         }
     }
 
@@ -3784,6 +4458,53 @@ final class MPXGenerator {
         )
     }
 
+    private func configureParametricEQ() {
+        parametricEQ.configure(
+            sampleRate: sampleRate,
+            b1FreqHz: peqB1FreqHz, b1GainDB: peqB1GainDB,
+            b2FreqHz: peqB2FreqHz, b2GainDB: peqB2GainDB, b2Q: peqB2Q,
+            b3FreqHz: peqB3FreqHz, b3GainDB: peqB3GainDB, b3Q: peqB3Q,
+            b4FreqHz: peqB4FreqHz, b4GainDB: peqB4GainDB
+        )
+    }
+
+    private func configureMultibandLimiters() {
+        let thr = multibandLimiterThresholdDB
+        let atk = multibandLimiterAttackMS
+        let rel = multibandLimiterReleaseMS
+        mbLimLow.configure(sampleRate: sampleRate, thresholdDB: thr, attackMS: atk, releaseMS: rel)
+        mbLimMid.configure(sampleRate: sampleRate, thresholdDB: thr, attackMS: atk, releaseMS: rel)
+        mbLimHigh.configure(sampleRate: sampleRate, thresholdDB: thr, attackMS: atk, releaseMS: rel)
+        mbLim5B1.configure(sampleRate: sampleRate, thresholdDB: thr, attackMS: atk, releaseMS: rel)
+        mbLim5B2.configure(sampleRate: sampleRate, thresholdDB: thr, attackMS: atk, releaseMS: rel)
+        mbLim5B3.configure(sampleRate: sampleRate, thresholdDB: thr, attackMS: atk, releaseMS: rel)
+        mbLim5B4.configure(sampleRate: sampleRate, thresholdDB: thr, attackMS: atk, releaseMS: rel)
+        mbLim5B5.configure(sampleRate: sampleRate, thresholdDB: thr, attackMS: atk, releaseMS: rel)
+    }
+
+    private func configureDownwardExpanders() {
+        let thr = expanderThresholdDB
+        let rat = expanderRatio
+        let atk = expanderAttackMS
+        let rel = expanderReleaseMS
+        mbExpLow.configure(sampleRate: sampleRate, thresholdDB: thr, ratio: rat, attackMS: atk, releaseMS: rel)
+        mbExpMid.configure(sampleRate: sampleRate, thresholdDB: thr, ratio: rat, attackMS: atk, releaseMS: rel)
+        mbExpHigh.configure(sampleRate: sampleRate, thresholdDB: thr, ratio: rat, attackMS: atk, releaseMS: rel)
+        mbExp5B1.configure(sampleRate: sampleRate, thresholdDB: thr, ratio: rat, attackMS: atk, releaseMS: rel)
+        mbExp5B2.configure(sampleRate: sampleRate, thresholdDB: thr, ratio: rat, attackMS: atk, releaseMS: rel)
+        mbExp5B3.configure(sampleRate: sampleRate, thresholdDB: thr, ratio: rat, attackMS: atk, releaseMS: rel)
+        mbExp5B4.configure(sampleRate: sampleRate, thresholdDB: thr, ratio: rat, attackMS: atk, releaseMS: rel)
+        mbExp5B5.configure(sampleRate: sampleRate, thresholdDB: thr, ratio: rat, attackMS: atk, releaseMS: rel)
+    }
+
+    private func configureDistortionCancelledClipper() {
+        dcClipper.configure(
+            sampleRate: sampleRate,
+            ceilingDB: dcClipperCeilingDB,
+            cancelFreqHz: dcClipperCancelFreqHz
+        )
+    }
+
     private static func resolveMultibandCrossovers(
         sampleRate: Float,
         x1: Float,
@@ -3834,7 +4555,7 @@ final class MPXGenerator {
                 r = tone
             }
             let detail = processSampleDetailed(leftIn: l, rightIn: r)
-            writeAnalysisSample(index: i, stereo: detail.stereo, analysis: analysis)
+            writeAnalysisSample(index: i, stereo: detail.analysisStereo, analysis: analysis)
             let mpx = detail.mpx
             left[i] = mpx
             right[i] = mpx
@@ -3855,7 +4576,7 @@ final class MPXGenerator {
         guard frameCount > 0 else { return }
         for i in 0..<frameCount {
             let detail = processSampleDetailed(leftIn: left[i], rightIn: right[i])
-            writeAnalysisSample(index: i, stereo: detail.stereo, analysis: analysis)
+            writeAnalysisSample(index: i, stereo: detail.analysisStereo, analysis: analysis)
             let mpx = detail.mpx
             left[i] = mpx
             right[i] = mpx
@@ -3891,7 +4612,7 @@ final class MPXGenerator {
             let inputR = right[i]
 
             let detail = processSampleDetailed(leftIn: inputL, rightIn: inputR)
-            writeAnalysisSample(index: i, stereo: detail.stereo, analysis: analysis)
+            writeAnalysisSample(index: i, stereo: detail.analysisStereo, analysis: analysis)
             let mpx = detail.mpx
             mpxLeft[i] = mpx
             mpxRight[i] = mpx
@@ -3965,7 +4686,7 @@ final class MPXGenerator {
             }
 
             let detail = processSampleDetailed(leftIn: srcL, rightIn: srcR)
-            writeAnalysisSample(index: i, stereo: detail.stereo, analysis: analysis)
+            writeAnalysisSample(index: i, stereo: detail.analysisStereo, analysis: analysis)
             let mpx = detail.mpx
             mpxLeft[i] = mpx
             mpxRight[i] = mpx
@@ -3980,13 +4701,18 @@ final class MPXGenerator {
         processSampleDetailed(leftIn: leftIn, rightIn: rightIn).mpx
     }
 
-    private func processSampleDetailed(leftIn: Float, rightIn: Float) -> (mpx: Float, stereo: ProgramStereoState) {
+    private func processSampleDetailed(leftIn: Float, rightIn: Float) -> (mpx: Float, analysisStereo: ProgramStereoState) {
         // High-level chain order:
         // 1. Program-domain stereo processing (AGC, filtering, enhancement, multiband)
         // 2. Stereo-image protection and monitoring
         // 3. Composite component assembly (L+R, L-R, pilot, stereo subcarrier, RDS)
         // 4. Final composite loudness and safety limiting
         var stereo = processProgramStereo(leftIn: leftIn, rightIn: rightIn)
+        // Snapshot the program-stereo state BEFORE stereo-image protection so
+        // analysis and metering callers see the unprotected program signal.
+        // Image protection is a downstream side-channel limiter — it should
+        // not colour upstream analysis readouts (widener, mid/side, scopes).
+        let analysisStereo = stereo
 
         if !processingBypass {
             let protected = protectStereoImage(
@@ -4020,7 +4746,7 @@ final class MPXGenerator {
             pilot: composite.pilot,
             rds: composite.rds
         )
-        return (mpx, stereo)
+        return (mpx, analysisStereo)
     }
 
     private func processProgramStereo(leftIn: Float, rightIn: Float) -> ProgramStereoState {
@@ -4035,6 +4761,13 @@ final class MPXGenerator {
         let inputActivity = max(fabsf(left), fabsf(right))
 
         if !processingBypass {
+            // Phase rotation: reduce waveform asymmetry before AGC
+            if phaseRotationEnabled {
+                let rotated = phaseRotator.process(left: left, right: right)
+                left = rotated.0
+                right = rotated.1
+            }
+
             if widebandAGCEnabled {
                 let adjusted = widebandAGC.process(left: left, right: right)
                 left = adjusted.0
@@ -4059,6 +4792,13 @@ final class MPXGenerator {
             left = trimmed.0
             right = trimmed.1
 
+            // Parametric EQ: tonal shaping before dynamics processing
+            if parametricEQEnabled {
+                let eqd = parametricEQ.process(left: left, right: right)
+                left = eqd.0
+                right = eqd.1
+            }
+
             if orbassEnabled {
                 let orbassOut = processOrbass(left: left, right: right)
                 left = orbassOut.0
@@ -4073,6 +4813,20 @@ final class MPXGenerator {
                 let multiband = processMultibandStereo(left: left, right: right)
                 left = multiband.0
                 right = multiband.1
+            }
+
+            // Bass clipper: pre-clip bass peaks independently to reduce LF-induced IMD
+            if bassClipperEnabled {
+                let bassClipped = bassClipper.process(left: left, right: right)
+                left = bassClipped.0
+                right = bassClipped.1
+            }
+
+            // Distortion-cancelled clipper: LF distortion cancellation
+            if dcClipperEnabled {
+                let dcOut = dcClipper.process(left: left, right: right)
+                left = dcOut.0
+                right = dcOut.1
             }
         }
 
@@ -4270,6 +5024,13 @@ final class MPXGenerator {
             audioCompositeAbs,
             audioCompositePeakState * audioCompositePeakDecayCoeff
         )
+
+        // BS.412 MPX power limiter — rolling average power limit for EU compliance.
+        // Operates on audio composite before safety limiter, so subcarrier injection
+        // is not affected.
+        if bs412Enabled {
+            audioComposite = bs412Limiter.process(audioComposite)
+        }
 
         // Safety limiter on audio composite only — pilot and RDS are injected
         // after all limiting to preserve constant amplitude.  Professional
@@ -4671,24 +5432,41 @@ final class MPXGenerator {
         let highBandL = split2.0.1
         let highBandR = split2.1.1
 
-        let lowOut = compressStereoBand(
+        var lowOut = compressStereoBand(
             left: lowBandL,
             right: lowBandR,
             leftComp: &mbLowCompL,
             rightComp: &mbLowCompR
         )
-        let midOut = compressStereoBand(
+        var midOut = compressStereoBand(
             left: midBandL,
             right: midBandR,
             leftComp: &mbMidCompL,
             rightComp: &mbMidCompR
         )
-        let highOut = compressStereoBand(
+        var highOut = compressStereoBand(
             left: highBandL,
             right: highBandR,
             leftComp: &mbHighCompL,
             rightComp: &mbHighCompR
         )
+
+        // Per-band downward expander (noise reduction)
+        if downwardExpanderEnabled {
+            let lowExpGain = mbExpLow.expanderGain(left: lowOut.0, right: lowOut.1)
+            lowOut = (lowOut.0 * lowExpGain, lowOut.1 * lowExpGain)
+            let midExpGain = mbExpMid.expanderGain(left: midOut.0, right: midOut.1)
+            midOut = (midOut.0 * midExpGain, midOut.1 * midExpGain)
+            let highExpGain = mbExpHigh.expanderGain(left: highOut.0, right: highOut.1)
+            highOut = (highOut.0 * highExpGain, highOut.1 * highExpGain)
+        }
+
+        // Per-band fast peak limiter (transient control)
+        if multibandLimiterEnabled {
+            lowOut = mbLimLow.process(left: lowOut.0, right: lowOut.1)
+            midOut = mbLimMid.process(left: midOut.0, right: midOut.1)
+            highOut = mbLimHigh.process(left: highOut.0, right: highOut.1)
+        }
 
         return Self.sumStereoBands(
             lowOut,
@@ -4723,16 +5501,39 @@ final class MPXGenerator {
         let b5L = split4.0.1
         let b5R = split4.1.1
 
-        let o1 = compressStereoBand(
+        var o1 = compressStereoBand(
             left: b1L, right: b1R, leftComp: &mb5Comp1L, rightComp: &mb5Comp1R)
-        let o2 = compressStereoBand(
+        var o2 = compressStereoBand(
             left: b2L, right: b2R, leftComp: &mb5Comp2L, rightComp: &mb5Comp2R)
-        let o3 = compressStereoBand(
+        var o3 = compressStereoBand(
             left: b3L, right: b3R, leftComp: &mb5Comp3L, rightComp: &mb5Comp3R)
-        let o4 = compressStereoBand(
+        var o4 = compressStereoBand(
             left: b4L, right: b4R, leftComp: &mb5Comp4L, rightComp: &mb5Comp4R)
-        let o5 = compressStereoBand(
+        var o5 = compressStereoBand(
             left: b5L, right: b5R, leftComp: &mb5Comp5L, rightComp: &mb5Comp5R)
+
+        // Per-band downward expander (noise reduction)
+        if downwardExpanderEnabled {
+            let g1 = mbExp5B1.expanderGain(left: o1.0, right: o1.1)
+            o1 = (o1.0 * g1, o1.1 * g1)
+            let g2 = mbExp5B2.expanderGain(left: o2.0, right: o2.1)
+            o2 = (o2.0 * g2, o2.1 * g2)
+            let g3 = mbExp5B3.expanderGain(left: o3.0, right: o3.1)
+            o3 = (o3.0 * g3, o3.1 * g3)
+            let g4 = mbExp5B4.expanderGain(left: o4.0, right: o4.1)
+            o4 = (o4.0 * g4, o4.1 * g4)
+            let g5 = mbExp5B5.expanderGain(left: o5.0, right: o5.1)
+            o5 = (o5.0 * g5, o5.1 * g5)
+        }
+
+        // Per-band fast peak limiter (transient control)
+        if multibandLimiterEnabled {
+            o1 = mbLim5B1.process(left: o1.0, right: o1.1)
+            o2 = mbLim5B2.process(left: o2.0, right: o2.1)
+            o3 = mbLim5B3.process(left: o3.0, right: o3.1)
+            o4 = mbLim5B4.process(left: o4.0, right: o4.1)
+            o5 = mbLim5B5.process(left: o5.0, right: o5.1)
+        }
 
         return Self.sumStereoBands(
             o1,

@@ -39,6 +39,10 @@ Default runs with GUI. Use `--nogui` for headless mode.
 
 - Manual smoke test: start the app with `--gui` and verify audio output.
 - Build with `swift build --package-path macOS` (debug) or `swift build --package-path macOS -c release` (production).
+- Unit tests use Swift Testing (`import Testing`, not XCTest). Run with:
+  `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --package-path macOS`
+  The `DEVELOPER_DIR` override is required because the Command Line Tools toolchain does not ship `Testing.framework` on its own search path; Xcode does. Without it, `swift test` fails with `no such module 'Testing'`.
+- `ClipperAliasingBaseline.md` in the test target documents the pre-Phase-7.1 aliasing measurements so post-refactor deltas are attributable.
 - CPU profiling: use Instruments (Time Profiler) to verify DSP optimizations.
 
 ## Release prep
@@ -55,7 +59,7 @@ Default runs with GUI. Use `--nogui` for headless mode.
 - Real-time DSP is sensitive to blocking I/O; keep audio callbacks lock-free and allocation-free.
 - RDS carrier frequency is config-only; UI exposes carrier level and program data.
 - The monitoring view includes scopes, MPX meters, and limiter status; keep it lightweight.
-- The processing chain now includes mono-bass and stereo-image control alongside Orbass, multiband, and the final MPX stage.
+- The processing chain includes phase rotation, parametric EQ, mono-bass, stereo-image control, Orbass, multiband (with per-band limiter and downward expander), bass clipper, distortion-cancelled clipper, and the final MPX stage with BS.412 power limiting.
 - RDS baseband uses EN 50067 biphase shaping and a pilot-locked subcarrier.
 - Standards reference PDFs live in `documents/`.
 

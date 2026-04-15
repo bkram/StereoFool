@@ -174,10 +174,17 @@ enum AppSection: String, CaseIterable, Identifiable {
 enum ProcessingTab: String, CaseIterable, Identifiable {
     case core = "Core"
     case agc = "AGC"
+    case phaseRotator = "Phase Rot"
+    case parametricEQ = "PEQ"
     case orbass = "Orbass"
-    case multiband = "Multiband"
     case widener = "Widener"
+    case multiband = "Multiband"
+    case mbLimiter = "MB Limiter"
+    case expander = "Expander"
+    case bassClipper = "Bass Clip"
+    case dcClipper = "DC Clipper"
     case limiter = "Limiter"
+    case bs412 = "BS.412"
 
     var id: String { rawValue }
 
@@ -187,14 +194,28 @@ enum ProcessingTab: String, CaseIterable, Identifiable {
             return "Reset Core Tab"
         case .agc:
             return "Reset AGC Tab"
+        case .phaseRotator:
+            return "Reset Phase Rotator Tab"
+        case .parametricEQ:
+            return "Reset PEQ Tab"
         case .orbass:
             return "Reset Orbass Tab"
         case .multiband:
             return "Reset Multiband Tab"
+        case .mbLimiter:
+            return "Reset MB Limiter Tab"
+        case .expander:
+            return "Reset Expander Tab"
+        case .bassClipper:
+            return "Reset Bass Clipper Tab"
+        case .dcClipper:
+            return "Reset DC Clipper Tab"
         case .widener:
             return "Reset Widener Tab"
         case .limiter:
             return "Reset Limiter Tab"
+        case .bs412:
+            return "Reset BS.412 Tab"
         }
     }
 
@@ -204,14 +225,28 @@ enum ProcessingTab: String, CaseIterable, Identifiable {
             return "Reset processing core tab to defaults"
         case .agc:
             return "Reset AGC tab to defaults"
+        case .phaseRotator:
+            return "Reset phase rotator tab to defaults"
+        case .parametricEQ:
+            return "Reset parametric EQ tab to defaults"
         case .orbass:
             return "Reset Orbass tab to defaults"
         case .multiband:
             return "Reset Multiband tab to defaults"
+        case .mbLimiter:
+            return "Reset multiband limiter tab to defaults"
+        case .expander:
+            return "Reset expander tab to defaults"
+        case .bassClipper:
+            return "Reset bass clipper tab to defaults"
+        case .dcClipper:
+            return "Reset DC clipper tab to defaults"
         case .widener:
             return "Reset Widener tab to defaults"
         case .limiter:
             return "Reset Limiter tab to defaults"
+        case .bs412:
+            return "Reset BS.412 tab to defaults"
         }
     }
 }
@@ -1072,6 +1107,12 @@ final class MPXPrimeViewModel: ObservableObject {
     }
 
     private static let monitoringRefreshHz: Double = 30.0
+    private static let inlineMPXSpectrumRefreshHz: Double = 12.0
+    private static let windowMPXSpectrumRefreshHz: Double = 24.0
+    private static let windowPreMPXSpectrumRefreshHz: Double = 24.0
+    private static let inlineMPXSpectrumBins: Int = 384
+    private static let windowMPXSpectrumBins: Int = 512
+    private static let preMPXSpectrumBins: Int = 128
     private static let meterAttackMS: Float = 18.0
     private static let meterReleaseMS: Float = 110.0
     private static let audioPeakMeterAttackMS: Float = 1.0
@@ -1160,17 +1201,18 @@ final class MPXPrimeViewModel: ObservableObject {
     @Published var rdsRadiotext: String = "-"
     @Published var rdsNowPlayingStatus: String = "Now Playing: off"
 
-    @Published var inputScope: [Float] = Array(repeating: 0.0, count: 128)
+    @Published var inputScopeLeft: [Float] = Array(repeating: 0.0, count: 128)
+    @Published var inputScopeRight: [Float] = Array(repeating: 0.0, count: 128)
     @Published var outputScope: [Float] = Array(repeating: 0.0, count: 128)
     @Published var scopeTimebaseMS: Double = 10.0
     @Published var scopeAutoGainEnabled: Bool = true
-    @Published var mpxSpectrumDB: [Float] = Array(repeating: -100.0, count: 640)
+    @Published var mpxSpectrumDB: [Float] = Array(repeating: -100.0, count: 512)
     @Published var mpxSpectrumMaxHz: Double = 92_000.0
     @Published var mpxSpectrumNyquistHz: Double = 0.0
     @Published var scopesWindowVisible: Bool = false
     @Published var spectrumWindowVisible: Bool = false
-    @Published var preMPXSpectrumLeftDB: [Float] = Array(repeating: -100.0, count: 48)
-    @Published var preMPXSpectrumRightDB: [Float] = Array(repeating: -100.0, count: 48)
+    @Published var preMPXSpectrumLeftDB: [Float] = Array(repeating: -100.0, count: 128)
+    @Published var preMPXSpectrumRightDB: [Float] = Array(repeating: -100.0, count: 128)
     @Published var preMPXSpectrumMaxHz: Double = 16_000.0
     @Published var preMPXSpectrumNyquistHz: Double = 0.0
     @Published var preMPXSpectrumWindowVisible: Bool = false
@@ -1201,9 +1243,11 @@ final class MPXPrimeViewModel: ObservableObject {
     private var limiterGRPeakHoldDB: Float = 0.0
     private var limiterGRPeakHoldRemaining: Double = 0.0
 
-    private var smoothedInputScope: [Float] = Array(repeating: 0.0, count: 128)
+    private var smoothedInputScopeLeft: [Float] = Array(repeating: 0.0, count: 128)
+    private var smoothedInputScopeRight: [Float] = Array(repeating: 0.0, count: 128)
     private var smoothedOutputScope: [Float] = Array(repeating: 0.0, count: 128)
-    private var inputScopeGain: Float = 1.0
+    private var inputScopeLeftGain: Float = 1.0
+    private var inputScopeRightGain: Float = 1.0
     private var outputScopeGain: Float = 1.0
     private var overflowHistory: [(time: TimeInterval, overflows: UInt64, underflows: UInt64)] = []
     private var lastOverflowTotal: UInt64 = 0
@@ -1768,13 +1812,54 @@ final class MPXPrimeViewModel: ObservableObject {
             config.preEncodeReleaseMS = defaults.preEncodeReleaseMS
             config.finalDriveDB = defaults.finalDriveDB
             config.mpxDeviationKHz = defaults.mpxDeviationKHz
+        case .phaseRotator:
+            config.phaseRotationEnabled = defaults.phaseRotationEnabled
+            config.phaseRotationFreqHz = defaults.phaseRotationFreqHz
+        case .parametricEQ:
+            config.parametricEQEnabled = defaults.parametricEQEnabled
+            config.peqB1FreqHz = defaults.peqB1FreqHz
+            config.peqB1GainDB = defaults.peqB1GainDB
+            config.peqB2FreqHz = defaults.peqB2FreqHz
+            config.peqB2GainDB = defaults.peqB2GainDB
+            config.peqB2Q = defaults.peqB2Q
+            config.peqB3FreqHz = defaults.peqB3FreqHz
+            config.peqB3GainDB = defaults.peqB3GainDB
+            config.peqB3Q = defaults.peqB3Q
+            config.peqB4FreqHz = defaults.peqB4FreqHz
+            config.peqB4GainDB = defaults.peqB4GainDB
+        case .mbLimiter:
+            config.multibandLimiterEnabled = defaults.multibandLimiterEnabled
+            config.multibandLimiterThresholdDB = defaults.multibandLimiterThresholdDB
+            config.multibandLimiterAttackMS = defaults.multibandLimiterAttackMS
+            config.multibandLimiterReleaseMS = defaults.multibandLimiterReleaseMS
+        case .expander:
+            config.downwardExpanderEnabled = defaults.downwardExpanderEnabled
+            config.expanderThresholdDB = defaults.expanderThresholdDB
+            config.expanderRatio = defaults.expanderRatio
+            config.expanderAttackMS = defaults.expanderAttackMS
+            config.expanderReleaseMS = defaults.expanderReleaseMS
+        case .bassClipper:
+            config.bassClipperEnabled = defaults.bassClipperEnabled
+            config.bassClipperCrossoverHz = defaults.bassClipperCrossoverHz
+            config.bassClipperThresholdDB = defaults.bassClipperThresholdDB
+            config.bassClipperDrive = defaults.bassClipperDrive
+        case .dcClipper:
+            config.dcClipperEnabled = defaults.dcClipperEnabled
+            config.dcClipperCeilingDB = defaults.dcClipperCeilingDB
+            config.dcClipperCancelFreqHz = defaults.dcClipperCancelFreqHz
+        case .bs412:
+            config.bs412Enabled = defaults.bs412Enabled
+            config.bs412ThresholdDB = defaults.bs412ThresholdDB
+            config.bs412WindowSeconds = defaults.bs412WindowSeconds
         }
 
         let runtimeDisposition: RuntimeChangeDisposition
         switch selectedProcessingTab {
         case .core:
             runtimeDisposition = .restart
-        case .agc, .orbass, .multiband, .widener, .limiter:
+        case .agc, .orbass, .multiband, .widener, .limiter,
+             .phaseRotator, .parametricEQ, .mbLimiter, .expander,
+             .bassClipper, .dcClipper, .bs412:
             runtimeDisposition = .live
         }
 
@@ -2288,17 +2373,20 @@ final class MPXPrimeViewModel: ObservableObject {
             inputBufferCritical = 0.9
             engineStartReference = nil
             lastMonitorRefreshTime = now
-            inputScope = Array(repeating: 0.0, count: 128)
+            inputScopeLeft = Array(repeating: 0.0, count: 128)
+            inputScopeRight = Array(repeating: 0.0, count: 128)
             outputScope = Array(repeating: 0.0, count: 128)
-            smoothedInputScope = Array(repeating: 0.0, count: 128)
+            smoothedInputScopeLeft = Array(repeating: 0.0, count: 128)
+            smoothedInputScopeRight = Array(repeating: 0.0, count: 128)
             smoothedOutputScope = Array(repeating: 0.0, count: 128)
-            inputScopeGain = 1.0
+            inputScopeLeftGain = 1.0
+            inputScopeRightGain = 1.0
             outputScopeGain = 1.0
-            mpxSpectrumDB = Array(repeating: -100.0, count: 640)
+            mpxSpectrumDB = Array(repeating: -100.0, count: Self.windowMPXSpectrumBins)
             mpxSpectrumMaxHz = 92_000.0
             mpxSpectrumNyquistHz = 0.0
-            preMPXSpectrumLeftDB = Array(repeating: -100.0, count: 48)
-            preMPXSpectrumRightDB = Array(repeating: -100.0, count: 48)
+            preMPXSpectrumLeftDB = Array(repeating: -100.0, count: Self.preMPXSpectrumBins)
+            preMPXSpectrumRightDB = Array(repeating: -100.0, count: Self.preMPXSpectrumBins)
             preMPXSpectrumMaxHz = 16_000.0
             preMPXSpectrumNyquistHz = 0.0
             lastSpectrumRefreshTime = nil
@@ -2526,11 +2614,12 @@ final class MPXPrimeViewModel: ObservableObject {
 
     private func updateEngineAnalysisCapture(engine: AudioOutputEngine) {
         let scopesVisible = selectedSection == .monitoring || scopesWindowVisible
+        let inputHistoryVisible = scopesVisible || preMPXSpectrumWindowVisible
         let outputHistoryVisible = scopesVisible || spectrumWindowVisible
         let loudnessVisible =
             monitorEnabled && (selectedSection == .monitoring || levelsWindowVisible)
         engine.setAnalysisCapture(
-            inputScope: scopesVisible,
+            inputScope: inputHistoryVisible,
             outputHistory: outputHistoryVisible,
             preMPXHistory: preMPXSpectrumWindowVisible,
             outputImageMetrics: selectedSection == .monitoring,
@@ -2540,21 +2629,31 @@ final class MPXPrimeViewModel: ObservableObject {
 
     private func updateScopes(engine: AudioOutputEngine, inputPeak: Float, outputPeak: Float) {
         let snapshot = engine.scopeSnapshot(windowMS: scopeTimebaseMS)
-        if snapshot.input.isEmpty || snapshot.output.isEmpty {
-            inputScope = Array(repeating: 0.0, count: 128)
+        if snapshot.inputLeft.isEmpty || snapshot.inputRight.isEmpty || snapshot.output.isEmpty {
+            inputScopeLeft = Array(repeating: 0.0, count: 128)
+            inputScopeRight = Array(repeating: 0.0, count: 128)
             outputScope = Array(repeating: 0.0, count: 128)
-            smoothedInputScope = inputScope
+            smoothedInputScopeLeft = inputScopeLeft
+            smoothedInputScopeRight = inputScopeRight
             smoothedOutputScope = outputScope
-            inputScopeGain = 1.0
+            inputScopeLeftGain = 1.0
+            inputScopeRightGain = 1.0
             outputScopeGain = 1.0
             return
         }
 
-        inputScope = smoothedScopeSamples(
-            snapshot.input,
+        inputScopeLeft = smoothedScopeSamples(
+            snapshot.inputLeft,
             fallbackPeak: inputPeak,
-            previous: &smoothedInputScope,
-            gainState: &inputScopeGain,
+            previous: &smoothedInputScopeLeft,
+            gainState: &inputScopeLeftGain,
+            autoGain: scopeAutoGainEnabled
+        )
+        inputScopeRight = smoothedScopeSamples(
+            snapshot.inputRight,
+            fallbackPeak: inputPeak,
+            previous: &smoothedInputScopeRight,
+            gainState: &inputScopeRightGain,
             autoGain: scopeAutoGainEnabled
         )
         outputScope = smoothedScopeSamples(
@@ -2567,7 +2666,9 @@ final class MPXPrimeViewModel: ObservableObject {
     }
 
     private func updateMPXSpectrum(engine: AudioOutputEngine, now: TimeInterval) {
-        let refreshInterval = 1.0 / 8.0
+        let refreshHz =
+            spectrumWindowVisible ? Self.windowMPXSpectrumRefreshHz : Self.inlineMPXSpectrumRefreshHz
+        let refreshInterval = 1.0 / refreshHz
         if let last = lastSpectrumRefreshTime, (now - last) < refreshInterval {
             return
         }
@@ -2579,6 +2680,8 @@ final class MPXPrimeViewModel: ObservableObject {
         let validCount = raw.count
 
         let maxDisplayHz: Double = config.fftWindow96kHz ? 96_000.0 : 60_000.0
+        let displayBins =
+            spectrumWindowVisible ? Self.windowMPXSpectrumBins : Self.inlineMPXSpectrumBins
         let analyzer = spectrumAnalyzer
         let samples = spectrumInputScratch
         spectrumQueue.async { [weak self] in
@@ -2586,7 +2689,7 @@ final class MPXPrimeViewModel: ObservableObject {
                 samples: samples,
                 validCount: validCount,
                 sampleRate: sampleRate,
-                displayBins: 640,
+                displayBins: displayBins,
                 maxDisplayHz: maxDisplayHz
             )
             DispatchQueue.main.async {
@@ -2600,14 +2703,14 @@ final class MPXPrimeViewModel: ObservableObject {
     }
 
     private func updatePreMPXSpectrum(engine: AudioOutputEngine, now: TimeInterval) {
-        let refreshInterval = 1.0 / 10.0
+        let refreshInterval = 1.0 / Self.windowPreMPXSpectrumRefreshHz
         if let last = lastPreMPXSpectrumRefreshTime, (now - last) < refreshInterval {
             return
         }
         guard !preMPXSpectrumUpdateInFlight else { return }
         lastPreMPXSpectrumRefreshTime = now
         preMPXSpectrumUpdateInFlight = true
-        let raw = engine.preMPXStereoWindow(
+        let raw = engine.inputStereoWindow(
             intoLeft: &preMPXSpectrumLeftScratch,
             right: &preMPXSpectrumRightScratch,
             frameCount: AudioOutputEngine.preMPXSpectrumFrameCount
@@ -2616,6 +2719,7 @@ final class MPXPrimeViewModel: ObservableObject {
         let validCount = raw.count
         let leftSamples = preMPXSpectrumLeftScratch
         let rightSamples = preMPXSpectrumRightScratch
+        let displayBins = Self.preMPXSpectrumBins
         let analyzer = preMPXSpectrumAnalyzer
         spectrumQueue.async { [weak self] in
             let maxDisplayHz = min(16_000.0, sampleRate * 0.5)
@@ -2623,14 +2727,14 @@ final class MPXPrimeViewModel: ObservableObject {
                 samples: leftSamples,
                 validCount: validCount,
                 sampleRate: sampleRate,
-                displayBins: 48,
+                displayBins: displayBins,
                 maxDisplayHz: maxDisplayHz
             )
             let rightSpectrum = analyzer.compute(
                 samples: rightSamples,
                 validCount: validCount,
                 sampleRate: sampleRate,
-                displayBins: 48,
+                displayBins: displayBins,
                 maxDisplayHz: maxDisplayHz
             )
             DispatchQueue.main.async {
@@ -4892,7 +4996,7 @@ private struct ScopesCardView: View {
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Stereo Input").font(.subheadline).foregroundStyle(.secondary)
-                        ScopeView(samples: model.inputScope)
+                        ScopeView(samples: model.inputScopeLeft, secondarySamples: model.inputScopeRight)
                             .accessibilityLabel("Input scope waveform")
                     }
                     VStack(alignment: .leading, spacing: 6) {
@@ -4924,6 +5028,7 @@ private struct ScopesCardView: View {
 
 private struct ScopeView: View {
     let samples: [Float]
+    var secondarySamples: [Float]? = nil
 
     var body: some View {
         Canvas { context, size in
@@ -4942,22 +5047,37 @@ private struct ScopeView: View {
             }
             context.stroke(grid, with: .color(.white.opacity(0.12)), lineWidth: 1)
 
-            guard samples.count > 1 else { return }
-            let stepX = size.width / CGFloat(samples.count - 1)
-            let amplitude = max(10.0, size.height * 0.46)
-
-            var wave = Path()
-            for (idx, sample) in samples.enumerated() {
-                let clamped = max(-1.0, min(1.0, sample))
-                let x = CGFloat(idx) * stepX
-                let y = midY - (CGFloat(clamped) * amplitude)
-                if idx == 0 {
-                    wave.move(to: CGPoint(x: x, y: y))
-                } else {
-                    wave.addLine(to: CGPoint(x: x, y: y))
+            func makeWavePath(samples: [Float]) -> Path {
+                guard samples.count > 1 else { return Path() }
+                let stepX = size.width / CGFloat(samples.count - 1)
+                var wave = Path()
+                for (idx, sample) in samples.enumerated() {
+                    let clamped = max(-1.0, min(1.0, sample))
+                    let x = CGFloat(idx) * stepX
+                    let y = midY - (CGFloat(clamped) * amplitude)
+                    if idx == 0 {
+                        wave.move(to: CGPoint(x: x, y: y))
+                    } else {
+                        wave.addLine(to: CGPoint(x: x, y: y))
+                    }
                 }
+                return wave
             }
-            context.stroke(wave, with: .color(.green.opacity(0.90)), lineWidth: 1.2)
+
+            guard samples.count > 1 else { return }
+            let amplitude = max(10.0, size.height * 0.46)
+            if let secondarySamples {
+                context.stroke(
+                    makeWavePath(samples: secondarySamples),
+                    with: .color(.cyan.opacity(0.85)),
+                    lineWidth: 1.1
+                )
+            }
+            context.stroke(
+                makeWavePath(samples: samples),
+                with: .color(.green.opacity(0.90)),
+                lineWidth: 1.2
+            )
         }
         .frame(minHeight: 130, idealHeight: 150)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -5184,14 +5304,28 @@ private struct ProcessingSectionView: View {
                         ProcessingCoreTab(model: model)
                     case .agc:
                         ProcessingAGCTab(model: model)
+                    case .phaseRotator:
+                        ProcessingPhaseRotatorTab(model: model)
+                    case .parametricEQ:
+                        ProcessingParametricEQTab(model: model)
                     case .orbass:
                         ProcessingOrbassTab(model: model)
                     case .multiband:
                         ProcessingMultibandTab(model: model)
+                    case .mbLimiter:
+                        ProcessingMultibandLimiterTab(model: model)
+                    case .expander:
+                        ProcessingExpanderTab(model: model)
+                    case .bassClipper:
+                        ProcessingBassClipperTab(model: model)
+                    case .dcClipper:
+                        ProcessingDCClipperTab(model: model)
                     case .widener:
                         ProcessingWidenerTab(model: model)
                     case .limiter:
                         ProcessingLimiterTab(model: model)
+                    case .bs412:
+                        ProcessingBS412Tab(model: model)
                     }
 
                     HStack {
@@ -5426,6 +5560,156 @@ private struct ProcessingLimiterTab: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz, runtimeDisposition: .live), range: 40...90, format: "%.1f kHz")
+        }
+    }
+}
+
+private struct ProcessingPhaseRotatorTab: View {
+    @ObservedObject var model: MPXPrimeViewModel
+
+    var body: some View {
+        Card(title: "Phase Rotator") {
+            Toggle("Enable Phase Rotator", isOn: model.configBinding(\.phaseRotationEnabled, runtimeDisposition: .live))
+            DoubleSliderRow(
+                title: "Frequency",
+                value: model.configBinding(\.phaseRotationFreqHz, runtimeDisposition: .live),
+                range: 50...500,
+                format: "%.1f Hz"
+            )
+            .disabled(!model.config.phaseRotationEnabled)
+            Text("4-pole allpass chain reduces waveform asymmetry (especially voice) by 3\u{2013}4 dB, giving free headroom to downstream dynamics stages.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct ProcessingParametricEQTab: View {
+    @ObservedObject var model: MPXPrimeViewModel
+
+    var body: some View {
+        Card(title: "Parametric EQ") {
+            Toggle("Enable Parametric EQ", isOn: model.configBinding(\.parametricEQEnabled, runtimeDisposition: .live))
+            let disabled = !model.config.parametricEQEnabled
+
+            Text("Band 1 \u{2014} Low Shelf").font(.subheadline).foregroundStyle(.secondary).padding(.top, 4)
+            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB1FreqHz, runtimeDisposition: .live), range: 20...500, format: "%.0f Hz").disabled(disabled)
+            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB1GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB").disabled(disabled)
+
+            Text("Band 2 \u{2014} Peaking").font(.subheadline).foregroundStyle(.secondary).padding(.top, 4)
+            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB2FreqHz, runtimeDisposition: .live), range: 100...5000, format: "%.0f Hz").disabled(disabled)
+            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB2GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB").disabled(disabled)
+            DoubleSliderRow(title: "Q", value: model.configBinding(\.peqB2Q, runtimeDisposition: .live), range: 0.1...10, format: "%.2f").disabled(disabled)
+
+            Text("Band 3 \u{2014} Peaking").font(.subheadline).foregroundStyle(.secondary).padding(.top, 4)
+            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB3FreqHz, runtimeDisposition: .live), range: 500...12000, format: "%.0f Hz").disabled(disabled)
+            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB3GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB").disabled(disabled)
+            DoubleSliderRow(title: "Q", value: model.configBinding(\.peqB3Q, runtimeDisposition: .live), range: 0.1...10, format: "%.2f").disabled(disabled)
+
+            Text("Band 4 \u{2014} High Shelf").font(.subheadline).foregroundStyle(.secondary).padding(.top, 4)
+            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB4FreqHz, runtimeDisposition: .live), range: 1000...16000, format: "%.0f Hz").disabled(disabled)
+            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB4GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB").disabled(disabled)
+        }
+    }
+}
+
+private struct ProcessingMultibandLimiterTab: View {
+    @ObservedObject var model: MPXPrimeViewModel
+
+    var body: some View {
+        Card(title: "Multiband Limiter") {
+            Toggle("Enable Multiband Limiter", isOn: model.configBinding(\.multibandLimiterEnabled, runtimeDisposition: .live))
+            DoubleSliderRow(
+                title: "Threshold",
+                value: model.configBinding(\.multibandLimiterThresholdDB, runtimeDisposition: .live),
+                range: -20...0,
+                format: "%.1f dB"
+            )
+            .disabled(!model.config.multibandLimiterEnabled)
+            DoubleSliderRow(
+                title: "Attack",
+                value: model.configBinding(\.multibandLimiterAttackMS, runtimeDisposition: .live),
+                range: 0.01...10,
+                format: "%.2f ms"
+            )
+            .disabled(!model.config.multibandLimiterEnabled)
+            DoubleSliderRow(
+                title: "Release",
+                value: model.configBinding(\.multibandLimiterReleaseMS, runtimeDisposition: .live),
+                range: 10...500,
+                format: "%.1f ms"
+            )
+            .disabled(!model.config.multibandLimiterEnabled)
+            Text("Per-band fast peak limiter operating after multiband compression. Controls instantaneous transient peaks independently from the compressor ratio.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct ProcessingExpanderTab: View {
+    @ObservedObject var model: MPXPrimeViewModel
+
+    var body: some View {
+        Card(title: "Downward Expander") {
+            Toggle("Enable Expander", isOn: model.configBinding(\.downwardExpanderEnabled, runtimeDisposition: .live))
+            let disabled = !model.config.downwardExpanderEnabled
+            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.expanderThresholdDB, runtimeDisposition: .live), range: -60...(-20), format: "%.1f dB").disabled(disabled)
+            DoubleSliderRow(title: "Ratio", value: model.configBinding(\.expanderRatio, runtimeDisposition: .live), range: 1...8, format: "%.1f:1").disabled(disabled)
+            DoubleSliderRow(title: "Attack", value: model.configBinding(\.expanderAttackMS, runtimeDisposition: .live), range: 0.1...100, format: "%.1f ms").disabled(disabled)
+            DoubleSliderRow(title: "Release", value: model.configBinding(\.expanderReleaseMS, runtimeDisposition: .live), range: 10...2000, format: "%.0f ms").disabled(disabled)
+            Text("Per-band noise reduction within the multiband compressor. Reduces gain on quiet bands to prevent AGC from lifting the noise floor.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct ProcessingBassClipperTab: View {
+    @ObservedObject var model: MPXPrimeViewModel
+
+    var body: some View {
+        Card(title: "Bass Clipper") {
+            Toggle("Enable Bass Clipper", isOn: model.configBinding(\.bassClipperEnabled, runtimeDisposition: .live))
+            let disabled = !model.config.bassClipperEnabled
+            DoubleSliderRow(title: "Crossover", value: model.configBinding(\.bassClipperCrossoverHz, runtimeDisposition: .live), range: 60...300, format: "%.0f Hz").disabled(disabled)
+            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.bassClipperThresholdDB, runtimeDisposition: .live), range: -12...0, format: "%.1f dB").disabled(disabled)
+            DoubleSliderRow(title: "Drive", value: model.configBinding(\.bassClipperDrive, runtimeDisposition: .live), range: 0.5...3, format: "%.2f").disabled(disabled)
+            Text("Pre-clips bass peaks independently before the final limiter, dramatically reducing bass-induced intermodulation distortion.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct ProcessingDCClipperTab: View {
+    @ObservedObject var model: MPXPrimeViewModel
+
+    var body: some View {
+        Card(title: "Distortion-Cancelled Clipper") {
+            Toggle("Enable DC Clipper", isOn: model.configBinding(\.dcClipperEnabled, runtimeDisposition: .live))
+            let disabled = !model.config.dcClipperEnabled
+            DoubleSliderRow(title: "Ceiling", value: model.configBinding(\.dcClipperCeilingDB, runtimeDisposition: .live), range: -6...0, format: "%.1f dB").disabled(disabled)
+            DoubleSliderRow(title: "Cancel Freq", value: model.configBinding(\.dcClipperCancelFreqHz, runtimeDisposition: .live), range: 500...4000, format: "%.0f Hz").disabled(disabled)
+            Text("Audio clipper with low-frequency distortion cancellation (Orban principle). Clips signal, extracts LF error below cancel frequency, and subtracts it \u{2014} leaving only psychoacoustically masked HF distortion.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct ProcessingBS412Tab: View {
+    @ObservedObject var model: MPXPrimeViewModel
+
+    var body: some View {
+        Card(title: "BS.412 MPX Power Limiter") {
+            Toggle("Enable BS.412", isOn: model.configBinding(\.bs412Enabled, runtimeDisposition: .live))
+            let disabled = !model.config.bs412Enabled
+            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.bs412ThresholdDB, runtimeDisposition: .live), range: -20...0, format: "%.1f dB").disabled(disabled)
+            DoubleSliderRow(title: "Window", value: model.configBinding(\.bs412WindowSeconds, runtimeDisposition: .live), range: 1...120, format: "%.0f s").disabled(disabled)
+            Text("ITU-R BS.412 rolling average power limiter for European regulatory compliance (DE, AT, CH, SE, CZ, SI). Limits MPX power over a sliding time window.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -6378,7 +6662,7 @@ struct ScopesOnlyView: View {
             HStack(spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Stereo Input").font(.subheadline).foregroundStyle(.secondary)
-                    ScopeView(samples: model.inputScope)
+                    ScopeView(samples: model.inputScopeLeft, secondarySamples: model.inputScopeRight)
                 }
                 VStack(alignment: .leading, spacing: 6) {
                     Text("MPX Output").font(.subheadline).foregroundStyle(.secondary)
@@ -6430,7 +6714,7 @@ struct PreMPXSpectrumOnlyView: View {
         VStack(alignment: .leading, spacing: 16) {
             MonitoringWindowHeader(
                 title: kAudioSpectrumWindowTitle,
-                subtitle: "Stereo program spectrum before MPX encoding."
+                subtitle: "Raw stereo input spectrum before processing."
             )
 
             StereoPreMPXSpectrumView(
@@ -6478,7 +6762,7 @@ private struct StereoPreMPXSpectrumView: View {
 
             HStack {
                 Spacer()
-                Text("Tap: stereo program before MPX assembly")
+                Text("Tap: raw stereo input before processing")
             }
             .font(.system(size: 11, weight: .medium, design: .monospaced))
             .foregroundStyle(.secondary)
