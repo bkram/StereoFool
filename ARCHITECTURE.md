@@ -55,12 +55,13 @@ Audio Input (L/R) @ interface rate (typically 192 kHz)
 ├──► Stereo-image protection
 │    └── Limits side-channel expansion from Orbass/widener
 │
-├──► Pre-encode audio limiter (L/R domain, stereo-linked)
-│    └── True-peak limiter on L/R before stereo encoding
+├──► Pre-emphasis (L/R domain, region specific)
+│    ├── 50 us (Region 1) or 75 us (Region 2)
+│    └── Applied in L/R domain before the pre-encode limiter so the
+│        limiter can peak-control the 10-12 dB HF boost
 │
-├──► Pre-emphasis stage (region specific)
-│    ├── Pre-emphasis 50 us / 75 us
-│    └── Applied during stereo encoding
+├──► Pre-encode audio limiter (L/R domain, stereo-linked)
+│    └── True-peak limiter on pre-emphasized L/R before stereo encoding
 │
 ├──► Stereo encoder (phase-coherent)
 │    ├── M = (L+R)/2
@@ -129,15 +130,17 @@ Within the main audio path, MPX Prime runs:
 11. **Bass clipper** (dedicated LF clipper with LR4 split, optional)
 12. **Distortion-cancelled clipper** (Orban-principle LF cancellation, optional)
 13. Encoder HF guard
-14. Encoder program lowpass (~15 kHz final audio-bandwidth guard before stereo encoding)
-15. Stereo-image protection
-16. Pre-encode audio limiter (L/R domain, stereo-linked true-peak)
-17. Pre-emphasis (during stereo encoding)
-18. Stereo encoder (M/S encoding, 38 kHz DSB-SC subcarrier)
-19. Audio-composite limiter (4x oversampled true-peak)
-20. **BS.412 MPX power limiter** (60s rolling average, optional, EU compliance)
-21. Safety limiter (audio composite only)
-22. Pilot and RDS injection (post-limiter, constant amplitude)
+14. Encoder program lowpass (~15 kHz final audio-bandwidth guard)
+15. 19 kHz pilot-protection notch (Q=50, active when pre-emphasis > 0)
+16. Stereo-image protection
+17. Pre-emphasis (L/R domain, 50/75 µs)
+18. Pre-encode audio limiter (L/R domain, stereo-linked true-peak, on pre-emphasized signal)
+19. Stereo encoder (M/S encoding, 38 kHz DSB-SC subcarrier)
+20. Audio-composite limiter (4x oversampled true-peak)
+21. **Composite clipper** (8x oversampled tanh soft-clip, optional, primary loudness lever)
+22. **BS.412 MPX power limiter** (60s rolling average, optional, EU compliance)
+23. Safety limiter (audio composite only)
+24. Pilot and RDS injection (post-limiter, constant amplitude)
 
 Stages in **bold** are new additions. All new stages are disabled by default and can be enabled via config/UI.
 

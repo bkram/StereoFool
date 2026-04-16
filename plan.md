@@ -336,15 +336,20 @@ Path forward: when re-attempting 7.1, do it incrementally with `--verify` after 
 
 **Safety net now in place (Phase 6.4):** The stored-baseline mechanism added in 6.4 would have caught the chain-level regression at the first `--verify` run after any change with output like `Baseline drift: hf_edge_12k: above60kRatioDB measured -30.0 dB, baseline -58.1 dB (-28.1 dB, tolerance ±1.0 dB)`. This removes the primary blocker from re-attempting 7.1 — the silent-drift failure mode that ate hours of diagnosis last time is now loud and specific. Recommended workflow for the retry: enable 7.1 one clipper at a time, run `--verify` after each wrap, and require the baseline drift output to be empty before proceeding to the next stage.
 
-#### 7.2. Verify pre-emphasis ordering — attempted, reverted
+#### 7.2. Pre-emphasis ordering — DONE
 
-The pre-emphasis was moved from M/S domain inside `makeCompositeComponents` to L/R domain before the pre-encode limiter, with the intent that the limiter should see the pre-emphasized signal so it can peak-control the HF boost.
+Moved pre-emphasis from M/S domain inside `makeCompositeComponents` (`preSum`/`preDiff`) to L/R domain in `processSampleDetailed` (`preL`/`preR`), applied immediately before the pre-encode limiter. The limiter now sees the 10-12 dB HF boost from 50/75 µs pre-emphasis and can peak-control it.
 
-Narrow verification showed a ~1.3 dB reduction in composite limiter GR on `bright_dense` and slightly safer safety-limiter headroom. Broader verification discovered the reorder created a significant HF-distortion leak into the pilot/RDS guard band: the pre-encode limiter, now fed pre-emphasized HF peaks, generates clipping harmonics on L/R that pass through the stereo encoder (via S·cos(2π·38k·t)) and land at 38 + harmonic in the 55–75 kHz region. `>60k/In` jumped from -49/-58 dB to -32/-30 dB on bright/HF scenarios. This would degrade RDS reception at the 57 kHz subcarrier.
+Previously reverted because "broader verification" showed a catastrophic regression: `>60k/In` jumping from -58 dB to -30 dB, composite limiter doing 0 dB GR, peaks dropping below ceiling. That regression was **entirely caused by an INI key collision** (`composite_clipper_enabled` in `Verification.ini` was pre-mapped to `compositeLimiterEnabled` in `AppConfig.swift` line 277) — setting it to `False` to disable the new clipper actually disabled the composite *limiter*. With the key collision fixed (`mpx_clipper_enabled` for the composite clipper), the pre-emphasis reorder produces the clean result originally predicted:
 
-Moving `encoderProgramLP` to sit after the pre-encode limiter helped architecturally but didn't close the gap alone — the commercially-correct chain needs additional retuning (pre-encode limiter threshold, possibly a second peak-control stage, encoder HF guard position).
+| Metric | Before 7.2 | After 7.2 |
+|---|---|---|
+| `bright_dense` composite LimGR | 4.11 dB | **2.83 dB** (-1.3 dB less work) |
+| `bright_dense` budget margin | -1.59 dB | -1.43 dB (safer) |
+| `hf_edge_12k` `>60k/In` | -57.8 dB | -57.8 dB (unchanged — no HF distortion leak) |
+| `bright_dense` `>60k/In` | -49.1 dB | -48.8 dB (within tolerance) |
 
-Decision: reverted to pre-emphasis in M/S domain inside `makeCompositeComponents`. The pre-encode limiter is back to seeing the flat signal; HF distortion remains contained to the composite-domain limiter which has its own reconstruction LP at 57.6 kHz that keeps the RDS guard band clean. The theoretical improvement from moving pre-emphasis earlier is deferred until the full retuning can be done as one cohesive refactor.
+RDS guard band unaffected. Composite limiter fully operational. Peaks reach full deviation.
 
 #### 7.3. Add a real composite clipper stage — attempted, reverted with 7.1
 
@@ -389,15 +394,9 @@ Amplitude modulation of the composite limiter's control envelope can induce side
 
 Defer until measurement justifies the complexity.
 
-#### 7.8. Deviation estimator and exciter calibration
+#### 7.8. Deviation estimator and exciter calibration — already implemented
 
-Currently users see a peak meter in dBFS. Commercial processors show estimated deviation in kHz directly, calibrated to the exciter's input level.
-
-1. Add a calibration workflow: user enters exciter input sensitivity and target deviation (75 kHz for ITU Region 2, 50 kHz for Region 1).
-2. Convert MPX peak → estimated deviation using that calibration.
-3. Surface in the monitoring card and in `--verify` output.
-
-Already identified as an open gap in `Current open gaps` #1; this is the concrete implementation path.
+The monitoring card already shows: live deviation peak (kHz), deviation target (configurable via `mpxDeviationKHz`), audio composite peak, budget margin, pilot/RDS injection percentages, and guided calibration steps. The `--verify` output includes deviation kHz per scenario. The core formula `outputPeak × mpxDeviationKHz` is computed in `AudioOutputEngine.swift:1613`.
 
 #### 7.9. Input-side restoration (optional, long-term)
 
@@ -449,26 +448,23 @@ These are the current practical defaults after the recent gain-structure and fin
 
 ## Immediate next step
 
-The stored-baseline regression gate (Phase 6.4) is in place. Safety net for DSP changes is now available: every `--verify` flags drift on 136 metrics with per-metric tolerances. This unblocks re-attempting Phase 7.1 with a much lower risk of silent regression.
+Phases 7.1 through 7.4 are done. The stored-baseline regression gate (6.4) is active and was essential for landing all four cleanly — it also surfaced the INI key collision that had blocked 7.2 for two sessions.
 
-**Recommended next-session work, in order of diminishing return:**
+**Current state**: 19/19 tests green, verifier TIGHT (pre-existing `bright_dense occ999` only), baseline self-matches, RDS guard band clean.
 
-1. **Re-attempt Phase 7.1 (oversample `BassClipper` and `DistortionCancelledClipper`).** Use the stored baseline as the primary safety net. Workflow:
-   - Wrap `BassClipper` at 4×. Run `--verify`. Baseline drift must be empty before proceeding.
-   - Run the aliasing test. Bass clipper gate should drop below -75 dBFS.
-   - Wrap `DistortionCancelledClipper` at 8×. Run `--verify`. Baseline drift must be empty.
-   - Run the aliasing test. DC clipper gate will likely hit ~-38 dBFS (bounded by Butterworth decimation — see 7.5 for the FIR upgrade that unblocks deeper suppression).
-   - If any `--verify` baseline drift appears, stop and investigate. The previous attempt's failure mode was stage-internal state subtly affecting other paths — this time we'll see it instantly.
+**Recommended next work, in order of diminishing return:**
 
-2. **Re-attempt Phase 7.2 (pre-emphasis ordering)** only after 7.1 lands and stabilizes. Do it as a bundled refactor: move pre-emphasis + retune pre-encode limiter threshold + add post-limiter LP at 15 kHz, all validated with baseline + aliasing tests after each step.
+1. **Phase 7.5 (FIR brick-wall 15 kHz)** — would replace the Butterworth `encoderProgramLP` and the clipper decimation LPs with sharper rolloff. The DC clipper aliasing gate is currently at -38 dBFS (limited by Butterworth near-Nyquist rejection); an 80+ dB stop-band FIR would push it below -75. Also improves stereo subcarrier separation.
 
-3. **Phase 7.4 (19 kHz pilot notch on the audio path)** — smallest, lowest-risk DSP improvement remaining. Low effort, measurable receiver-compatibility win.
+2. **Phase 7.8 (deviation estimator + exciter calibration)** — user-facing calibration feature. The math already exists (`peakAbs * mpxDeviationKHz`); what's missing is a UI workflow where the operator enters exciter sensitivity and sees deviation directly in the monitoring card.
 
-4. Non-7.x follow-ups if DSP work is parked:
+3. **Phase 7.6 (dynamic pre-emphasis / "Smart HF")** — new algorithm, significant effort.
+
+4. Non-7.x follow-ups:
    - Do a release smoke pass for live-apply vs restart-required settings on difficult real material.
    - Add gain-structure code comments at each DSP stage.
    - Validate Orbass, mono bass, widener, and multiband interaction on difficult real material.
-   - Extend baselines to `--verify-presets` and `--verify-long` (same pattern as 6.4).
+   - Extend baselines to `--verify-presets` and `--verify-long`.
 
 ## Tactical backlog
 

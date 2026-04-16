@@ -3619,8 +3619,10 @@ final class MPXGenerator {
     private var stereoSubcarrierSupported: Bool = false
     private var rdsSupported: Bool = false
 
-    private var preSum = PreemphasisFilter()
-    private var preDiff = PreemphasisFilter()
+    // Pre-emphasis in L/R domain before the pre-encode limiter so the
+    // limiter can peak-control the HF boost from 50/75 µs pre-emphasis.
+    private var preL = PreemphasisFilter()
+    private var preR = PreemphasisFilter()
     private var programLP = ProgramLowpass()
     private var encoderProgramLP = ProgramLowpass()
     private var pilotNotchL = Biquad()
@@ -3824,8 +3826,8 @@ final class MPXGenerator {
 
         self.toneStep = 0.0
 
-        preSum.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
-        preDiff.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
+        preL.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
+        preR.configure(tauUS: preemphasisUS, sampleRate: self.sampleRate)
         applyEncoderComplianceConfiguration(sampleRate: self.sampleRate)
 
         widebandAGC.configure(
@@ -3891,8 +3893,8 @@ final class MPXGenerator {
             return
         }
         sampleRate = sr
-        preSum.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
-        preDiff.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
+        preL.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
+        preR.configure(tauUS: preemphasisUS, sampleRate: sampleRate)
         applyEncoderComplianceConfiguration(sampleRate: sampleRate)
         widebandAGC.configure(
             sampleRate: sampleRate,
@@ -4875,6 +4877,11 @@ final class MPXGenerator {
 
         updateStereoImageMonitor(left: stereo.left, right: stereo.right)
 
+        // Pre-emphasis in L/R domain BEFORE the pre-encode limiter so the
+        // limiter sees the 10-12 dB HF boost and can peak-control it.
+        stereo.left = preL.process(stereo.left)
+        stereo.right = preR.process(stereo.right)
+
         if preEncodeAudioLimiterEnabled && !processingBypass {
             let limited = preEncodeAudioLimiter.process(left: stereo.left, right: stereo.right)
             stereo.left = limited.0
@@ -5080,11 +5087,12 @@ final class MPXGenerator {
     private func makeCompositeComponents(left: Float, right: Float, inputActivity: Float)
         -> CompositeComponents
     {
-        var base = ((left + right) * 0.5) * sumLevel
-        var diff = monoMode ? 0.0 : (((right - left) * 0.5) * diffLevel)
-
-        base = preSum.process(base)
-        diff = preDiff.process(diff)
+        // Pre-emphasis is now applied upstream in L/R domain (processSampleDetailed)
+        // before the pre-encode limiter. L and R arriving here are already
+        // pre-emphasized; M/S sum/diff of linearly-filtered inputs equals
+        // M/S-then-filter for any linear transform.
+        let base = ((left + right) * 0.5) * sumLevel
+        let diff = monoMode ? 0.0 : (((right - left) * 0.5) * diffLevel)
         lastProgramActivity = inputActivity
 
         tonePhase += toneStep
