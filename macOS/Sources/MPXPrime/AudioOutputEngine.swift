@@ -1503,7 +1503,10 @@ final class AudioOutputEngine {
             dcClipperCancelFreqHz: Float(config.dcClipperCancelFreqHz),
             bs412Enabled: config.bs412Enabled,
             bs412ThresholdDB: Float(config.bs412ThresholdDB),
-            bs412WindowSeconds: Float(config.bs412WindowSeconds)
+            bs412WindowSeconds: Float(config.bs412WindowSeconds),
+            compositeClipperEnabled: config.compositeClipperEnabled,
+            compositeClipperThresholdDB: Float(config.compositeClipperThresholdDB),
+            compositeClipperCeilingDB: Float(config.compositeClipperCeilingDB)
         )
         runtimeConfigLock.lock()
         if lastQueuedRuntimeConfig == runtime {

@@ -588,30 +588,76 @@ struct BandLimiter {
     }
 }
 
-// MARK: - Bass Clipper
-// Dedicated clipper for low-frequency content, placed after multiband and
-// before the final limiter/clipper. Pre-clips bass peaks independently so
-// the final stages see less LF energy, dramatically reducing bass-induced IMD.
+// MARK: - Shared oversampling helper
+struct Lagrange4Interp {
+    private var h3: Float = 0
+    private var h2: Float = 0
+    private var h1: Float = 0
+    private var initialized: Bool = false
+
+    mutating func prime(_ x: Float) {
+        h3 = x; h2 = x; h1 = x; initialized = true
+    }
+
+    @inline(__always)
+    func interpolate(t: Float, cur: Float) -> Float {
+        let l0 = -((t + 1.0) * t * (t - 1.0)) / 6.0
+        let l1 = ((t + 2.0) * t * (t - 1.0)) * 0.5
+        let l2 = -((t + 2.0) * (t + 1.0) * (t - 1.0)) * 0.5
+        let l3 = ((t + 2.0) * (t + 1.0) * t) / 6.0
+        return (h3 * l0) + (h2 * l1) + (h1 * l2) + (cur * l3)
+    }
+
+    @inline(__always)
+    mutating func advance(_ cur: Float) {
+        h3 = h2; h2 = h1; h1 = cur
+    }
+
+    var isPrimed: Bool { initialized }
+}
+
+// MARK: - Bass Clipper (4x oversampled)
 struct BassClipper {
     private var splitL = LinkwitzRiley4()
     private var splitR = LinkwitzRiley4()
     private var thresholdLin: Float = 0.8
     private var drive: Float = 1.0
+    private var lagL = Lagrange4Interp()
+    private var lagR = Lagrange4Interp()
+    private var decimL = BiquadCascade6()
+    private var decimR = BiquadCascade6()
+    private static let factor: Int = 4
 
     mutating func configure(sampleRate: Float, crossoverHz: Float, thresholdDB: Float, drive drv: Float) {
-        splitL.configure(cutoffHz: crossoverHz, sampleRate: sampleRate)
-        splitR.configure(cutoffHz: crossoverHz, sampleRate: sampleRate)
+        let osRate = sampleRate * Float(Self.factor)
+        splitL.configure(cutoffHz: crossoverHz, sampleRate: osRate)
+        splitR.configure(cutoffHz: crossoverHz, sampleRate: osRate)
         thresholdLin = powf(10.0, min(0.0, thresholdDB) / 20.0)
         drive = max(0.1, drv)
+        let cutoff = min(sampleRate * 0.45, (osRate * 0.5) - 1_000.0)
+        decimL.configureLowpass(cutoffHz: max(12_000.0, cutoff), sampleRate: osRate)
+        decimR.configureLowpass(cutoffHz: max(12_000.0, cutoff), sampleRate: osRate)
     }
 
     @inline(__always)
     mutating func process(left: Float, right: Float) -> (Float, Float) {
-        let sL = splitL.process(left)
-        let sR = splitR.process(right)
-        let clippedLowL = clipBass(sL.low)
-        let clippedLowR = clipBass(sR.low)
-        return (clippedLowL + sL.high, clippedLowR + sR.high)
+        if !lagL.isPrimed { lagL.prime(left); lagR.prime(right) }
+        let f = Self.factor
+        let step = 1.0 / Float(f)
+        var outL: Float = 0
+        var outR: Float = 0
+        for i in 1...f {
+            let t = step * Float(i)
+            let upL = (i == f) ? left : lagL.interpolate(t: t, cur: left)
+            let upR = (i == f) ? right : lagR.interpolate(t: t, cur: right)
+            let sL = splitL.process(upL)
+            let sR = splitR.process(upR)
+            outL = decimL.process(clipBass(sL.low) + sL.high)
+            outR = decimR.process(clipBass(sR.low) + sR.high)
+        }
+        lagL.advance(left)
+        lagR.advance(right)
+        return (outL, outR)
     }
 
     @inline(__always)
@@ -624,48 +670,105 @@ struct BassClipper {
     }
 }
 
-// MARK: - Distortion-Cancelled Clipper (L/R domain)
-// Oversampled clipper with low-frequency distortion cancellation based on
-// Orban's published principle: clip, extract error, lowpass error below ~2kHz,
-// subtract. This cancels LF IMD while leaving HF distortion (which is
-// psychoacoustically masked by the signal).
+// MARK: - Distortion-Cancelled Clipper (L/R domain, 8x oversampled)
 struct DistortionCancelledClipper {
     private var ceiling: Float = 0.95
     private var errorLPL = Biquad()
     private var errorLPR = Biquad()
     private var errorLP2L = Biquad()
     private var errorLP2R = Biquad()
+    private var lagL = Lagrange4Interp()
+    private var lagR = Lagrange4Interp()
+    private var decimL = BiquadCascade6()
+    private var decimR = BiquadCascade6()
+    private static let factor: Int = 8
 
     mutating func configure(sampleRate: Float, ceilingDB: Float, cancelFreqHz: Float) {
         ceiling = powf(10.0, min(0.0, ceilingDB) / 20.0)
+        let osRate = sampleRate * Float(Self.factor)
         let q: Float = 0.7071068
-        errorLPL.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: sampleRate, q: q)
-        errorLPR.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: sampleRate, q: q)
-        errorLP2L.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: sampleRate, q: q)
-        errorLP2R.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: sampleRate, q: q)
+        errorLPL.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: osRate, q: q)
+        errorLPR.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: osRate, q: q)
+        errorLP2L.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: osRate, q: q)
+        errorLP2R.configureLowpass(cutoffHz: cancelFreqHz, sampleRate: osRate, q: q)
+        let cutoff = min(sampleRate * 0.45, (osRate * 0.5) - 1_000.0)
+        decimL.configureLowpass(cutoffHz: max(12_000.0, cutoff), sampleRate: osRate)
+        decimR.configureLowpass(cutoffHz: max(12_000.0, cutoff), sampleRate: osRate)
     }
 
     @inline(__always)
     mutating func process(left: Float, right: Float) -> (Float, Float) {
-        let clippedL = hardClip(left)
-        let clippedR = hardClip(right)
-        let errorL = clippedL - left
-        let errorR = clippedR - right
-        // 4th-order LP on error (two cascaded 2nd-order sections)
-        let filteredErrorL = errorLP2L.process(errorLPL.process(errorL))
-        let filteredErrorR = errorLP2R.process(errorLPR.process(errorR))
-        // Subtract LF distortion, keep HF distortion (masked)
-        return (clippedL - filteredErrorL, clippedR - filteredErrorR)
+        if !lagL.isPrimed { lagL.prime(left); lagR.prime(right) }
+        let f = Self.factor
+        let step = 1.0 / Float(f)
+        var outL: Float = 0
+        var outR: Float = 0
+        for i in 1...f {
+            let t = step * Float(i)
+            let upL = (i == f) ? left : lagL.interpolate(t: t, cur: left)
+            let upR = (i == f) ? right : lagR.interpolate(t: t, cur: right)
+            let clL = hardClip(upL)
+            let clR = hardClip(upR)
+            let fErrL = errorLP2L.process(errorLPL.process(clL - upL))
+            let fErrR = errorLP2R.process(errorLPR.process(clR - upR))
+            outL = decimL.process(clL - fErrL)
+            outR = decimR.process(clR - fErrR)
+        }
+        lagL.advance(left)
+        lagR.advance(right)
+        return (outL, outR)
     }
 
     @inline(__always)
     private func hardClip(_ x: Float) -> Float {
         let ax = fabsf(x)
         if ax <= ceiling { return x }
-        // Soft transition above ceiling using tanh
         let excess = (ax - ceiling) / max(0.01, ceiling * 0.15)
         let limited = ceiling + (ceiling * 0.05 * tanhf(excess))
         return copysignf(limited, x)
+    }
+}
+
+// MARK: - Composite Clipper (audio composite, 8x oversampled)
+struct CompositeClipper {
+    private var thresholdLin: Float = 0.708
+    private var ceilingLin: Float = 0.944
+    private var knee: Float = 0.236
+    private var lag = Lagrange4Interp()
+    private var decimLP = BiquadCascade6()
+    private static let factor: Int = 8
+
+    mutating func configure(sampleRate: Float, thresholdDB: Float, ceilingDB: Float) {
+        thresholdLin = clampf(powf(10.0, min(0.0, thresholdDB) / 20.0), 0.1, 0.995)
+        let cMin: Float = thresholdLin + 0.02
+        ceilingLin = clampf(powf(10.0, min(0.0, ceilingDB) / 20.0), cMin, 0.999)
+        knee = max(1e-4, ceilingLin - thresholdLin)
+        let osRate = sampleRate * Float(Self.factor)
+        let cutoff = min(sampleRate * 0.30, (osRate * 0.5) - 1_000.0)
+        decimLP.configureLowpass(cutoffHz: max(30_000.0, cutoff), sampleRate: osRate)
+    }
+
+    @inline(__always)
+    mutating func process(_ x: Float) -> Float {
+        if !lag.isPrimed { lag.prime(x) }
+        let f = Self.factor
+        let step = 1.0 / Float(f)
+        var out: Float = 0
+        for i in 1...f {
+            let t = step * Float(i)
+            let up = (i == f) ? x : lag.interpolate(t: t, cur: x)
+            out = decimLP.process(softClip(up))
+        }
+        lag.advance(x)
+        return out
+    }
+
+    @inline(__always)
+    private func softClip(_ x: Float) -> Float {
+        let ax = fabsf(x)
+        if ax <= thresholdLin { return x }
+        let excess = (ax - thresholdLin) / knee
+        return copysignf(thresholdLin + knee * tanhf(excess), x)
     }
 }
 
@@ -3272,6 +3375,9 @@ final class MPXGenerator {
         let bs412Enabled: Bool
         let bs412ThresholdDB: Float
         let bs412WindowSeconds: Float
+        let compositeClipperEnabled: Bool
+        let compositeClipperThresholdDB: Float
+        let compositeClipperCeilingDB: Float
     }
 
     struct RDSRuntimeConfig: Equatable {
@@ -3473,6 +3579,11 @@ final class MPXGenerator {
     private var bs412ThresholdDB: Float
     private var bs412WindowSeconds: Float
     private var bs412Limiter = BS412PowerLimiter()
+    // CompositeClipper: disabled by default, field only for size/layout test.
+    private var compositeClipperEnabled: Bool = false
+    private var compositeClipperThresholdDB: Float = -3.0
+    private var compositeClipperCeilingDB: Float = -0.5
+    private var compositeClipper = CompositeClipper()
 
     private var stereoWidenEnabled: Bool
     private var monoBassEnabled: Bool
@@ -3512,6 +3623,8 @@ final class MPXGenerator {
     private var preDiff = PreemphasisFilter()
     private var programLP = ProgramLowpass()
     private var encoderProgramLP = ProgramLowpass()
+    private var pilotNotchL = Biquad()
+    private var pilotNotchR = Biquad()
     private var encoderHFGuardSplit = StereoLinkwitzRiley4()
     private var encoderHFGuardEnv: Float = 0.0
     private var encoderHFGuardGain: Float = 1.0
@@ -3693,6 +3806,9 @@ final class MPXGenerator {
         self.bs412Enabled = config.bs412Enabled
         self.bs412ThresholdDB = clampf(Float(config.bs412ThresholdDB), -20.0, 0.0)
         self.bs412WindowSeconds = clampf(Float(config.bs412WindowSeconds), 1.0, 120.0)
+        self.compositeClipperEnabled = config.compositeClipperEnabled
+        self.compositeClipperThresholdDB = clampf(Float(config.compositeClipperThresholdDB), -12.0, 0.0)
+        self.compositeClipperCeilingDB = clampf(Float(config.compositeClipperCeilingDB), -6.0, 0.0)
 
         self.stereoWidenEnabled = config.stereoWidenEnabled
         self.monoBassEnabled = config.monoBassEnabled
@@ -3760,6 +3876,11 @@ final class MPXGenerator {
             thresholdDB: bs412ThresholdDB,
             windowSeconds: bs412WindowSeconds
         )
+        compositeClipper.configure(
+            sampleRate: self.sampleRate,
+            thresholdDB: compositeClipperThresholdDB,
+            ceilingDB: compositeClipperCeilingDB
+        )
         updateDerivedRates()
         configureMonitorDemod()
     }
@@ -3818,6 +3939,11 @@ final class MPXGenerator {
             sampleRate: sampleRate,
             thresholdDB: bs412ThresholdDB,
             windowSeconds: bs412WindowSeconds
+        )
+        compositeClipper.configure(
+            sampleRate: sampleRate,
+            thresholdDB: compositeClipperThresholdDB,
+            ceilingDB: compositeClipperCeilingDB
         )
         rdsCoder?.setSampleRate(sampleRate)
         updateDerivedRates()
@@ -4062,6 +4188,21 @@ final class MPXGenerator {
                 windowSeconds: bs412WindowSeconds
             )
         }
+
+        let compClipChanged =
+            compositeClipperEnabled != config.compositeClipperEnabled
+            || fabsf(compositeClipperThresholdDB - config.compositeClipperThresholdDB) > 0.0001
+            || fabsf(compositeClipperCeilingDB - config.compositeClipperCeilingDB) > 0.0001
+        compositeClipperEnabled = config.compositeClipperEnabled
+        compositeClipperThresholdDB = clampf(config.compositeClipperThresholdDB, -12.0, 0.0)
+        compositeClipperCeilingDB = clampf(config.compositeClipperCeilingDB, -6.0, 0.0)
+        if compClipChanged {
+            compositeClipper.configure(
+                sampleRate: sampleRate,
+                thresholdDB: compositeClipperThresholdDB,
+                ceilingDB: compositeClipperCeilingDB
+            )
+        }
     }
 
     func applyRDSRuntimeConfig(_ config: RDSRuntimeConfig) {
@@ -4088,6 +4229,13 @@ final class MPXGenerator {
         let config = makeEncoderComplianceConfig()
         programLP.configure(cutoffHz: config.programLowpassHz, sampleRate: sampleRate)
         encoderProgramLP.configure(cutoffHz: config.encoderLowpassHz, sampleRate: sampleRate)
+        if preemphasisUS > 0 {
+            pilotNotchL.configureNotch(freqHz: 19_000.0, sampleRate: sampleRate, q: 50.0)
+            pilotNotchR.configureNotch(freqHz: 19_000.0, sampleRate: sampleRate, q: 50.0)
+        } else {
+            pilotNotchL.configureIdentity()
+            pilotNotchR.configureIdentity()
+        }
         encoderHFGuardSplit.configure(cutoffHz: config.hfGuardCrossoverHz, sampleRate: sampleRate)
     }
 
@@ -4843,6 +4991,10 @@ final class MPXGenerator {
         left = encoderBand.0
         right = encoderBand.1
 
+        // 19 kHz pilot-protection notch
+        left = pilotNotchL.process(left)
+        right = pilotNotchR.process(right)
+
         return ProgramStereoState(
             left: left,
             right: right,
@@ -5025,9 +5177,12 @@ final class MPXGenerator {
             audioCompositePeakState * audioCompositePeakDecayCoeff
         )
 
+        // Composite clipper: 8x oversampled soft-clip on audio composite.
+        if compositeClipperEnabled {
+            audioComposite = compositeClipper.process(audioComposite)
+        }
+
         // BS.412 MPX power limiter — rolling average power limit for EU compliance.
-        // Operates on audio composite before safety limiter, so subcarrier injection
-        // is not affected.
         if bs412Enabled {
             audioComposite = bs412Limiter.process(audioComposite)
         }

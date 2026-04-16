@@ -1,20 +1,30 @@
-# Clipper aliasing baseline (pre-Phase 7.1)
+# Clipper aliasing measurements
 
-Captured on the unrefactored code so post-7.1 deltas are attributable.
+The tests in this directory drive each clipper with a worst-case synthetic tone and measure the energy at aliased harmonic locations via FFT. They are written as regression gates: the aliasing threshold is set at the TARGET value and the test **fails on current code** because the clippers run at native sample rate without oversampling. The failure message prints the measured aliasing energy so progress can be tracked.
 
-| Clipper | Test | Measured alias energy | Threshold | Delta to threshold |
-|---|---|---|---|---|
-| `DistortionCancelledClipper` | 5111 Hz @ 48 kHz, amp 0.95, ceiling -3 dB, cancelFreq 2 kHz, sum of 5 alias bins {22445, 17334, 12223, 7112, 2000} Hz | **-28.731249 dBFS** | -75 dBFS | +46.27 dB over |
-| `BassClipper` | 113 Hz @ 48 kHz, amp 0.95, crossover 150 Hz, threshold -3 dB, drive 1.5, sum across alias bins above 1 kHz (spacing 113 Hz, offset -25 Hz from real harmonic ladder) | **-56.50266 dBFS** | -75 dBFS | +18.50 dB over |
+## Current measurements (native-rate clippers, no oversampling)
 
-Repeatability: both measurements are bit-identical across three consecutive runs of `swift test`.
+| Clipper | Test signal | Measured alias energy | Test threshold |
+|---|---|---|---|
+| `DistortionCancelledClipper` | 5111 Hz @ 48 kHz, amp 0.95, ceiling -3 dB, cancelFreq 2 kHz; sum of 5 alias bins {22445, 17334, 12223, 7112, 2000} Hz | **-28.73 dBFS** | -75 dBFS |
+| `BassClipper` | 113 Hz @ 48 kHz, amp 0.95, crossover 150 Hz, threshold -3 dB, drive 1.5; sum across alias bins in [1k, 16k] spaced 113 Hz apart, offset -25 Hz from the real harmonic ladder | **-56.50 dBFS** | -75 dBFS |
 
-## Interpretation
+Both tests fail by clear margins, which is the documented pre-refactor state. When Phase 7.1 lands (oversampling wrappers around these nonlinearities), both should drop below the threshold.
 
-- The DC clipper shows ~46 dB of excess aliasing. This is the dominant HF-aliasing contributor when the stage is enabled; `tanh` harmonics of the 5111 Hz test tone well above Nyquist fold back and land in-band with very little attenuation (the clipper's LP-filtered error cancellation does not address them).
-- The bass clipper shows ~18 dB of excess aliasing. The smaller magnitude reflects the lower fundamental: tanh harmonics of an 80–113 Hz tone drop roughly as `1/n`, so by the time they reach Nyquist at the 300th-plus harmonic their amplitudes are already -45 to -55 dB below the fundamental. Aliasing is real but less dominant than for the DC clipper.
+## What Phase 7.1 needs to clear this bar
 
-Both stages should show these alias energies drop well below -75 dBFS once 7.1 wraps them in oversampling with proper reconstruction filtering.
+A prior 7.1 attempt with a 4–8× Lagrange-upsample + 12th-order Butterworth decimation LP delivered:
+
+- `BassClipper`: < -75 dBFS (threshold met comfortably)
+- `DistortionCancelledClipper`: **-39.05 dBFS** — improvement of 10 dB, but 37 dB short of target
+
+The DC clipper's 5th harmonic of 5111 Hz lands at 25555 Hz — only 7% above native Nyquist. Butterworth decimation is not sharp enough to reject it without compromising the audio passband. A linear-phase FIR brick-wall with >80 dB stopband (Phase 7.5 in plan.md) is the architecturally correct decimation filter to pair with the oversampling wrapper. When both lands together, the DC clipper should clear -75 dBFS.
+
+The prior 7.1 attempt also exposed a separate chain-level regression (unrelated to aliasing) via `--verify` that was traced to subtle interactions between the oversampled wrappers and the surrounding generator state even when clippers were disabled. That regression needs deeper investigation before 7.1 is re-attempted — the test infrastructure in this directory is the measurement scaffolding that will tell a future refactor whether it's actually working.
+
+## Repeatability
+
+Measurements are bit-identical across consecutive runs of `swift test`.
 
 ## How to reproduce
 
@@ -22,5 +32,3 @@ Both stages should show these alias energies drop well below -75 dBFS once 7.1 w
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
   swift test --package-path macOS --filter "aliasing"
 ```
-
-The failure output prints the measured dBFS. Use the same commands post-refactor to confirm the drop.

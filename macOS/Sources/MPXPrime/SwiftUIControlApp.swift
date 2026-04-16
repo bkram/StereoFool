@@ -185,6 +185,7 @@ enum ProcessingTab: String, CaseIterable, Identifiable {
     case dcClipper = "DC Clipper"
     case limiter = "Limiter"
     case bs412 = "BS.412"
+    case compositeClipper = "Comp Clip"
 
     var id: String { rawValue }
 
@@ -216,6 +217,8 @@ enum ProcessingTab: String, CaseIterable, Identifiable {
             return "Reset Limiter Tab"
         case .bs412:
             return "Reset BS.412 Tab"
+        case .compositeClipper:
+            return "Reset Composite Clipper Tab"
         }
     }
 
@@ -247,6 +250,8 @@ enum ProcessingTab: String, CaseIterable, Identifiable {
             return "Reset Limiter tab to defaults"
         case .bs412:
             return "Reset BS.412 tab to defaults"
+        case .compositeClipper:
+            return "Reset composite clipper tab to defaults"
         }
     }
 }
@@ -1851,6 +1856,10 @@ final class MPXPrimeViewModel: ObservableObject {
             config.bs412Enabled = defaults.bs412Enabled
             config.bs412ThresholdDB = defaults.bs412ThresholdDB
             config.bs412WindowSeconds = defaults.bs412WindowSeconds
+        case .compositeClipper:
+            config.compositeClipperEnabled = defaults.compositeClipperEnabled
+            config.compositeClipperThresholdDB = defaults.compositeClipperThresholdDB
+            config.compositeClipperCeilingDB = defaults.compositeClipperCeilingDB
         }
 
         let runtimeDisposition: RuntimeChangeDisposition
@@ -1859,7 +1868,7 @@ final class MPXPrimeViewModel: ObservableObject {
             runtimeDisposition = .restart
         case .agc, .orbass, .multiband, .widener, .limiter,
              .phaseRotator, .parametricEQ, .mbLimiter, .expander,
-             .bassClipper, .dcClipper, .bs412:
+             .bassClipper, .dcClipper, .bs412, .compositeClipper:
             runtimeDisposition = .live
         }
 
@@ -5326,6 +5335,8 @@ private struct ProcessingSectionView: View {
                         ProcessingLimiterTab(model: model)
                     case .bs412:
                         ProcessingBS412Tab(model: model)
+                    case .compositeClipper:
+                        ProcessingCompositeClipperTab(model: model)
                     }
 
                     HStack {
@@ -5708,6 +5719,22 @@ private struct ProcessingBS412Tab: View {
             DoubleSliderRow(title: "Threshold", value: model.configBinding(\.bs412ThresholdDB, runtimeDisposition: .live), range: -20...0, format: "%.1f dB").disabled(disabled)
             DoubleSliderRow(title: "Window", value: model.configBinding(\.bs412WindowSeconds, runtimeDisposition: .live), range: 1...120, format: "%.0f s").disabled(disabled)
             Text("ITU-R BS.412 rolling average power limiter for European regulatory compliance (DE, AT, CH, SE, CZ, SI). Limits MPX power over a sliding time window.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct ProcessingCompositeClipperTab: View {
+    @ObservedObject var model: MPXPrimeViewModel
+
+    var body: some View {
+        Card(title: "Composite Clipper") {
+            Toggle("Enable Composite Clipper", isOn: model.configBinding(\.compositeClipperEnabled, runtimeDisposition: .live))
+            let disabled = !model.config.compositeClipperEnabled
+            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.compositeClipperThresholdDB, runtimeDisposition: .live), range: -12...0, format: "%.1f dB").disabled(disabled)
+            DoubleSliderRow(title: "Ceiling", value: model.configBinding(\.compositeClipperCeilingDB, runtimeDisposition: .live), range: -6...0, format: "%.1f dB").disabled(disabled)
+            Text("8x oversampled tanh soft-clip on audio composite. Primary loudness lever: peaks above Threshold are shaped toward Ceiling. Placed after composite limiter, before BS.412 and safety limiter. Pilot and RDS bypass this stage.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

@@ -168,6 +168,9 @@ struct AppConfig {
     var bs412Enabled: Bool = false
     var bs412ThresholdDB: Double = -10.0
     var bs412WindowSeconds: Double = 60.0
+    var compositeClipperEnabled: Bool = false
+    var compositeClipperThresholdDB: Double = -3.0
+    var compositeClipperCeilingDB: Double = -0.5
     var rdsLevel: Double = 2.0
     var rdsPI: String = "82FF"
     var rdsPTY: Int = 8
@@ -420,6 +423,12 @@ struct AppConfig {
             "bs412_threshold_db", defaultValue: cfg.bs412ThresholdDB)
         cfg.bs412WindowSeconds = mpx.double(
             "bs412_window_seconds", defaultValue: cfg.bs412WindowSeconds)
+        cfg.compositeClipperEnabled = mpx.bool(
+            "mpx_clipper_enabled", defaultValue: cfg.compositeClipperEnabled)
+        cfg.compositeClipperThresholdDB = mpx.double(
+            "mpx_clipper_threshold_db", defaultValue: cfg.compositeClipperThresholdDB)
+        cfg.compositeClipperCeilingDB = mpx.double(
+            "mpx_clipper_ceiling_db", defaultValue: cfg.compositeClipperCeilingDB)
         cfg.rdsLevel = rds.double("rds_level", defaultValue: cfg.rdsLevel)
         cfg.rdsPI = rds.string("pi", defaultValue: cfg.rdsPI)
         cfg.rdsPTY = rds.int("pty", defaultValue: cfg.rdsPTY)
@@ -617,6 +626,11 @@ struct AppConfig {
         // BS.412
         bs412ThresholdDB = max(-20.0, min(0.0, bs412ThresholdDB))
         bs412WindowSeconds = max(1.0, min(120.0, bs412WindowSeconds))
+        compositeClipperThresholdDB = max(-12.0, min(0.0, compositeClipperThresholdDB))
+        compositeClipperCeilingDB = max(-6.0, min(0.0, compositeClipperCeilingDB))
+        if compositeClipperCeilingDB <= compositeClipperThresholdDB + 0.2 {
+            compositeClipperCeilingDB = min(0.0, compositeClipperThresholdDB + 0.5)
+        }
 
         // Engine
         sampleRate = max(44_100.0, min(384_000.0, sampleRate))
@@ -753,6 +767,9 @@ struct AppConfig {
             "bs412_enabled = \(Self.boolString(bs412Enabled))",
             "bs412_threshold_db = \(Self.formatFloat(bs412ThresholdDB))",
             "bs412_window_seconds = \(Self.formatFloat(bs412WindowSeconds))",
+            "mpx_clipper_enabled = \(Self.boolString(compositeClipperEnabled))",
+            "mpx_clipper_threshold_db = \(Self.formatFloat(compositeClipperThresholdDB))",
+            "mpx_clipper_ceiling_db = \(Self.formatFloat(compositeClipperCeilingDB))",
             "test_tone_mode = \(testToneMode)",
             "test_tone_freq = \(Self.formatFloat(testToneFreq))",
         ]

@@ -22,6 +22,8 @@ struct CLIOptions {
     var verify: Bool = false
     var verifyPresets: Bool = false
     var verifyLong: Bool = false
+    var captureBaseline: Bool = false
+    var strictBaseline: Bool = false
 }
 
 func defaultVerificationConfigPath() -> String {
@@ -84,6 +86,12 @@ func parseCLI() -> CLIOptions {
             options.verify = true
             options.verifyLong = true
             options.gui = false
+        case "--capture-baseline":
+            options.verify = true
+            options.captureBaseline = true
+            options.gui = false
+        case "--baseline-strict":
+            options.strictBaseline = true
         default:
             break
         }
@@ -109,6 +117,9 @@ func printUsage() {
           --nogui    Run headless
           --verify   Run the offline MPX verification harness
                      Uses macOS/Verification.ini by default when available
+                     Compares against macOS/verifier_baselines/default.json if present.
+          --capture-baseline  Run --verify and write measurements to the baseline file.
+          --baseline-strict   Any baseline drift elevates exit code to WARN (2).
           --verify-presets  Sweep key multiband presets through the offline verification harness
           --verify-long  Run the longer focused compliance/regression verifier
         """
@@ -154,7 +165,9 @@ do {
                 configPath: configPath,
                 durationSeconds: duration,
                 presetSweep: options.verifyPresets,
-                longRun: options.verifyLong
+                longRun: options.verifyLong,
+                captureBaseline: options.captureBaseline,
+                strictBaseline: options.strictBaseline
             )
         )
     }

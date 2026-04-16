@@ -516,6 +516,37 @@ private func ratioString(_ value: Float, width: Int) -> String {
     return leftPadded(String(format: "%.2f", value), width: width)
 }
 
+private func buildBaselineRecord(
+    metrics: VerificationMetrics,
+    targetDeviationKHz: Double
+) -> VerifierBaselineRecord {
+    let peakDB = metrics.peakAbs > 1e-9
+        ? Float(20.0 * log10(Double(metrics.peakAbs)))
+        : -160.0
+    let audioPeakDB = metrics.maxAudioCompositePeak > 1e-9
+        ? Float(20.0 * log10(Double(metrics.maxAudioCompositePeak)))
+        : -160.0
+    return VerifierBaselineRecord(
+        peakDBFS: peakDB,
+        deviationKHz: Float(Double(metrics.peakAbs) * max(1.0, targetDeviationKHz)),
+        limiterGRDB: nonNegative(metrics.maxLimiterGRDB),
+        safetyGRDB: nonNegative(metrics.maxSafetyGRDB),
+        audioCompositePeakDBFS: audioPeakDB,
+        pilotPercent: metrics.pilotPercent,
+        rdsPercent: metrics.rdsPercent,
+        budgetMarginDB: metrics.minBudgetMarginDB,
+        agcReductionDB: metrics.maxAGCReductionDB,
+        inputCorrelation: metrics.inputSignal.correlation,
+        outputCorrelation: metrics.outputSignal.correlation,
+        inputSideToMid: metrics.inputSignal.sideToMidRatio,
+        outputSideToMid: metrics.outputSignal.sideToMidRatio,
+        rmsDeltaDB: metrics.rmsDeltaDB,
+        occupied999Hz: metrics.bandwidth.occupied999Hz,
+        above60kRatioDB: metrics.bandwidth.above60kRatioDB,
+        above67kRatioDB: metrics.bandwidth.above67kRatioDB
+    )
+}
+
 private func computeStereoSignalMetrics(
     left: [Float],
     right: [Float]
@@ -1069,7 +1100,9 @@ func runVerificationHarness(
     configPath: String,
     durationSeconds: Double,
     presetSweep: Bool = false,
-    longRun: Bool = false
+    longRun: Bool = false,
+    captureBaseline: Bool = false,
+    strictBaseline: Bool = false
 ) throws -> Int32 {
     let config = try AppConfig.load(fromINI: configPath)
     if presetSweep {
@@ -1105,6 +1138,22 @@ func runVerificationHarness(
     if longRun {
         print("Scope: focused program-material compliance/regression scenarios")
     }
+
+    let baselineURL = defaultVerifierBaselinePath()
+    var loadedBaseline: VerifierBaselineFile?
+    if !longRun && !captureBaseline {
+        if FileManager.default.fileExists(atPath: baselineURL.path) {
+            do {
+                loadedBaseline = try loadVerifierBaseline(from: baselineURL)
+                print("Baseline: \(baselineURL.lastPathComponent) (captured \(loadedBaseline!.capturedAt))")
+            } catch {
+                print("Baseline: failed to load (\(error))")
+            }
+        } else {
+            print("Baseline: none — run with --capture-baseline to create.")
+        }
+    }
+
     print("")
     print(
         "Scenario              Peak dBFS  Dev kHz  LimGR  SafeGR  AudioPk  Pilot  RDS   Margin  AGC"
@@ -1198,6 +1247,40 @@ func runVerificationHarness(
         print(line)
     }
 
+    var baselineDrift: [BaselineDriftFinding] = []
+    if !longRun {
+        let measured: [String: VerifierBaselineRecord] = Dictionary(
+            uniqueKeysWithValues: scenarioMetrics.map { (scenario, metrics) in
+                (scenario.name, buildBaselineRecord(
+                    metrics: metrics,
+                    targetDeviationKHz: config.mpxDeviationKHz
+                ))
+            }
+        )
+        if captureBaseline {
+            let file = VerifierBaselineFile(
+                schemaVersion: VerifierBaselineFile.currentSchemaVersion,
+                capturedAt: verifierBaselineTimestampNow(),
+                configPath: configPath,
+                renderSampleRateHz: Int(config.sampleRate),
+                blockSize: config.blockSize,
+                durationSeconds: durationSeconds,
+                scenarios: measured
+            )
+            do {
+                try saveVerifierBaseline(file, to: baselineURL)
+                print("")
+                print("Baseline captured: \(baselineURL.path)")
+                print("  \(measured.count) scenarios written.")
+            } catch {
+                print("")
+                print("Baseline capture FAILED: \(error)")
+            }
+        } else if let baseline = loadedBaseline {
+            baselineDrift = compareBaseline(measured: measured, baseline: baseline)
+        }
+    }
+
     print("")
     print("Assessment")
     print("Worst MPX peak: \(dbfsString(worstPeak)) dBFS")
@@ -1207,36 +1290,57 @@ func runVerificationHarness(
     if longRun {
         print("Signature warnings: \(signatureWarnings.isEmpty ? "none" : "\(signatureWarnings.count)")")
     }
+    if !baselineDrift.isEmpty {
+        print("Baseline drift (\(baselineDrift.count) finding\(baselineDrift.count == 1 ? "" : "s")):")
+        for finding in baselineDrift {
+            print("- \(finding.formattedLine)")
+        }
+    }
 
+    let naturalResult: Int32
     if !qualityWarnings.isEmpty {
         print("Quality warnings:")
-        for warning in qualityWarnings {
-            print("- \(warning)")
-        }
-        print("Result: TIGHT - composite safety is OK, but decoded-audio quality drift exceeded expected bounds.")
-        return 1
+        for warning in qualityWarnings { print("- \(warning)") }
+        naturalResult = 1
     } else if !signatureWarnings.isEmpty {
         print("Signature drift warnings:")
-        for warning in signatureWarnings {
-            print("- \(warning)")
+        for warning in signatureWarnings { print("- \(warning)") }
+        naturalResult = 1
+    } else if worstSafety > 1.0 { naturalResult = 2
+    } else if worstMargin < -0.25 { naturalResult = 2
+    } else if worstMargin < 0.0 || worstSafety > 0.25 { naturalResult = 1
+    } else { naturalResult = 0 }
+
+    let result: Int32
+    if baselineDrift.isEmpty { result = naturalResult }
+    else if strictBaseline { result = 2 }
+    else { result = max(naturalResult, 1) }
+
+    switch result {
+    case 2:
+        if strictBaseline && !baselineDrift.isEmpty {
+            print("Result: WARN - stored-baseline drift in --baseline-strict mode.")
+        } else if worstSafety > 1.0 {
+            print("Result: WARN - safety limiter is doing significant work.")
+        } else {
+            print("Result: WARN - composite budget exceeded on at least one scenario.")
         }
-        print("Result: TIGHT - long-run verifier drifted beyond the current reference signature.")
-        return 1
-    } else if worstSafety > 1.0 {
-        print("Result: WARN - safety limiter is doing significant work.")
-        return 2
-    } else if worstMargin < -0.25 {
-        print("Result: WARN - composite budget exceeded on at least one scenario.")
-        return 2
-    } else if worstMargin < 0.0 || worstSafety > 0.25 {
-        print("Result: TIGHT - verification stayed close to the composite budget limit.")
-        return 1
-    } else {
+    case 1:
+        if !qualityWarnings.isEmpty {
+            print("Result: TIGHT - composite safety is OK, but decoded-audio quality drift exceeded expected bounds.")
+        } else if !signatureWarnings.isEmpty {
+            print("Result: TIGHT - long-run verifier drifted beyond the current reference signature.")
+        } else if !baselineDrift.isEmpty {
+            print("Result: TIGHT - stored-baseline drift detected (use --baseline-strict to fail the run).")
+        } else {
+            print("Result: TIGHT - verification stayed close to the composite budget limit.")
+        }
+    default:
         print(
             longRun
                 ? "Result: OK - no obvious long-run compliance or safety regression."
                 : "Result: OK - no obvious composite-budget or safety-limiter issue."
         )
-        return 0
     }
+    return result
 }
