@@ -1,6 +1,7 @@
 import Darwin
 import Atomics
 import Foundation
+import os
 
 private let twoPi = Float.pi * 2.0
 private let pilotFreq = Float(19_000.0)
@@ -1316,12 +1317,25 @@ private struct RTPlusTag {
     let length: Int
 }
 
-private struct TimedTextFrame {
+struct TimedTextFrame: Equatable {
     let duration: Double
+    let transmits: Int
     let text: String
+
+    init(duration: Double, text: String) {
+        self.duration = duration
+        self.transmits = 0
+        self.text = text
+    }
+
+    init(transmits: Int, text: String) {
+        self.duration = 0
+        self.transmits = max(1, transmits)
+        self.text = text
+    }
 }
 
-private final class BasicRDSCoder {
+final class BasicRDSCoder {
     private static let bitrate = Float(1187.5)
     private static let crcPoly = 0x5B9
     private static let offsetA = 0x0FC
@@ -1352,7 +1366,11 @@ private final class BasicRDSCoder {
     private let afEnabled: Bool
     private let afMethod: String
     private let afCodes: [Int]
-    private let psCentered: Bool
+    private var psCentered: Bool
+    // PS banks: 4 text banks (A/B/C/D) with a single active selector.
+    // Live-apply — switching the active bank rebuilds psSequence/psFrames.
+    private var psBanks: [String]
+    private var psActiveBankIndex: Int
     private let rtManualBuffers: Bool
     private var rtCycleAB: Bool
     private var rtRawText: String
@@ -1374,10 +1392,10 @@ private final class BasicRDSCoder {
     private let schedulerAuto: Bool
     private let schedulerStandard: Bool
     private let schedulerStandardLPS: Bool
-    private let psFrames: [String]
-    private let psFrameBytes: [[UInt8]]
+    private var psFrames: [String]
+    private var psFrameBytes: [[UInt8]]
     private var rtFrames: [String]
-    private let psSequence: [TimedTextFrame]
+    private var psSequence: [TimedTextFrame]
     private var rtSequence: [TimedTextFrame]
     private let ptynEnabled: Bool
     private let ptynCentered: Bool
@@ -1424,10 +1442,12 @@ private final class BasicRDSCoder {
     private var psFrameIndex: Int = 0
     private var psSeqIndex: Int = 0
     private var psSeqStart: Double = 0.0
+    private var psSeqTransmits: Int = 0
     private var rtSegment: Int = 0
     private var rtFrameIndex: Int = 0
     private var rtSeqIndex: Int = 0
     private var rtSeqStart: Double = 0.0
+    private var rtSeqTransmits: Int = 0
     private var rtABFlag: Int = 0
     private var rtABCycles: Int = 0
     private var lastManualRTBuffer: Int = -1
@@ -1435,14 +1455,30 @@ private final class BasicRDSCoder {
     private var ptynFrameIndex: Int = 0
     private var ptynSeqIndex: Int = 0
     private var ptynSeqStart: Double = 0.0
+    private var ptynSeqTransmits: Int = 0
     private var lpsSegment: Int = 0
     private var lpsFrameIndex: Int = 0
     private var lpsSeqIndex: Int = 0
     private var lpsSeqStart: Double = 0.0
+    private var lpsSeqTransmits: Int = 0
     private var rtPlusToggle: Int = 0
     private var rtPlusTags: [RTPlusTag] = []
     private var rtPlusSignature: String = ""
     private var rtDynamicSignature: String = ""
+    // Cache of the last parsed dynamic RT sequence, to avoid re-running
+    // parseTimedSequence on the audio thread every buildGroup2 call when the
+    // RT text (with now-playing macros expanded) hasn't changed. Keyed by the
+    // signature string plus the limit/centered values so mode changes still
+    // invalidate the cache.
+    private var rtDynamicSequenceCache: [TimedTextFrame] = []
+    private var rtDynamicCacheLimit: Int = 0
+    private var rtDynamicCacheCentered: Bool = false
+    // Cheap-to-compute "should we bother rebuilding?" keys so the audio
+    // thread can skip expandNowPlayingMacros (which does DateFormatter work
+    // and multiple string replacements) when nothing relevant has changed.
+    private var rtDynamicCacheRevision: UInt64 = UInt64.max
+    private var rtDynamicCacheMinuteEpoch: Int64 = Int64.min
+    private var rtDynamicCacheDayEpoch: Int64 = Int64.min
 
     private var biphaseKernel: [Float] = []
     private var gaussianKernel: [Float] = []
@@ -1450,6 +1486,46 @@ private final class BasicRDSCoder {
     private var biphaseOverlapAdd: [Float] = []
     private var biphaseOverlapIndex: Int = 0
     private var shapingPeak: Float = 1.0
+
+    // Live snapshot of the most recently transmitted RDS frame text per field.
+    // Updated on the audio thread after each buildGroupX call; polled by the
+    // UI for an accurate Monitoring view.
+    //
+    // Uses OSAllocatedUnfairLock (os_unfair_lock under the hood) — on macOS
+    // this performs priority inheritance, so when the real-time audio thread
+    // contends with the main thread (e.g. the UI pulling a snapshot during
+    // heavy launch-time setup) the holder's priority is temporarily raised
+    // and the audio thread is not stalled. NSLock does NOT do this and can
+    // cause priority inversion → render deadline misses → ring overflow.
+    private struct SnapshotState {
+        var ps: String = ""
+        var rt: String = ""
+        var ptyn: String = ""
+        var longPS: String = ""
+    }
+    private let snapshotLock = OSAllocatedUnfairLock<SnapshotState>(initialState: SnapshotState())
+
+    struct LiveSnapshot {
+        let ps: String
+        let rt: String
+        let ptyn: String
+        let longPS: String
+    }
+
+    func currentLiveSnapshot() -> LiveSnapshot {
+        snapshotLock.withLock { state in
+            LiveSnapshot(ps: state.ps, rt: state.rt, ptyn: state.ptyn, longPS: state.longPS)
+        }
+    }
+
+    private func writeSnapshot(ps: String? = nil, rt: String? = nil, ptyn: String? = nil, longPS: String? = nil) {
+        snapshotLock.withLock { state in
+            if let ps = ps { state.ps = ps }
+            if let rt = rt { state.rt = rt }
+            if let ptyn = ptyn { state.ptyn = ptyn }
+            if let longPS = longPS { state.longPS = longPS }
+        }
+    }
 
     init(config: AppConfig, sampleRate: Float, nowPlayingState: NowPlayingState? = nil) {
         self.enabled = config.enRDS && (config.rdsLevel > 0.0)
@@ -1467,6 +1543,8 @@ private final class BasicRDSCoder {
         self.afMethod = config.rdsAFMethod.uppercased()
         self.afCodes = Self.parseAFList(config.rdsAFList)
         self.psCentered = config.rdsPSCentered
+        self.psBanks = [config.rdsPSA, config.rdsPSB, config.rdsPSC, config.rdsPSD]
+        self.psActiveBankIndex = Self.psBankIndex(config.rdsPSActiveBank)
         self.rtManualBuffers = config.rdsRTManualBuffers
         self.rtCycleAB = config.rdsRTCycleAB
         self.rtRawText = config.rdsRTText
@@ -1493,8 +1571,9 @@ private final class BasicRDSCoder {
         self.schedulerAuto = config.rdsSchedulerAuto
         self.schedulerStandard = config.rdsSchedulerStandard
         self.schedulerStandardLPS = config.rdsSchedulerStandardLPS
+        let initialPSText = psBanks[psActiveBankIndex]
         self.psFrames = Self.parseTimedFrames(
-            config.rdsPSDynamic, width: 8, uppercase: true, center: psCentered)
+            initialPSText, width: 8, uppercase: true, center: psCentered, allowScroll: true)
         self.psFrameBytes = psFrames.map(Self.rdsBytes)
         self.rtFrames = Self.parseTimedFrames(
             config.rdsRTText,
@@ -1503,7 +1582,7 @@ private final class BasicRDSCoder {
             center: rtCentered
         )
         self.psSequence = Self.parseTimedSequence(
-            config.rdsPSDynamic, width: 8, uppercase: true, center: psCentered)
+            initialPSText, width: 8, uppercase: true, center: psCentered, allowScroll: true)
         self.rtSequence = Self.parseTimedSequence(
             config.rdsRTText,
             width: rtMode2B ? 32 : 64,
@@ -1558,7 +1637,46 @@ private final class BasicRDSCoder {
         updateShapingFilters()
     }
 
+    static func psBankIndex(_ name: String) -> Int {
+        switch name.uppercased() {
+        case "A": return 0
+        case "B": return 1
+        case "C": return 2
+        case "D": return 3
+        default:  return 0
+        }
+    }
+
+    private func rebuildPSSequence() {
+        let text = psBanks[psActiveBankIndex]
+        psFrames = Self.parseTimedFrames(
+            text, width: 8, uppercase: true, center: psCentered, allowScroll: true)
+        psFrameBytes = psFrames.map(Self.rdsBytes)
+        psSequence = Self.parseTimedSequence(
+            text, width: 8, uppercase: true, center: psCentered, allowScroll: true)
+        psSeqIndex = 0
+        psSeqStart = Date().timeIntervalSinceReferenceDate
+        psSeqTransmits = 0
+        psSegment = 0
+    }
+
     func applyRDSRuntimeConfig(_ config: MPXGenerator.RDSRuntimeConfig) {
+        let previousBanks = psBanks
+        let previousActive = psActiveBankIndex
+        let previousCentered = psCentered
+        if !config.psBanks.isEmpty {
+            psBanks = Array(config.psBanks.prefix(4))
+                + Array(repeating: "", count: max(0, 4 - config.psBanks.count))
+        }
+        psActiveBankIndex = Self.psBankIndex(config.psActiveBank)
+        psCentered = config.psCentered
+        if psBanks != previousBanks
+            || psActiveBankIndex != previousActive
+            || psCentered != previousCentered
+        {
+            rebuildPSSequence()
+        }
+
         rtRawText = config.rtText
         rtRawBuffers =
             Array(config.rtBuffers.prefix(4))
@@ -1595,8 +1713,10 @@ private final class BasicRDSCoder {
         rtSeqStart = now
         rtSeqIndex = 0
         rtSegment = 0
+        rtSeqTransmits = 0
         rtABCycles = 0
         rtDynamicSignature = ""
+        rtDynamicSequenceCache = []
         lastManualRTBuffer = -1
     }
 
@@ -1864,7 +1984,7 @@ private final class BasicRDSCoder {
         return bit
     }
 
-    private func nextGroupBits() -> [UInt8] {
+    func nextGroupBits() -> [UInt8] {
         if let ctBits = buildClockTimeGroupIfNeeded() {
             return ctBits
         }
@@ -1905,11 +2025,18 @@ private final class BasicRDSCoder {
         }
     }
 
-    private func buildGroup0(versionB: Bool) -> [UInt8] {
+    func buildGroup0(versionB: Bool) -> [UInt8] {
         updatePSSequenceIfNeeded()
-        let bytes = psSequence.isEmpty ? psFrameBytes[psFrameIndex] : Self.rdsBytes(psSequence[psSeqIndex].text)
+        let psFrameText = psSequence.isEmpty
+            ? (psFrames.isEmpty ? String(repeating: " ", count: 8) : psFrames[psFrameIndex])
+            : psSequence[psSeqIndex].text
+        let bytes = psSequence.isEmpty ? psFrameBytes[psFrameIndex] : Self.rdsBytes(psFrameText)
+        writeSnapshot(ps: psFrameText)
         let segment = psSegment % 4
         psSegment += 1
+        if psSegment % 4 == 0 {
+            psSeqTransmits += 1
+        }
         let diBit = diBitForSegment(segment) ? 0x04 : 0x00
         let b2Tail = (taFlag ? 0x10 : 0) | (msFlag ? 0x08 : 0) | diBit | segment
         let b3Value: Int
@@ -1931,14 +2058,18 @@ private final class BasicRDSCoder {
         )
     }
 
-    private func buildGroup2(versionB: Bool) -> [UInt8] {
+    func buildGroup2(versionB: Bool) -> [UInt8] {
         let useVersionB = rtMode2B || versionB
         let limit = useVersionB ? 32 : 64
         let frameData = currentRTFrame(limit: limit)
         let frame = frameData.text
         let bytes = frameData.bytes
+        writeSnapshot(rt: frame)
         let segment = rtSegment % 16
         rtSegment += 1
+        if rtSegment % 16 == 0 {
+            rtSeqTransmits += 1
+        }
         let abFlag = rtABFlag & 1
         let b2Tail = ((abFlag & 1) << 4) | segment
         if rtPlusEnabled {
@@ -1987,12 +2118,18 @@ private final class BasicRDSCoder {
         )
     }
 
-    private func buildGroup10A() -> [UInt8] {
+    func buildGroup10A() -> [UInt8] {
         updatePTYNSequenceIfNeeded()
-        let bytes =
-            ptynSequence.isEmpty ? ptynFrameBytes[ptynFrameIndex] : Self.rdsBytes(ptynSequence[ptynSeqIndex].text)
+        let ptynText = ptynSequence.isEmpty
+            ? (ptynFrames.isEmpty ? String(repeating: " ", count: 8) : ptynFrames[ptynFrameIndex])
+            : ptynSequence[ptynSeqIndex].text
+        let bytes = ptynSequence.isEmpty ? ptynFrameBytes[ptynFrameIndex] : Self.rdsBytes(ptynText)
+        writeSnapshot(ptyn: ptynText)
         let segment = ptynSegment % 2
         ptynSegment += 1
+        if ptynSegment % 2 == 0 {
+            ptynSeqTransmits += 1
+        }
         let idx = segment * 4
         let b3Value = (Int(bytes[idx]) << 8) | Int(bytes[idx + 1])
         let b4Value = (Int(bytes[idx + 2]) << 8) | Int(bytes[idx + 3])
@@ -2044,18 +2181,25 @@ private final class BasicRDSCoder {
         )
     }
 
-    private func buildGroup15A() -> [UInt8] {
+    func buildGroup15A() -> [UInt8] {
         updateLPSSequenceIfNeeded()
         let bytes: [UInt8]
+        let lpsFrameText: String
         if lpsSequence.isEmpty {
+            lpsFrameText = lpsFrames.isEmpty ? String(repeating: " ", count: 32) : lpsFrames[lpsFrameIndex]
             bytes = lpsPreparedFrameBytes[lpsFrameIndex]
         } else {
             let frame = lpsSequence[lpsSeqIndex].text
+            lpsFrameText = frame
             let prepared = lpsCR ? Self.prepareCRFrame(frame, width: 32) : frame
             bytes = Self.rdsBytes(prepared)
         }
+        writeSnapshot(longPS: lpsFrameText)
         let segment = lpsSegment % 8
         lpsSegment += 1
+        if lpsSegment % 8 == 0 {
+            lpsSeqTransmits += 1
+        }
         let idx = segment * 4
         let b3Value = (Int(bytes[idx]) << 8) | Int(bytes[idx + 1])
         let b4Value = (Int(bytes[idx + 2]) << 8) | Int(bytes[idx + 3])
@@ -2098,7 +2242,7 @@ private final class BasicRDSCoder {
         )
     }
 
-    private func buildClockTimeGroupImmediate() -> [UInt8]? {
+    func buildClockTimeGroupImmediate() -> [UInt8]? {
         guard enCT else { return nil }
         guard let cached = currentCachedClockTimeGroup() else { return nil }
         return buildGroupBits(
@@ -2321,14 +2465,26 @@ private final class BasicRDSCoder {
         return (f1 << 8) | f2
     }
 
+    static func shouldAdvanceSequence(
+        _ frame: TimedTextFrame, seqStart: Double, transmits: Int, now: Double
+    ) -> Bool {
+        if frame.transmits > 0 {
+            return transmits >= frame.transmits
+        }
+        return (now - seqStart) >= frame.duration
+    }
+
     private func updatePSSequenceIfNeeded() {
         guard !psSequence.isEmpty else { return }
         let now = Date().timeIntervalSinceReferenceDate
         let current = psSequence[min(psSeqIndex, psSequence.count - 1)]
-        if now - psSeqStart >= current.duration {
+        if Self.shouldAdvanceSequence(
+            current, seqStart: psSeqStart, transmits: psSeqTransmits, now: now
+        ) {
             psSeqIndex = (psSeqIndex + 1) % psSequence.count
             psSeqStart = now
             psSegment = 0
+            psSeqTransmits = 0
         }
     }
 
@@ -2336,10 +2492,13 @@ private final class BasicRDSCoder {
         guard !ptynSequence.isEmpty else { return }
         let now = Date().timeIntervalSinceReferenceDate
         let current = ptynSequence[min(ptynSeqIndex, ptynSequence.count - 1)]
-        if now - ptynSeqStart >= current.duration {
+        if Self.shouldAdvanceSequence(
+            current, seqStart: ptynSeqStart, transmits: ptynSeqTransmits, now: now
+        ) {
             ptynSeqIndex = (ptynSeqIndex + 1) % ptynSequence.count
             ptynSeqStart = now
             ptynSegment = 0
+            ptynSeqTransmits = 0
         }
     }
 
@@ -2347,10 +2506,13 @@ private final class BasicRDSCoder {
         guard !lpsSequence.isEmpty else { return }
         let now = Date().timeIntervalSinceReferenceDate
         let current = lpsSequence[min(lpsSeqIndex, lpsSequence.count - 1)]
-        if now - lpsSeqStart >= current.duration {
+        if Self.shouldAdvanceSequence(
+            current, seqStart: lpsSeqStart, transmits: lpsSeqTransmits, now: now
+        ) {
             lpsSeqIndex = (lpsSeqIndex + 1) % lpsSequence.count
             lpsSeqStart = now
             lpsSegment = 0
+            lpsSeqTransmits = 0
         }
     }
 
@@ -2434,6 +2596,7 @@ private final class BasicRDSCoder {
             let manual = currentManualRTFrame(limit: limit, snapshot: nowPlayingSnapshot)
             if manual.index != lastManualRTBuffer {
                 rtSegment = 0
+                rtSeqTransmits = 0
                 rtABCycles = 0
                 if lastManualRTBuffer >= 0 && !rtCycleAB {
                     rtABFlag ^= 1
@@ -2444,33 +2607,62 @@ private final class BasicRDSCoder {
         }
 
         if nowPlayingEnabled {
-            let resolvedRaw = Self.expandNowPlayingMacros(rtRawText, snapshot: nowPlayingSnapshot)
-            let signature = "\(resolvedRaw)|\(nowPlayingSnapshot.revision)"
-            if signature != rtDynamicSignature {
-                rtDynamicSignature = signature
-                rtSegment = 0
-                if !rtCycleAB {
-                    rtABFlag ^= 1
+            // Fast-path cache: skip macro expansion and parseTimedSequence
+            // unless one of the inputs that could change the result has
+            // actually changed. We're called ~6x/sec on the audio thread, so
+            // avoiding DateFormatter + regex + string replacement when there's
+            // nothing to do is critical.
+            let now = Date()
+            let nowEpoch = Int64(now.timeIntervalSince1970)
+            let minuteEpoch = nowEpoch / 60
+            let dayEpoch = nowEpoch / 86_400
+            let containsTimeMacro = rtRawText.contains("{time}")
+            let containsDateMacro = rtRawText.contains("{date}")
+            let minuteChanged = containsTimeMacro && minuteEpoch != rtDynamicCacheMinuteEpoch
+            let dayChanged = containsDateMacro && dayEpoch != rtDynamicCacheDayEpoch
+            let revisionChanged = nowPlayingSnapshot.revision != rtDynamicCacheRevision
+            let modeChanged = limit != rtDynamicCacheLimit || rtCentered != rtDynamicCacheCentered
+            let cacheCold = rtDynamicSequenceCache.isEmpty
+
+            if revisionChanged || minuteChanged || dayChanged || modeChanged || cacheCold {
+                let resolvedRaw = Self.expandNowPlayingMacros(rtRawText, snapshot: nowPlayingSnapshot)
+                let signature = "\(resolvedRaw)|\(nowPlayingSnapshot.revision)"
+                if signature != rtDynamicSignature {
+                    rtSegment = 0
+                    rtSeqTransmits = 0
+                    if !rtCycleAB {
+                        rtABFlag ^= 1
+                    }
                 }
+                rtDynamicSignature = signature
+                rtDynamicCacheLimit = limit
+                rtDynamicCacheCentered = rtCentered
+                rtDynamicCacheRevision = nowPlayingSnapshot.revision
+                rtDynamicCacheMinuteEpoch = minuteEpoch
+                rtDynamicCacheDayEpoch = dayEpoch
+                rtDynamicSequenceCache = Self.parseTimedSequence(
+                    resolvedRaw,
+                    width: limit,
+                    uppercase: false,
+                    center: rtCentered
+                )
             }
-            let dynamicSequence = Self.parseTimedSequence(
-                resolvedRaw,
-                width: limit,
-                uppercase: false,
-                center: rtCentered
-            )
+            let dynamicSequence = rtDynamicSequenceCache
             guard !dynamicSequence.isEmpty else {
                 let frame = Self.prepareRTFrame("", width: limit, centered: rtCentered, appendCR: rtCR)
                 return (frame, Self.rdsBytes(frame))
             }
 
-            let now = Date().timeIntervalSinceReferenceDate
+            let seqTime = now.timeIntervalSinceReferenceDate
             let current = dynamicSequence[min(rtSeqIndex, dynamicSequence.count - 1)]
-            if now - rtSeqStart >= current.duration {
+            if Self.shouldAdvanceSequence(
+                current, seqStart: rtSeqStart, transmits: rtSeqTransmits, now: seqTime
+            ) {
                 let prev = rtSeqIndex
                 rtSeqIndex = (rtSeqIndex + 1) % dynamicSequence.count
-                rtSeqStart = now
+                rtSeqStart = seqTime
                 rtSegment = 0
+                rtSeqTransmits = 0
                 if !rtCycleAB && rtSeqIndex != prev {
                     rtABFlag ^= 1
                 }
@@ -2497,11 +2689,14 @@ private final class BasicRDSCoder {
 
         let now = Date().timeIntervalSinceReferenceDate
         let current = rtSequence[min(rtSeqIndex, rtSequence.count - 1)]
-        if now - rtSeqStart >= current.duration {
+        if Self.shouldAdvanceSequence(
+            current, seqStart: rtSeqStart, transmits: rtSeqTransmits, now: now
+        ) {
             let prev = rtSeqIndex
             rtSeqIndex = (rtSeqIndex + 1) % rtSequence.count
             rtSeqStart = now
             rtSegment = 0
+            rtSeqTransmits = 0
             if !rtCycleAB && rtSeqIndex != prev {
                 rtABFlag ^= 1
             }
@@ -2662,113 +2857,168 @@ private final class BasicRDSCoder {
         rtPlusTags = Self.parseRTPlusTags(text: text, format: format, snapshot: snapshot)
     }
 
-    private static func parseTimedFrames(_ raw: String, width: Int, uppercase: Bool, center: Bool)
-        -> [String]
-    {
-        return parseTimedSequence(raw, width: width, uppercase: uppercase, center: center).map(
-            \.text)
+    static func parseTimedFrames(
+        _ raw: String,
+        width: Int,
+        uppercase: Bool,
+        center: Bool,
+        allowScroll: Bool = false
+    ) -> [String] {
+        return parseTimedSequence(
+            raw, width: width, uppercase: uppercase, center: center, allowScroll: allowScroll
+        ).map(\.text)
     }
 
-    private static func parseRTBufferSequence(
+    static func parseRTBufferSequence(
         _ raw: String,
         width: Int,
         center: Bool,
         defaultDuration: Double
     ) -> [TimedTextFrame] {
         let sequence = parseTimedSequence(raw, width: width, uppercase: false, center: center)
-        guard !containsTimedCommand(raw) else { return sequence }
+        guard !containsTimedCommand(raw) else {
+            // Manual RT buffers cycle by wall-clock elapsed time across the
+            // whole sequence (see currentManualRTFrame). Normalize any
+            // transmit-count frames to the configured cycle time so the
+            // duration-sum model stays valid.
+            let fallback = max(0.1, defaultDuration)
+            return sequence.map { frame in
+                if frame.transmits > 0 {
+                    return TimedTextFrame(duration: fallback, text: frame.text)
+                }
+                return frame
+            }
+        }
         let duration = max(0.1, defaultDuration)
         return sequence.map { TimedTextFrame(duration: duration, text: $0.text) }
     }
 
-    private static func containsTimedCommand(_ raw: String) -> Bool {
-        raw.range(of: #"(^|[\s/])\d+s:"#, options: .regularExpression) != nil
+    static func containsTimedCommand(_ raw: String) -> Bool {
+        RDSTextParser.containsTimedCommand(raw)
     }
 
-    private static func parseTimedSequence(_ raw: String, width: Int, uppercase: Bool, center: Bool)
-        -> [TimedTextFrame]
-    {
+    static func parseTimedSequence(
+        _ raw: String,
+        width: Int,
+        uppercase: Bool,
+        center: Bool,
+        allowScroll: Bool = false
+    ) -> [TimedTextFrame] {
         let resolved = resolveTextMarkers(raw) ?? raw
         let trimmed = resolved.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return [TimedTextFrame(duration: 10.0, text: String(repeating: " ", count: width))]
         }
 
+        // Apply Stereotool escape handling: \\< \\> \\| \\: \\/ \\\\ become
+        // private-use sentinels so they survive separator splitting; they
+        // are decoded back to literals immediately before sanitize/chunk.
+        let encoded = RDSTextParser.encodeEscapes(trimmed)
+        // || word-wrap toggle is accepted but a no-op (word-wrap is always on).
+        let stripped = RDSTextParser.stripWrapMarkers(encoded)
+
         var out: [TimedTextFrame] = []
-        let startsTimed = trimmed.range(of: #"^\s*\d+s:"#, options: .regularExpression) != nil
+
+        func emit(
+            timing: RDSTextTiming,
+            body: String,
+            fallbackDuration: Double
+        ) {
+            // Scroll detection runs on the still-encoded body so escaped
+            // `\<` and `\>` (now private-use sentinels) do NOT re-trigger
+            // scroll. Decode only after we know this isn't a scroll spec.
+            let trimmedEncoded = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            if allowScroll, let scroll = RDSTextParser.parseScrollMarker(trimmedEncoded) {
+                let decodedScrollText = RDSTextParser.decodeEscapes(scroll.text)
+                let decodedSpec = RDSScrollSpec(
+                    text: decodedScrollText,
+                    direction: scroll.direction,
+                    speed: scroll.speed
+                )
+                let windows = RDSTextParser.scrollWindows(decodedSpec, width: width)
+                for window in windows {
+                    let sanitized = sanitizeText(window, uppercase: uppercase)
+                    let padded = Self.padToWidth(sanitized, width: width, center: false)
+                    out.append(TimedTextFrame(transmits: 1, text: padded))
+                }
+                return
+            }
+            let decoded = RDSTextParser.decodeEscapes(trimmedEncoded)
+            let chunks = splitAndPad(decoded, width: width, uppercase: uppercase, center: center)
+            let frames: [String] = chunks.isEmpty
+                ? [String(repeating: " ", count: width)]
+                : chunks
+            switch timing {
+            case .seconds(let d):
+                let duration = d > 0 ? d : fallbackDuration
+                for chunk in frames {
+                    out.append(TimedTextFrame(duration: duration, text: chunk))
+                }
+            case .transmits(let n):
+                for chunk in frames {
+                    out.append(TimedTextFrame(transmits: n, text: chunk))
+                }
+            }
+        }
+
+        let startsTimed = RDSTextParser.startsWithTimingPrefix(stripped)
 
         if startsTimed {
-            let slashParts =
-                trimmed
-                .split(separator: "/", omittingEmptySubsequences: false)
-                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            let slashParts = RDSTextParser.splitTopLevel(stripped)
+                .filter { !$0.isEmpty }
             if slashParts.count > 1 {
-                for part in slashParts where !part.isEmpty {
-                    if let timed = parseTimedPrefix(part) {
-                        let chunks = splitAndPad(
-                            timed.text, width: width, uppercase: uppercase, center: center)
-                        if chunks.isEmpty {
-                            out.append(
-                                TimedTextFrame(
-                                    duration: timed.duration,
-                                    text: String(repeating: " ", count: width)))
-                        } else {
-                            for chunk in chunks {
-                                out.append(TimedTextFrame(duration: timed.duration, text: chunk))
-                            }
-                        }
-                    } else {
-                        let chunks = splitAndPad(
-                            part, width: width, uppercase: uppercase, center: center)
-                        if chunks.isEmpty {
-                            out.append(
-                                TimedTextFrame(
-                                    duration: 2.5, text: String(repeating: " ", count: width)))
-                        } else {
-                            for chunk in chunks {
-                                out.append(TimedTextFrame(duration: 2.5, text: chunk))
-                            }
-                        }
-                    }
+                for part in slashParts {
+                    let (timing, body) = RDSTextParser.parseTimingPrefix(
+                        part, defaultDuration: 2.5)
+                    emit(timing: timing, body: body, fallbackDuration: 2.5)
                 }
-            } else if let regex = try? NSRegularExpression(
-                pattern: "(\\d+)s:(.*?)(?=(?:\\s+\\d+s:)|$)",
-                options: []
-            ) {
-                let ns = trimmed as NSString
-                let matches = regex.matches(
-                    in: trimmed, options: [], range: NSRange(location: 0, length: ns.length))
-                for m in matches where m.numberOfRanges >= 3 {
-                    let durationRaw = ns.substring(with: m.range(at: 1))
-                    let duration = max(0.5, Double(durationRaw) ?? 2.5)
-                    let segment = ns.substring(with: m.range(at: 2)).trimmingCharacters(
-                        in: .whitespacesAndNewlines)
-                    let chunks = splitAndPad(
-                        segment, width: width, uppercase: uppercase, center: center)
-                    if chunks.isEmpty {
-                        out.append(
-                            TimedTextFrame(
-                                duration: duration, text: String(repeating: " ", count: width)))
-                    } else {
-                        for chunk in chunks {
-                            out.append(TimedTextFrame(duration: duration, text: chunk))
-                        }
+            } else {
+                // Single top-level segment that may contain inline
+                // `1s:A 2t:B` whitespace-separated timed tokens.
+                let inline = RDSTextParser.extractInlineSegments(
+                    stripped, defaultDuration: 2.5)
+                if inline.count > 1 {
+                    for seg in inline {
+                        emit(timing: seg.timing, body: seg.body, fallbackDuration: 2.5)
                     }
+                } else {
+                    let part = slashParts.first ?? stripped
+                    let (timing, body) = RDSTextParser.parseTimingPrefix(
+                        part, defaultDuration: 2.5)
+                    emit(timing: timing, body: body, fallbackDuration: 2.5)
                 }
             }
         } else {
-            let base =
-                (width <= 8) ? resolved : resolved.trimmingCharacters(in: .whitespacesAndNewlines)
-            if base.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // No timing prefix — treat the whole thing as one body. Untimed
+            // single-chunk content holds for 10s; untimed multi-chunk content
+            // rotates at 2.5s per chunk (historical behavior).
+            let trimmedEncoded = stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmedEncoded.isEmpty {
                 return [TimedTextFrame(duration: 10.0, text: String(repeating: " ", count: width))]
             }
-            let chunks = splitAndPad(base, width: width, uppercase: uppercase, center: center)
-            if chunks.count <= 1 {
-                let single = chunks.first ?? String(repeating: " ", count: width)
-                out.append(TimedTextFrame(duration: 10.0, text: single))
+            if allowScroll, let scroll = RDSTextParser.parseScrollMarker(trimmedEncoded) {
+                let decodedScrollText = RDSTextParser.decodeEscapes(scroll.text)
+                let decodedSpec = RDSScrollSpec(
+                    text: decodedScrollText,
+                    direction: scroll.direction,
+                    speed: scroll.speed
+                )
+                let windows = RDSTextParser.scrollWindows(decodedSpec, width: width)
+                for window in windows {
+                    let sanitized = sanitizeText(window, uppercase: uppercase)
+                    let padded = Self.padToWidth(sanitized, width: width, center: false)
+                    out.append(TimedTextFrame(transmits: 1, text: padded))
+                }
             } else {
-                for chunk in chunks {
-                    out.append(TimedTextFrame(duration: 2.5, text: chunk))
+                let decoded = RDSTextParser.decodeEscapes(trimmedEncoded)
+                let chunks = splitAndPad(decoded, width: width, uppercase: uppercase, center: center)
+                if chunks.count <= 1 {
+                    let single = chunks.first ?? String(repeating: " ", count: width)
+                    out.append(TimedTextFrame(duration: 10.0, text: single))
+                } else {
+                    for chunk in chunks {
+                        out.append(TimedTextFrame(duration: 2.5, text: chunk))
+                    }
                 }
             }
         }
@@ -2777,6 +3027,19 @@ private final class BasicRDSCoder {
             return [TimedTextFrame(duration: 10.0, text: String(repeating: " ", count: width))]
         }
         return out
+    }
+
+    private static func padToWidth(_ text: String, width: Int, center: Bool) -> String {
+        let count = text.count
+        if count >= width { return String(text.prefix(width)) }
+        let pad = width - count
+        if center {
+            let left = pad / 2
+            let right = pad - left
+            return String(repeating: " ", count: left) + text
+                + String(repeating: " ", count: right)
+        }
+        return text + String(repeating: " ", count: pad)
     }
 
     private static func splitAndPad(_ raw: String, width: Int, uppercase: Bool, center: Bool)
@@ -2881,14 +3144,18 @@ private final class BasicRDSCoder {
         guard text.contains("\\") else { return text }
         var failed = false
         var resolved = text
-        resolved = replaceMarkers(in: resolved, pattern: #"\\R\"([^\"]+)\""#) { path in
+        // \R and \F load a file and force uppercase. Stereotool distinguishes
+        // "raw" (\R/\r) from "formatted" (\F/\f) file loads; we treat the
+        // formatted variants as aliases since loaded content re-enters the
+        // parser and inherits all markers that way.
+        resolved = replaceMarkers(in: resolved, pattern: #"\\[RF]\"([^\"]+)\""#) { path in
             guard let loaded = loadTextFromFile(path) else {
                 failed = true
                 return ""
             }
             return cleanMarkerSpaces(transliterateRDSText(loaded)).uppercased()
         }
-        resolved = replaceMarkers(in: resolved, pattern: #"\\r\"([^\"]+)\""#) { path in
+        resolved = replaceMarkers(in: resolved, pattern: #"\\[rf]\"([^\"]+)\""#) { path in
             guard let loaded = loadTextFromFile(path) else {
                 failed = true
                 return ""
@@ -2931,23 +3198,6 @@ private final class BasicRDSCoder {
             }
         }
         return out
-    }
-
-    private static func parseTimedPrefix(_ text: String) -> (duration: Double, text: String)? {
-        guard let regex = try? NSRegularExpression(pattern: #"^\s*(\d+)s:(.*)$"#, options: [])
-        else {
-            return nil
-        }
-        let ns = text as NSString
-        let range = NSRange(location: 0, length: ns.length)
-        guard let match = regex.firstMatch(in: text, options: [], range: range),
-            match.numberOfRanges >= 3
-        else {
-            return nil
-        }
-        let duration = max(0.5, Double(ns.substring(with: match.range(at: 1))) ?? 2.5)
-        let segment = ns.substring(with: match.range(at: 2))
-        return (duration, segment)
     }
 
     private static func loadTextFromFile(_ path: String) -> String? {
@@ -3394,6 +3644,9 @@ final class MPXGenerator {
         let rtPlusFormatA: String
         let rtPlusFormatB: String
         let nowPlayingEnabled: Bool
+        let psBanks: [String]        // 4 PS text banks (A, B, C, D)
+        let psActiveBank: String     // "A" / "B" / "C" / "D"
+        let psCentered: Bool
     }
 
     private var sampleRate: Float
@@ -4203,6 +4456,10 @@ final class MPXGenerator {
                 ceilingDB: compositeClipperCeilingDB
             )
         }
+    }
+
+    func currentRDSLiveSnapshot() -> BasicRDSCoder.LiveSnapshot? {
+        rdsCoder?.currentLiveSnapshot()
     }
 
     func applyRDSRuntimeConfig(_ config: RDSRuntimeConfig) {

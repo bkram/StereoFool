@@ -5,7 +5,7 @@ set -e
 
 cd "$(dirname "$0")"
 
-VERSION=${1:-0.8}
+VERSION=${1:-0.10}
 OUTPUT_DIR="macOS/dist"
 APP_NAME="MPX Prime"
 EXECUTABLE_NAME="MPXPrime"
@@ -132,12 +132,18 @@ else
     echo "Note: App uses ad-hoc signature. Run: xattr -cr '$APP_DIR' if needed."
 fi
 
-# Create DMG
+# Create DMG with Applications symlink for drag-to-install
 echo "Creating DMG..."
-DMG_PATH="$OUTPUT_DIR/MPX Prime-$VERSION.dmg"
-hdiutil create -volname "$APP_NAME" -srcfolder "$APP_DIR" -ov -format UDZO "$DMG_PATH" || {
+DMG_PATH="$OUTPUT_DIR/MPX_Prime-$VERSION.dmg"
+DMG_STAGING="$OUTPUT_DIR/dmg_staging"
+rm -rf "$DMG_STAGING"
+mkdir -p "$DMG_STAGING"
+cp -R "$APP_DIR" "$DMG_STAGING/"
+ln -s /Applications "$DMG_STAGING/Applications"
+hdiutil create -volname "$APP_NAME" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH" || {
     echo "Failed to create DMG, keeping .app bundle"
 }
+rm -rf "$DMG_STAGING"
 
 echo ""
 echo "Build complete!"

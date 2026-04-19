@@ -1,6 +1,6 @@
 # MPX Prime
 
-Version: 0.85
+Version: 0.10
 
 MPX Prime is a native macOS FM composite (MPX) generator written in Swift and SwiftUI. It takes live audio input or a test tone, applies optional broadcast-style processing, generates stereo FM baseband with pilot and optional RDS, and sends MPX plus optional decoded monitor audio to Core Audio devices.
 
@@ -233,6 +233,40 @@ Available Radiotext macros:
 - `{date}` as local date in `YYYY-MM-DD`
 - `{time}` as local time in `HH:mm`
 
+### RDS text syntax
+
+MPX Prime accepts the same RDS text grammar as Stereotool for PS, PTYN, Long PS, and Radiotext fields. Unsupported markers are accepted silently where practical so existing Stereotool presets load without modification.
+
+| Marker | Meaning |
+| --- | --- |
+| `Ns:TEXT` | Timed segment, `N` seconds. Fractional accepted (`1.5s:`). |
+| `Nt:TEXT` | Transmit-count segment. Advances after `N` full transmissions of the field. |
+| `/` | Separates repeating segments. |
+| `<TEXT` / `>TEXT` | Scroll left / right. **PS only** — too slow to be useful on Radiotext. Repeat the marker for more chars per tick: `<<TEXT` scrolls twice as fast. |
+| `\|\|` | Word-wrap toggle. Word-wrap is always on; accepted as a no-op. |
+| `\\<`  `\\>`  `\\\|`  `\\:`  `\\/`  `\\\\` | Escape the special character so it transmits literally. |
+| `\R"path"` / `\r"path"` | Load file contents (uppercase / as-is). |
+| `\F"path"` / `\f"path"` | Aliases for `\R` / `\r`. |
+| `\w"url"` | Fetch text from a URL. MPX Prime extension, not in Stereotool. |
+
+Example mixing timing modes and separators:
+
+```text
+1.5s:MPX Prime/3t:In STEREO on RDS/10s:Now: {artist} - {title}
+```
+
+Scrolling PS marquee (PS is 8 characters wide):
+
+```text
+<<MPX PRIME - FM BROADCAST ENCODER
+```
+
+Escape a colon so it is not parsed as a timing prefix:
+
+```text
+Visit us\: https\://example.com/10s:Alt text
+```
+
 Important defaults:
 
 - Input HPF default: `30 Hz`
@@ -344,7 +378,7 @@ Disabled by bypass:
 Build a release app bundle / DMG:
 
 ```bash
-./build-release.sh 0.85
+./build-release.sh 0.10
 ```
 
 Artifacts are written to `macOS/dist/`.

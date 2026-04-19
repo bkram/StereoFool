@@ -641,7 +641,13 @@ final class AudioOutputEngine {
     }
 
     func stop() {
-        isShuttingDown = false
+        // Mark shutdown BEFORE tearing down so any in-flight render callback
+        // hits the silence guard at the top of the source node and does not
+        // touch state (inputRing, scratch buffers, pending configs) that is
+        // about to be freed. Without this, quick stop-start cycles can
+        // present as clicks, garbled buffers, or stale data leaking into the
+        // next run's first few frames.
+        isShuttingDown = true
         meteringEnabled = false
         inputRing = nil
         engine.stop()
@@ -1520,6 +1526,10 @@ final class AudioOutputEngine {
         runtimeConfigLock.unlock()
     }
 
+    var currentRDSLiveSnapshot: BasicRDSCoder.LiveSnapshot? {
+        generator.currentRDSLiveSnapshot()
+    }
+
     func applyRDSRuntimeConfig(_ config: AppConfig) {
         let runtime = MPXGenerator.RDSRuntimeConfig(
             rtText: config.rdsRTText,
@@ -1539,7 +1549,10 @@ final class AudioOutputEngine {
             rtPlusEnabled: config.rdsEnableRTPlus,
             rtPlusFormatA: config.rdsRTPlusFormatA,
             rtPlusFormatB: config.rdsRTPlusFormatB,
-            nowPlayingEnabled: config.rdsNowPlayingEnabled
+            nowPlayingEnabled: config.rdsNowPlayingEnabled,
+            psBanks: [config.rdsPSA, config.rdsPSB, config.rdsPSC, config.rdsPSD],
+            psActiveBank: config.rdsPSActiveBank,
+            psCentered: config.rdsPSCentered
         )
         runtimeConfigLock.lock()
         if lastQueuedRDSRuntimeConfig == runtime {

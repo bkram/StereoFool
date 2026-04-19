@@ -1,7 +1,7 @@
 import Foundation
 
 struct AppConfig {
-    static let appVersion: String = "0.85"
+    static let appVersion: String = "0.10"
 
     static var defaultINIPath: String {
         let fileManager = FileManager.default
@@ -184,9 +184,28 @@ struct AppConfig {
     var rdsEnableAF: Bool = false
     var rdsAFList: String = "88.1, 98.8, 106.6"
     var rdsAFMethod: String = "A"
-    var rdsPSDynamic: String =
-        "3s:Stereo- 3s:Fool 3s:MAC 3s:App 3s:FM 3s:MPX 3s:+RDS"
+    // PS dynamic text is stored as 4 banks, with exactly one active at a time.
+    // On load, the legacy `ps_dynamic` key (if present and the new bank keys
+    // are empty) migrates into bank A. The active bank's text is transmitted;
+    // selecting an empty bank transmits 8 spaces.
+    var rdsPSA: String = "3s:Stereo- 3s:Fool 3s:MAC 3s:App 3s:FM 3s:MPX 3s:+RDS"
+    var rdsPSB: String = ""
+    var rdsPSC: String = ""
+    var rdsPSD: String = ""
+    var rdsPSActiveBank: String = "A"
     var rdsPSCentered: Bool = true
+
+    /// Returns the raw text of the currently active PS bank. Empty string if
+    /// the active bank is empty or the selector is invalid.
+    var activePSBankText: String {
+        switch rdsPSActiveBank.uppercased() {
+        case "A": return rdsPSA
+        case "B": return rdsPSB
+        case "C": return rdsPSC
+        case "D": return rdsPSD
+        default:  return rdsPSA
+        }
+    }
     var rdsRTText: String =
         "10s:MPX Prime FM MPX Generator/10s:Native macOS Swift App"
     var rdsRTManualBuffers: Bool = false
@@ -442,7 +461,14 @@ struct AppConfig {
         cfg.rdsEnableAF = rds.bool("en_af", defaultValue: cfg.rdsEnableAF)
         cfg.rdsAFList = rds.string("af_list", defaultValue: cfg.rdsAFList)
         cfg.rdsAFMethod = rds.string("af_method", defaultValue: cfg.rdsAFMethod)
-        cfg.rdsPSDynamic = rds.string("ps_dynamic", defaultValue: cfg.rdsPSDynamic)
+        // PS banks: new keys win; `ps_dynamic` migrates into bank A if the
+        // new key is absent (preserves upgrades from pre-0.10 installs).
+        let legacyPSDynamic = rds.string("ps_dynamic", defaultValue: "")
+        cfg.rdsPSA = rds.string("ps_a", defaultValue: legacyPSDynamic.isEmpty ? cfg.rdsPSA : legacyPSDynamic)
+        cfg.rdsPSB = rds.string("ps_b", defaultValue: cfg.rdsPSB)
+        cfg.rdsPSC = rds.string("ps_c", defaultValue: cfg.rdsPSC)
+        cfg.rdsPSD = rds.string("ps_d", defaultValue: cfg.rdsPSD)
+        cfg.rdsPSActiveBank = rds.string("ps_active_bank", defaultValue: cfg.rdsPSActiveBank)
         cfg.rdsPSCentered = rds.bool("ps_centered", defaultValue: cfg.rdsPSCentered)
         cfg.rdsRTText = rds.string("rt_text", defaultValue: cfg.rdsRTText)
         cfg.rdsRTManualBuffers = rds.bool("rt_manual_buffers", defaultValue: cfg.rdsRTManualBuffers)
@@ -639,6 +665,8 @@ struct AppConfig {
         // RDS
         rdsPI = Self.sanitizedPICode(rdsPI)
         rdsPTY = max(0, min(31, rdsPTY))
+        let upperBank = rdsPSActiveBank.uppercased()
+        rdsPSActiveBank = ["A", "B", "C", "D"].contains(upperBank) ? upperBank : "A"
         rdsRTMode = (rdsRTMode.uppercased() == "2B") ? "2B" : "2A"
         rdsRTCycleTime = max(1.0, min(60.0, rdsRTCycleTime))
         rdsRTActiveBuffer = max(0, min(3, rdsRTActiveBuffer))
@@ -789,7 +817,12 @@ struct AppConfig {
             "en_af = \(Self.boolString(rdsEnableAF))",
             "af_list = \(rdsAFList)",
             "af_method = \(rdsAFMethod)",
-            "ps_dynamic = \(rdsPSDynamic)",
+            "ps_a = \(rdsPSA)",
+            "ps_b = \(rdsPSB)",
+            "ps_c = \(rdsPSC)",
+            "ps_d = \(rdsPSD)",
+            "ps_active_bank = \(rdsPSActiveBank)",
+            "ps_dynamic = \(activePSBankText)",
             "ps_centered = \(Self.boolString(rdsPSCentered))",
             "rt_text = \(rdsRTText)",
             "rt_manual_buffers = \(Self.boolString(rdsRTManualBuffers))",

@@ -132,7 +132,7 @@ private struct MonitoringStatusLine: View {
     var body: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(isRunning ? Color.green : Color.gray)
+                .fill(isRunning ? Color.green : Color.secondary)
                 .frame(width: 8, height: 8)
             
             Text(isRunning ? "Running" : "Stopped")
@@ -760,7 +760,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         aboutItem.target = self
         appMenu.addItem(NSMenuItem.separator())
         let settingsItem = appMenu.addItem(
-            withTitle: "Settings...", action: #selector(showSettings), keyEquivalent: ",")
+            withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         settingsItem.target = self
         appMenu.addItem(withTitle: "Services", action: nil, keyEquivalent: "").submenu = NSMenu(
             title: "Services")
@@ -785,22 +785,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // File Menu
         let fileItem = NSMenuItem(title: "File", action: nil, keyEquivalent: "")
         let fileMenu = NSMenu(title: "File")
-        let openItem = fileMenu.addItem(withTitle: "Open...", action: #selector(openConfig), keyEquivalent: "o")
+        let openItem = fileMenu.addItem(withTitle: "Open…", action: #selector(openConfig), keyEquivalent: "o")
         openItem.target = self
         let saveItem = fileMenu.addItem(withTitle: "Save", action: #selector(saveConfig), keyEquivalent: "s")
         saveItem.target = self
-        let saveAsItem = fileMenu.addItem(withTitle: "Save As...", action: #selector(saveConfigAs), keyEquivalent: "S")
+        let saveAsItem = fileMenu.addItem(withTitle: "Save As…", action: #selector(saveConfigAs), keyEquivalent: "S")
         saveAsItem.target = self
         saveAsItem.keyEquivalentModifierMask = [.command, .shift]
+        fileMenu.addItem(NSMenuItem.separator())
+        fileMenu.addItem(
+            withTitle: "Close",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w")
         fileItem.submenu = fileMenu
         mainMenu.addItem(fileItem)
+
+        // Edit Menu — without these items the responder chain never routes
+        // cut / copy / paste / select all to the focused text field, so those
+        // keyboard shortcuts silently do nothing.
+        let editItem = NSMenuItem(title: "Edit", action: nil, keyEquivalent: "")
+        let editMenu = NSMenu(title: "Edit")
+        editMenu.addItem(
+            withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        let redoItem = editMenu.addItem(
+            withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "z")
+        redoItem.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(NSMenuItem.separator())
+        editMenu.addItem(
+            withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(
+            withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(
+            withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(
+            withTitle: "Delete", action: #selector(NSText.delete(_:)), keyEquivalent: "")
+        editMenu.addItem(
+            withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editMenu.addItem(NSMenuItem.separator())
+        let dictationItem = editMenu.addItem(
+            withTitle: "Start Dictation…",
+            action: Selector(("startDictation:")),
+            keyEquivalent: "")
+        dictationItem.isEnabled = true
+        let emojiItem = editMenu.addItem(
+            withTitle: "Emoji & Symbols",
+            action: #selector(NSApplication.orderFrontCharacterPalette(_:)),
+            keyEquivalent: " ")
+        emojiItem.keyEquivalentModifierMask = [.control, .command]
+        editItem.submenu = editMenu
+        mainMenu.addItem(editItem)
 
         // Control Menu
         let transportItem = NSMenuItem(title: "Control", action: nil, keyEquivalent: "")
         let transportMenu = NSMenu(title: "Control")
 
+        // ⌘T is reserved for "New Tab" per macOS convention; use ⌘Return for
+        // the transport toggle instead.
         let startStopItem = transportMenu.addItem(
-            withTitle: "Start/Stop", action: #selector(toggleTransport), keyEquivalent: "t"
+            withTitle: "Start/Stop", action: #selector(toggleTransport), keyEquivalent: "\r"
         )
         startStopItem.target = self
         startStopItem.keyEquivalentModifierMask = [.command]
@@ -831,8 +873,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         spectrumItem.target = self
         let levelsItem = windowMenu.addItem(withTitle: kLevelsWindowTitle, action: #selector(showLevelsWindow), keyEquivalent: "9")
         levelsItem.target = self
+        // ⌘0 is reserved for "Actual Size" per macOS convention. Use ⇧⌘0 so
+        // the numeric-window mnemonic is preserved without stepping on zoom.
         let scopesItem = windowMenu.addItem(withTitle: kScopesWindowTitle, action: #selector(showScopesWindow), keyEquivalent: "0")
         scopesItem.target = self
+        scopesItem.keyEquivalentModifierMask = [.command, .shift]
         
         windowMenu.addItem(NSMenuItem.separator())
         windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
@@ -920,7 +965,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let hostingController = NSHostingController(rootView: settingsView)
         let w = NSWindow(contentViewController: hostingController)
         w.title = "Settings"
-        w.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+        // Settings windows should not minimize (macOS HIG). Keep resizable so
+        // long device lists remain usable on small displays.
+        w.styleMask = [.titled, .closable, .resizable]
         w.toolbarStyle = .unified
         w.setContentSize(NSSize(width: 780, height: 620))
         w.minSize = NSSize(width: 700, height: 520)
@@ -1072,7 +1119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc private func openConfig() {
         let openPanel = NSOpenPanel()
-        openPanel.allowedContentTypes = [UTType(filenameExtension: "ini")!]
+        openPanel.allowedContentTypes = Self.iniContentTypes
         openPanel.message = "Choose a configuration file to open"
         openPanel.canChooseDirectories = false
         openPanel.canChooseFiles = true
@@ -1084,10 +1131,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
+    /// Accepted content types for INI config file dialogs. Falls back to
+    /// `UTType.propertyList` if the system cannot resolve a UTType for the
+    /// literal `ini` extension (avoids a force-unwrap crash on older systems).
+    private static var iniContentTypes: [UTType] {
+        if let ini = UTType(filenameExtension: "ini") {
+            return [ini]
+        }
+        return [.propertyList, .plainText]
+    }
+
     @objc private func saveConfigAs() {
         let savePanel = NSSavePanel()
-        savePanel.allowedContentTypes = [UTType(filenameExtension: "ini")!]
-        savePanel.message = "Save configuration as..."
+        savePanel.allowedContentTypes = Self.iniContentTypes
+        savePanel.message = "Save configuration as…"
         savePanel.nameFieldStringValue = "config.ini"
 
         savePanel.begin { [weak self] response in
@@ -1891,7 +1948,11 @@ final class MPXPrimeViewModel: ObservableObject {
             config.rdsPI = defaults.rdsPI
             config.rdsECC = defaults.rdsECC
             config.rdsPTY = defaults.rdsPTY
-            config.rdsPSDynamic = defaults.rdsPSDynamic
+            config.rdsPSA = defaults.rdsPSA
+            config.rdsPSB = defaults.rdsPSB
+            config.rdsPSC = defaults.rdsPSC
+            config.rdsPSD = defaults.rdsPSD
+            config.rdsPSActiveBank = defaults.rdsPSActiveBank
             config.rdsPSCentered = defaults.rdsPSCentered
             config.rdsEnablePTYN = defaults.rdsEnablePTYN
             config.rdsPTYN = defaults.rdsPTYN
@@ -2806,13 +2867,40 @@ final class MPXPrimeViewModel: ObservableObject {
     }
 
     private func updateRDSFields(elapsed: Double) {
-        rdsPS = Self.currentTimedDisplayText(config.rdsPSDynamic, elapsed: elapsed).ifEmpty("-")
+        // Prefer the live snapshot from the running RDS coder when available,
+        // so what's shown is exactly what's being transmitted (including PS
+        // scroll windows, Nt: advance, now-playing macro resolution). Fall
+        // back to the config-derived preview when the engine is offline.
+        let live = runningEngine?.currentRDSLiveSnapshot
+
+        if let live, !live.ps.isEmpty {
+            rdsPS = live.ps
+        } else {
+            rdsPS = Self.currentTimedDisplayText(config.activePSBankText, elapsed: elapsed).ifEmpty("-")
+        }
         rdsPI = config.rdsPI
         rdsPTY = Self.ptyName(for: config.rdsPTY)
-        rdsPTYN = Self.currentTimedDisplayText(config.rdsPTYN, elapsed: elapsed).ifEmpty("-")
+        if let live, !live.ptyn.isEmpty {
+            rdsPTYN = live.ptyn
+        } else {
+            rdsPTYN = Self.currentTimedDisplayText(config.rdsPTYN, elapsed: elapsed).ifEmpty("-")
+        }
         rdsAID = config.rdsEnableRTPlus ? "AID: 4BD7 (GROUP 11A)" : "AID: OFF"
-        rdsLongPS = Self.currentTimedDisplayText(config.rdsLongPS32, elapsed: elapsed).ifEmpty("-")
-        rdsRadiotext = currentRTText(elapsed: elapsed).ifEmpty("-")
+        if let live, !live.longPS.isEmpty {
+            rdsLongPS = live.longPS
+        } else {
+            rdsLongPS = Self.currentTimedDisplayText(config.rdsLongPS32, elapsed: elapsed).ifEmpty("-")
+        }
+        if let live, !live.rt.isEmpty {
+            // Trim trailing CR terminator (0x0D) that prepareRTFrame appends
+            // for the 2A "end of text" marker so the on-screen readout is clean.
+            rdsRadiotext = live.rt
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .ifEmpty("-")
+        } else {
+            rdsRadiotext = currentRTText(elapsed: elapsed).ifEmpty("-")
+        }
     }
 
     private func currentRTText(elapsed: Double) -> String {
@@ -3655,7 +3743,7 @@ private struct MonitoringDashboardView: View {
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(model.isBusy)
-                            .keyboardShortcut("t", modifiers: [.command])
+                            .keyboardShortcut(.return, modifiers: [.command])
 
                             Button {
                                 model.toggleBypass()
@@ -4935,7 +5023,7 @@ private struct MeterBar: View {
                     ZStack(alignment: .leading) {
                         ForEach(scaleTicks) { tick in
                             Text(tick.label)
-                                .font(.system(size: 9, weight: .regular, design: .monospaced))
+                                .font(.system(.caption2, design: .monospaced))
                                 .foregroundStyle(.secondary)
                                 .fixedSize()
                                 .position(
@@ -5160,7 +5248,7 @@ private struct MPXSpectrumView: View {
                     let y = yPosition(forDB: Float(db), in: plotRect)
                     let label = db == 0 ? "0 dB" : "\(db) dB"
                     let text = Text(label)
-                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .font(.system(.caption2, design: .monospaced))
                         .foregroundColor(.secondary)
                     context.draw(text, at: CGPoint(x: 18, y: y))
                     context.draw(text, at: CGPoint(x: size.width - 18, y: y))
@@ -5171,7 +5259,7 @@ private struct MPXSpectrumView: View {
                     let x = xPosition(forHz: tick, in: plotRect, maxHz: maxDisplayHz)
                     let kHz = Int((tick / 1000.0).rounded())
                     let label = Text("\(kHz) kHz")
-                        .font(.system(size: 10, weight: .regular, design: .monospaced))
+                        .font(.system(.caption2, design: .monospaced))
                         .foregroundColor(.secondary)
                     context.draw(label, at: CGPoint(x: x, y: plotRect.maxY + 12))
                 }
@@ -5237,7 +5325,7 @@ private struct MPXSpectrumView: View {
                 }
                 Spacer()
             }
-            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .font(.system(.caption, design: .monospaced).weight(.medium))
             .foregroundStyle(.secondary)
         }
     }
@@ -5405,11 +5493,16 @@ private struct ProcessingAGCTab: View {
     var body: some View {
         Card(title: "Wideband AGC") {
             Toggle("Enable Wideband AGC", isOn: model.configBinding(\.widebandAGCEnabled, runtimeDisposition: .live))
-            DoubleSliderRow(title: "Platform Target", value: model.configBinding(\.widebandAGCTargetDB, runtimeDisposition: .live), range: -36 ... -6, format: "%.1f dB")
-            DoubleSliderRow(title: "Attack", value: model.configBinding(\.widebandAGCAttackMS, runtimeDisposition: .live), range: 1...150, format: "%.1f ms")
-            DoubleSliderRow(title: "Release", value: model.configBinding(\.widebandAGCReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.1f ms")
-            DoubleSliderRow(title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB, runtimeDisposition: .live), range: 0...24, format: "%.1f dB")
-            DoubleSliderRow(title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB, runtimeDisposition: .live), range: -24...0, format: "%.1f dB")
+            DoubleSliderRow(title: "Platform Target", value: model.configBinding(\.widebandAGCTargetDB, runtimeDisposition: .live), range: -36 ... -6, format: "%.1f dB",
+                tooltip: "Target average level the AGC drives toward. Lower = more gain reduction on loud program; higher = less AGC action. Not the final loudness target.")
+            DoubleSliderRow(title: "Attack", value: model.configBinding(\.widebandAGCAttackMS, runtimeDisposition: .live), range: 1...150, format: "%.1f ms",
+                tooltip: "How quickly the AGC pulls gain down when the signal exceeds the target. Faster = tighter control but more pumping on transients.")
+            DoubleSliderRow(title: "Release", value: model.configBinding(\.widebandAGCReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.1f ms",
+                tooltip: "How quickly the AGC restores gain when the signal drops below target. Slower = smoother, less noise pumping during quiet passages.")
+            DoubleSliderRow(title: "Max Gain", value: model.configBinding(\.widebandAGCMaxGainDB, runtimeDisposition: .live), range: 0...24, format: "%.1f dB",
+                tooltip: "Upper limit on how much gain the AGC will add to quiet material. Too high lifts noise and hiss during silences.")
+            DoubleSliderRow(title: "Min Gain", value: model.configBinding(\.widebandAGCMinGainDB, runtimeDisposition: .live), range: -24...0, format: "%.1f dB",
+                tooltip: "Lower limit on how much the AGC will attenuate loud material before downstream stages take over.")
             Text("Wideband AGC should establish a stable average level platform. It is not the final loudness stage.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -5435,13 +5528,19 @@ private struct ProcessingOrbassTab: View {
             }
             .pickerStyle(.menu)
             Toggle("Enable Orbass", isOn: model.configBinding(\.orbassEnabled, runtimeDisposition: .live))
-            DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount, runtimeDisposition: .live), range: 0...1.0, format: "%.2f")
-            DoubleSliderRow(title: "Frequency", value: model.configBinding(\.orbassFreqHz, runtimeDisposition: .live), range: 40...180, format: "%.1f Hz")
-            DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics, runtimeDisposition: .live), range: 0...1.0, format: "%.2f")
-            DoubleSliderRow(title: "Drive", value: model.configBinding(\.orbassDrive, runtimeDisposition: .live), range: 0.2...2.0, format: "%.2f")
-            DoubleSliderRow(title: "Density", value: model.configBinding(\.orbassDensity, runtimeDisposition: .live), range: 0...1.0, format: "%.2f")
+            DoubleSliderRow(title: "Amount", value: model.configBinding(\.orbassAmount, runtimeDisposition: .live), range: 0...1.0, format: "%.2f",
+                tooltip: "Overall strength of the low-band enhancement. Higher values emphasize bass; too high introduces pumping and obvious low-frequency coloration.")
+            DoubleSliderRow(title: "Frequency", value: model.configBinding(\.orbassFreqHz, runtimeDisposition: .live), range: 40...180, format: "%.1f Hz",
+                tooltip: "Corner frequency of the low-band enhancement. Lower frequencies emphasize sub-bass, higher frequencies emphasize upper bass.")
+            DoubleSliderRow(title: "Harmonics", value: model.configBinding(\.orbassHarmonics, runtimeDisposition: .live), range: 0...1.0, format: "%.2f",
+                tooltip: "Adds restrained harmonic overtones so bass remains audible on small speakers that can't reproduce the fundamental.")
+            DoubleSliderRow(title: "Drive", value: model.configBinding(\.orbassDrive, runtimeDisposition: .live), range: 0.2...2.0, format: "%.2f",
+                tooltip: "Input level into the nonlinear enhancement stage. Higher drive increases harmonics intensity and perceived density.")
+            DoubleSliderRow(title: "Density", value: model.configBinding(\.orbassDensity, runtimeDisposition: .live), range: 0...1.0, format: "%.2f",
+                tooltip: "Smoothing of the enhancement envelope. Higher density reduces attack transients in the low band for a more sustained feel.")
             Toggle("Enable Subharmonics", isOn: model.configBinding(\.orbassSubharmonicsEnabled, runtimeDisposition: .live))
-            DoubleSliderRow(title: "Subharmonics", value: model.configBinding(\.orbassSubharmonicsAmount, runtimeDisposition: .live), range: 0...1.0, format: "%.2f")
+            DoubleSliderRow(title: "Subharmonics", value: model.configBinding(\.orbassSubharmonicsAmount, runtimeDisposition: .live), range: 0...1.0, format: "%.2f",
+                tooltip: "Synthesizes an octave-below reinforcement for fundamentals. Use sparingly — easily over-emphasizes sub-40 Hz content.")
                 .disabled(!model.config.orbassSubharmonicsEnabled)
         }
     }
@@ -5482,26 +5581,45 @@ private struct ProcessingMultibandTab: View {
                 Text("3-band").tag(3)
                 Text("5-band").tag(5)
             }
-            DoubleSliderRow(title: "Knee", value: model.configBinding(\.multibandKneeDB, runtimeDisposition: .live), range: 0...12, format: "%.1f dB")
-            DoubleSliderRow(title: "Link", value: model.configBinding(\.multibandLinkStrength, runtimeDisposition: .live), range: 0...1, format: "%.2f")
+            DoubleSliderRow(title: "Knee", value: model.configBinding(\.multibandKneeDB, runtimeDisposition: .live), range: 0...12, format: "%.1f dB",
+                tooltip: "Width of the soft transition around each band's threshold. Larger knee = gentler onset of compression.")
+            DoubleSliderRow(title: "Link", value: model.configBinding(\.multibandLinkStrength, runtimeDisposition: .live), range: 0...1, format: "%.2f",
+                tooltip: "How much gain reduction is shared across bands. 0 = independent (dense), 1 = linked (preserves spectral balance).")
             Toggle("Program-dependent Release", isOn: model.configBinding(\.multibandReleaseProgramDependent, runtimeDisposition: .live))
-            DoubleSliderRow(title: "X1", value: model.configBinding(\.multibandX1Hz, runtimeDisposition: .live), range: 30...300, format: "%.0f Hz")
-            DoubleSliderRow(title: "X2", value: model.configBinding(\.multibandX2Hz, runtimeDisposition: .live), range: 120...1200, format: "%.0f Hz")
-            DoubleSliderRow(title: "X3", value: model.configBinding(\.multibandX3Hz, runtimeDisposition: .live), range: 600...4000, format: "%.0f Hz")
-            DoubleSliderRow(title: "X4", value: model.configBinding(\.multibandX4Hz, runtimeDisposition: .live), range: 2500...12000, format: "%.0f Hz")
-            DoubleSliderRow(title: "Low Threshold", value: model.configBinding(\.multibandLowThresholdDB, runtimeDisposition: .live), range: (-40)...(-6), format: "%.1f dB")
-            DoubleSliderRow(title: "Mid Threshold", value: model.configBinding(\.multibandMidThresholdDB, runtimeDisposition: .live), range: (-40)...(-6), format: "%.1f dB")
-            DoubleSliderRow(title: "High Threshold", value: model.configBinding(\.multibandHighThresholdDB, runtimeDisposition: .live), range: (-40)...(-6), format: "%.1f dB")
-            DoubleSliderRow(title: "Low Ratio", value: model.configBinding(\.multibandLowRatio, runtimeDisposition: .live), range: 1...8, format: "%.2f")
-            DoubleSliderRow(title: "Mid Ratio", value: model.configBinding(\.multibandMidRatio, runtimeDisposition: .live), range: 1...8, format: "%.2f")
-            DoubleSliderRow(title: "High Ratio", value: model.configBinding(\.multibandHighRatio, runtimeDisposition: .live), range: 1...8, format: "%.2f")
-            DoubleSliderRow(title: "Low Attack", value: model.configBinding(\.multibandLowAttackMS, runtimeDisposition: .live), range: 1...120, format: "%.1f")
-            DoubleSliderRow(title: "Mid Attack", value: model.configBinding(\.multibandMidAttackMS, runtimeDisposition: .live), range: 1...120, format: "%.1f")
-            DoubleSliderRow(title: "High Attack", value: model.configBinding(\.multibandHighAttackMS, runtimeDisposition: .live), range: 1...120, format: "%.1f")
-            DoubleSliderRow(title: "Low Release", value: model.configBinding(\.multibandLowReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.0f")
-            DoubleSliderRow(title: "Mid Release", value: model.configBinding(\.multibandMidReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.0f")
-            DoubleSliderRow(title: "High Release", value: model.configBinding(\.multibandHighReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.0f")
-            DoubleSliderRow(title: "Makeup", value: model.configBinding(\.multibandMakeupDB, runtimeDisposition: .live), range: -12...18, format: "%.1f dB")
+            DoubleSliderRow(title: "X1", value: model.configBinding(\.multibandX1Hz, runtimeDisposition: .live), range: 30...300, format: "%.0f Hz",
+                tooltip: "Low / Low-Mid crossover frequency. Separates kick/bass from low-mid body.")
+            DoubleSliderRow(title: "X2", value: model.configBinding(\.multibandX2Hz, runtimeDisposition: .live), range: 120...1200, format: "%.0f Hz",
+                tooltip: "Low-Mid / Mid crossover frequency. Separates body from upper-vocal and presence region.")
+            DoubleSliderRow(title: "X3", value: model.configBinding(\.multibandX3Hz, runtimeDisposition: .live), range: 600...4000, format: "%.0f Hz",
+                tooltip: "Mid / High-Mid crossover frequency. Separates vocal presence from upper consonants and sibilance.")
+            DoubleSliderRow(title: "X4", value: model.configBinding(\.multibandX4Hz, runtimeDisposition: .live), range: 2500...12000, format: "%.0f Hz",
+                tooltip: "High-Mid / High crossover frequency. Separates sibilance region from air / top-end.")
+            DoubleSliderRow(title: "Low Threshold", value: model.configBinding(\.multibandLowThresholdDB, runtimeDisposition: .live), range: (-40)...(-6), format: "%.1f dB",
+                tooltip: "Low band compression threshold. Material above this level is attenuated by the low ratio.")
+            DoubleSliderRow(title: "Mid Threshold", value: model.configBinding(\.multibandMidThresholdDB, runtimeDisposition: .live), range: (-40)...(-6), format: "%.1f dB",
+                tooltip: "Mid band compression threshold. Material above this level is attenuated by the mid ratio.")
+            DoubleSliderRow(title: "High Threshold", value: model.configBinding(\.multibandHighThresholdDB, runtimeDisposition: .live), range: (-40)...(-6), format: "%.1f dB",
+                tooltip: "High band compression threshold. Material above this level is attenuated by the high ratio.")
+            DoubleSliderRow(title: "Low Ratio", value: model.configBinding(\.multibandLowRatio, runtimeDisposition: .live), range: 1...8, format: "%.2f",
+                tooltip: "Low band compression ratio. 1:1 = no compression; higher ratios flatten dynamics more aggressively.")
+            DoubleSliderRow(title: "Mid Ratio", value: model.configBinding(\.multibandMidRatio, runtimeDisposition: .live), range: 1...8, format: "%.2f",
+                tooltip: "Mid band compression ratio. Vocals and leads live here — moderate values (2:1–4:1) are typical.")
+            DoubleSliderRow(title: "High Ratio", value: model.configBinding(\.multibandHighRatio, runtimeDisposition: .live), range: 1...8, format: "%.2f",
+                tooltip: "High band compression ratio. Controls sibilance and cymbal energy.")
+            DoubleSliderRow(title: "Low Attack", value: model.configBinding(\.multibandLowAttackMS, runtimeDisposition: .live), range: 1...120, format: "%.1f",
+                tooltip: "Low band attack time in ms. Slow attacks preserve transients; fast attacks tighten the low end.")
+            DoubleSliderRow(title: "Mid Attack", value: model.configBinding(\.multibandMidAttackMS, runtimeDisposition: .live), range: 1...120, format: "%.1f",
+                tooltip: "Mid band attack time in ms. Slower values preserve vocal consonants; faster values increase density.")
+            DoubleSliderRow(title: "High Attack", value: model.configBinding(\.multibandHighAttackMS, runtimeDisposition: .live), range: 1...120, format: "%.1f",
+                tooltip: "High band attack time in ms. Fast attack tames sibilance; slow attack preserves air.")
+            DoubleSliderRow(title: "Low Release", value: model.configBinding(\.multibandLowReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.0f",
+                tooltip: "Low band release time in ms. Longer release prevents bass pumping at the cost of average level recovery speed.")
+            DoubleSliderRow(title: "Mid Release", value: model.configBinding(\.multibandMidReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.0f",
+                tooltip: "Mid band release time in ms. Typical vocal release; shorter = more density, longer = more transparent.")
+            DoubleSliderRow(title: "High Release", value: model.configBinding(\.multibandHighReleaseMS, runtimeDisposition: .live), range: 40...1200, format: "%.0f",
+                tooltip: "High band release time in ms. Shorter release brightens; longer release keeps the top smooth.")
+            DoubleSliderRow(title: "Makeup", value: model.configBinding(\.multibandMakeupDB, runtimeDisposition: .live), range: -12...18, format: "%.1f dB",
+                tooltip: "Overall gain applied after multiband processing. Set to offset average level loss from compression; not a loudness control.")
         }
     }
 }
@@ -5529,12 +5647,16 @@ private struct ProcessingWidenerTab: View {
                 title: "Bass Mono Freq",
                 value: model.configBinding(\.monoBassFreqHz, runtimeDisposition: .live),
                 range: 70...220,
-                format: "%.0f Hz"
+                format: "%.0f Hz",
+                tooltip: "Below this frequency, L and R side energy is summed to mono. Improves FM mono compatibility and sub-bass deviation behavior."
             )
             .disabled(!model.config.monoBassEnabled)
-            DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth, runtimeDisposition: .live), range: 0...1, format: "%.2f")
-            DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter, runtimeDisposition: .live), range: 0...1, format: "%.2f")
-            DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix, runtimeDisposition: .live), range: 0...1, format: "%.2f")
+            DoubleSliderRow(title: "Width", value: model.configBinding(\.stereoWidenWidth, runtimeDisposition: .live), range: 0...1, format: "%.2f",
+                tooltip: "Amount of upper-band side-channel expansion. 0 = mono-safe, 1 = maximum widening (risks over-modulation and FM noise in weak signal areas).")
+            DoubleSliderRow(title: "Center", value: model.configBinding(\.stereoWidenCenter, runtimeDisposition: .live), range: 0...1, format: "%.2f",
+                tooltip: "Preservation of the center image during widening. Higher = keeps vocals and lead instruments anchored in the phantom center.")
+            DoubleSliderRow(title: "Mix", value: model.configBinding(\.stereoWidenMix, runtimeDisposition: .live), range: 0...1, format: "%.2f",
+                tooltip: "Wet/dry blend of the widened signal. 1.0 = fully processed, 0.0 = bypass. Lower values reduce any unintended coloration.")
             Text("Start with Safe FM, then move to Open Music only if mono compatibility and verifier output stay clean.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -5565,12 +5687,14 @@ private struct ProcessingLimiterTab: View {
                 title: "Final Drive",
                 value: model.configBinding(\.finalDriveDB, runtimeDisposition: .live),
                 range: 0...12,
-                format: "%.1f dB"
+                format: "%.1f dB",
+                tooltip: "Drive into the composite limiter. The primary loudness control. Higher drive = hotter, more limiting; sustained high GR means too hot."
             )
             Text("Broadcast Preset updates AGC platform and final-stage drive together. Final Drive feeds the final composite protection stage before MPX Output Level calibration.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-            DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz, runtimeDisposition: .live), range: 40...90, format: "%.1f kHz")
+            DoubleSliderRow(title: "Composite Deviation", value: model.configBinding(\.mpxDeviationKHz, runtimeDisposition: .live), range: 40...90, format: "%.1f kHz",
+                tooltip: "Target peak FM deviation. 75 kHz = ITU-R BS.450 / US FM; 50 kHz = some European reduced-deviation mandates.")
         }
     }
 }
@@ -5585,7 +5709,8 @@ private struct ProcessingPhaseRotatorTab: View {
                 title: "Frequency",
                 value: model.configBinding(\.phaseRotationFreqHz, runtimeDisposition: .live),
                 range: 50...500,
-                format: "%.1f Hz"
+                format: "%.1f Hz",
+                tooltip: "Center frequency of the 4-pole allpass chain. 200 Hz is typical; lower values target male voice, higher values target female voice."
             )
             .disabled(!model.config.phaseRotationEnabled)
             Text("4-pole allpass chain reduces waveform asymmetry (especially voice) by 3\u{2013}4 dB, giving free headroom to downstream dynamics stages.")
@@ -5604,22 +5729,32 @@ private struct ProcessingParametricEQTab: View {
             let disabled = !model.config.parametricEQEnabled
 
             Text("Band 1 \u{2014} Low Shelf").font(.subheadline).foregroundStyle(.secondary).padding(.top, 4)
-            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB1FreqHz, runtimeDisposition: .live), range: 20...500, format: "%.0f Hz").disabled(disabled)
-            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB1GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB").disabled(disabled)
+            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB1FreqHz, runtimeDisposition: .live), range: 20...500, format: "%.0f Hz",
+                tooltip: "Low shelf corner frequency. Content below this frequency is boost/cut by the shelf gain.").disabled(disabled)
+            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB1GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB",
+                tooltip: "Boost or cut applied below the shelf frequency. Positive adds warmth; negative tightens bass.").disabled(disabled)
 
             Text("Band 2 \u{2014} Peaking").font(.subheadline).foregroundStyle(.secondary).padding(.top, 4)
-            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB2FreqHz, runtimeDisposition: .live), range: 100...5000, format: "%.0f Hz").disabled(disabled)
-            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB2GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB").disabled(disabled)
-            DoubleSliderRow(title: "Q", value: model.configBinding(\.peqB2Q, runtimeDisposition: .live), range: 0.1...10, format: "%.2f").disabled(disabled)
+            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB2FreqHz, runtimeDisposition: .live), range: 100...5000, format: "%.0f Hz",
+                tooltip: "Center frequency of this peaking band.").disabled(disabled)
+            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB2GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB",
+                tooltip: "Boost or cut at the center frequency.").disabled(disabled)
+            DoubleSliderRow(title: "Q", value: model.configBinding(\.peqB2Q, runtimeDisposition: .live), range: 0.1...10, format: "%.2f",
+                tooltip: "Bandwidth of the peaking filter. Low Q = broad / musical; high Q = narrow / surgical.").disabled(disabled)
 
             Text("Band 3 \u{2014} Peaking").font(.subheadline).foregroundStyle(.secondary).padding(.top, 4)
-            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB3FreqHz, runtimeDisposition: .live), range: 500...12000, format: "%.0f Hz").disabled(disabled)
-            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB3GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB").disabled(disabled)
-            DoubleSliderRow(title: "Q", value: model.configBinding(\.peqB3Q, runtimeDisposition: .live), range: 0.1...10, format: "%.2f").disabled(disabled)
+            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB3FreqHz, runtimeDisposition: .live), range: 500...12000, format: "%.0f Hz",
+                tooltip: "Center frequency of this peaking band.").disabled(disabled)
+            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB3GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB",
+                tooltip: "Boost or cut at the center frequency.").disabled(disabled)
+            DoubleSliderRow(title: "Q", value: model.configBinding(\.peqB3Q, runtimeDisposition: .live), range: 0.1...10, format: "%.2f",
+                tooltip: "Bandwidth of the peaking filter. Low Q = broad / musical; high Q = narrow / surgical.").disabled(disabled)
 
             Text("Band 4 \u{2014} High Shelf").font(.subheadline).foregroundStyle(.secondary).padding(.top, 4)
-            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB4FreqHz, runtimeDisposition: .live), range: 1000...16000, format: "%.0f Hz").disabled(disabled)
-            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB4GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB").disabled(disabled)
+            DoubleSliderRow(title: "Freq", value: model.configBinding(\.peqB4FreqHz, runtimeDisposition: .live), range: 1000...16000, format: "%.0f Hz",
+                tooltip: "High shelf corner frequency. Content above this frequency is boost/cut by the shelf gain.").disabled(disabled)
+            DoubleSliderRow(title: "Gain", value: model.configBinding(\.peqB4GainDB, runtimeDisposition: .live), range: -12...12, format: "%.1f dB",
+                tooltip: "Boost or cut applied above the shelf frequency. Positive adds air; negative dulls harshness.").disabled(disabled)
         }
     }
 }
@@ -5634,21 +5769,24 @@ private struct ProcessingMultibandLimiterTab: View {
                 title: "Threshold",
                 value: model.configBinding(\.multibandLimiterThresholdDB, runtimeDisposition: .live),
                 range: -20...0,
-                format: "%.1f dB"
+                format: "%.1f dB",
+                tooltip: "Per-band brick-wall limit threshold. Instantaneous peaks above this level are clipped regardless of the compressor ratio."
             )
             .disabled(!model.config.multibandLimiterEnabled)
             DoubleSliderRow(
                 title: "Attack",
                 value: model.configBinding(\.multibandLimiterAttackMS, runtimeDisposition: .live),
                 range: 0.01...10,
-                format: "%.2f ms"
+                format: "%.2f ms",
+                tooltip: "Limiter attack in ms. Sub-ms attack catches fast transients cleanly at the cost of some distortion."
             )
             .disabled(!model.config.multibandLimiterEnabled)
             DoubleSliderRow(
                 title: "Release",
                 value: model.configBinding(\.multibandLimiterReleaseMS, runtimeDisposition: .live),
                 range: 10...500,
-                format: "%.1f ms"
+                format: "%.1f ms",
+                tooltip: "Limiter release in ms. Short release = more density; long release = more transparent."
             )
             .disabled(!model.config.multibandLimiterEnabled)
             Text("Per-band fast peak limiter operating after multiband compression. Controls instantaneous transient peaks independently from the compressor ratio.")
@@ -5665,10 +5803,14 @@ private struct ProcessingExpanderTab: View {
         Card(title: "Downward Expander") {
             Toggle("Enable Expander", isOn: model.configBinding(\.downwardExpanderEnabled, runtimeDisposition: .live))
             let disabled = !model.config.downwardExpanderEnabled
-            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.expanderThresholdDB, runtimeDisposition: .live), range: -60...(-20), format: "%.1f dB").disabled(disabled)
-            DoubleSliderRow(title: "Ratio", value: model.configBinding(\.expanderRatio, runtimeDisposition: .live), range: 1...8, format: "%.1f:1").disabled(disabled)
-            DoubleSliderRow(title: "Attack", value: model.configBinding(\.expanderAttackMS, runtimeDisposition: .live), range: 0.1...100, format: "%.1f ms").disabled(disabled)
-            DoubleSliderRow(title: "Release", value: model.configBinding(\.expanderReleaseMS, runtimeDisposition: .live), range: 10...2000, format: "%.0f ms").disabled(disabled)
+            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.expanderThresholdDB, runtimeDisposition: .live), range: -60...(-20), format: "%.1f dB",
+                tooltip: "Level below which gain starts to reduce. Set just above the noise floor of the program material.").disabled(disabled)
+            DoubleSliderRow(title: "Ratio", value: model.configBinding(\.expanderRatio, runtimeDisposition: .live), range: 1...8, format: "%.1f:1",
+                tooltip: "Gain reduction ratio below threshold. Higher ratio = deeper attenuation of quiet material.").disabled(disabled)
+            DoubleSliderRow(title: "Attack", value: model.configBinding(\.expanderAttackMS, runtimeDisposition: .live), range: 0.1...100, format: "%.1f ms",
+                tooltip: "Time to re-open the gate once program re-exceeds the threshold. Fast attack preserves initial transients.").disabled(disabled)
+            DoubleSliderRow(title: "Release", value: model.configBinding(\.expanderReleaseMS, runtimeDisposition: .live), range: 10...2000, format: "%.0f ms",
+                tooltip: "Time to close the gate once program falls below the threshold. Longer release avoids chattering on sustained-but-quiet sources.").disabled(disabled)
             Text("Per-band noise reduction within the multiband compressor. Reduces gain on quiet bands to prevent AGC from lifting the noise floor.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -5683,9 +5825,12 @@ private struct ProcessingBassClipperTab: View {
         Card(title: "Bass Clipper") {
             Toggle("Enable Bass Clipper", isOn: model.configBinding(\.bassClipperEnabled, runtimeDisposition: .live))
             let disabled = !model.config.bassClipperEnabled
-            DoubleSliderRow(title: "Crossover", value: model.configBinding(\.bassClipperCrossoverHz, runtimeDisposition: .live), range: 60...300, format: "%.0f Hz").disabled(disabled)
-            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.bassClipperThresholdDB, runtimeDisposition: .live), range: -12...0, format: "%.1f dB").disabled(disabled)
-            DoubleSliderRow(title: "Drive", value: model.configBinding(\.bassClipperDrive, runtimeDisposition: .live), range: 0.5...3, format: "%.2f").disabled(disabled)
+            DoubleSliderRow(title: "Crossover", value: model.configBinding(\.bassClipperCrossoverHz, runtimeDisposition: .live), range: 60...300, format: "%.0f Hz",
+                tooltip: "LR4 crossover frequency isolating the low band for clipping. Content below this is clipped independently; above passes unmodified.").disabled(disabled)
+            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.bassClipperThresholdDB, runtimeDisposition: .live), range: -12...0, format: "%.1f dB",
+                tooltip: "Clipping threshold for the low band. Lower = more aggressive bass clipping, reducing bass-induced IMD in downstream stages.").disabled(disabled)
+            DoubleSliderRow(title: "Drive", value: model.configBinding(\.bassClipperDrive, runtimeDisposition: .live), range: 0.5...3, format: "%.2f",
+                tooltip: "Pre-clipping gain applied to the low band. Higher drive increases density but also clipping distortion.").disabled(disabled)
             Text("Pre-clips bass peaks independently before the final limiter, dramatically reducing bass-induced intermodulation distortion.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -5700,8 +5845,10 @@ private struct ProcessingDCClipperTab: View {
         Card(title: "Distortion-Cancelled Clipper") {
             Toggle("Enable DC Clipper", isOn: model.configBinding(\.dcClipperEnabled, runtimeDisposition: .live))
             let disabled = !model.config.dcClipperEnabled
-            DoubleSliderRow(title: "Ceiling", value: model.configBinding(\.dcClipperCeilingDB, runtimeDisposition: .live), range: -6...0, format: "%.1f dB").disabled(disabled)
-            DoubleSliderRow(title: "Cancel Freq", value: model.configBinding(\.dcClipperCancelFreqHz, runtimeDisposition: .live), range: 500...4000, format: "%.0f Hz").disabled(disabled)
+            DoubleSliderRow(title: "Ceiling", value: model.configBinding(\.dcClipperCeilingDB, runtimeDisposition: .live), range: -6...0, format: "%.1f dB",
+                tooltip: "Clipping ceiling for the distortion-cancelled clipper. Lower ceiling = more audible density but more clipping artifacts.").disabled(disabled)
+            DoubleSliderRow(title: "Cancel Freq", value: model.configBinding(\.dcClipperCancelFreqHz, runtimeDisposition: .live), range: 500...4000, format: "%.0f Hz",
+                tooltip: "Cutoff of the LF error-extraction filter. Clipping distortion below this frequency is subtracted; above, it is left for masking.").disabled(disabled)
             Text("Audio clipper with low-frequency distortion cancellation (Orban principle). Clips signal, extracts LF error below cancel frequency, and subtracts it \u{2014} leaving only psychoacoustically masked HF distortion.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -5716,8 +5863,10 @@ private struct ProcessingBS412Tab: View {
         Card(title: "BS.412 MPX Power Limiter") {
             Toggle("Enable BS.412", isOn: model.configBinding(\.bs412Enabled, runtimeDisposition: .live))
             let disabled = !model.config.bs412Enabled
-            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.bs412ThresholdDB, runtimeDisposition: .live), range: -20...0, format: "%.1f dB").disabled(disabled)
-            DoubleSliderRow(title: "Window", value: model.configBinding(\.bs412WindowSeconds, runtimeDisposition: .live), range: 1...120, format: "%.0f s").disabled(disabled)
+            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.bs412ThresholdDB, runtimeDisposition: .live), range: -20...0, format: "%.1f dB",
+                tooltip: "MPX average-power ceiling per ITU-R BS.412. Required for EU regulatory compliance (DE, AT, CH, SE, CZ, SI, etc).").disabled(disabled)
+            DoubleSliderRow(title: "Window", value: model.configBinding(\.bs412WindowSeconds, runtimeDisposition: .live), range: 1...120, format: "%.0f s",
+                tooltip: "Rolling averaging window for BS.412 power measurement. 60 s is the regulatory default.").disabled(disabled)
             Text("ITU-R BS.412 rolling average power limiter for European regulatory compliance (DE, AT, CH, SE, CZ, SI). Limits MPX power over a sliding time window.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -5732,8 +5881,10 @@ private struct ProcessingCompositeClipperTab: View {
         Card(title: "Composite Clipper") {
             Toggle("Enable Composite Clipper", isOn: model.configBinding(\.compositeClipperEnabled, runtimeDisposition: .live))
             let disabled = !model.config.compositeClipperEnabled
-            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.compositeClipperThresholdDB, runtimeDisposition: .live), range: -12...0, format: "%.1f dB").disabled(disabled)
-            DoubleSliderRow(title: "Ceiling", value: model.configBinding(\.compositeClipperCeilingDB, runtimeDisposition: .live), range: -6...0, format: "%.1f dB").disabled(disabled)
+            DoubleSliderRow(title: "Threshold", value: model.configBinding(\.compositeClipperThresholdDB, runtimeDisposition: .live), range: -12...0, format: "%.1f dB",
+                tooltip: "Onset of composite-level soft clipping on the audio composite (not pilot/RDS). Primary loudness lever when engaged.").disabled(disabled)
+            DoubleSliderRow(title: "Ceiling", value: model.configBinding(\.compositeClipperCeilingDB, runtimeDisposition: .live), range: -6...0, format: "%.1f dB",
+                tooltip: "Maximum output level after composite clipping. Must stay below 0 dBFS to leave headroom for pilot/RDS injection.").disabled(disabled)
             Text("8x oversampled tanh soft-clip on audio composite. Primary loudness lever: peaks above Threshold are shaped toward Ceiling. Placed after composite limiter, before BS.412 and safety limiter. Pilot and RDS bypass this stage.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -5946,7 +6097,10 @@ private struct RDSProgramTab: View {
     var body: some View {
         Card(title: "Program Service") {
             Toggle("Enable RDS", isOn: model.configBinding(\.enRDS))
-            TextField("PS Dynamic", text: model.configBinding(\.rdsPSDynamic))
+            PSBankRow(letter: "A", model: model, path: \.rdsPSA)
+            PSBankRow(letter: "B", model: model, path: \.rdsPSB)
+            PSBankRow(letter: "C", model: model, path: \.rdsPSC)
+            PSBankRow(letter: "D", model: model, path: \.rdsPSD)
             Toggle("Center PS", isOn: model.configBinding(\.rdsPSCentered))
             LabeledContent("PI Code") {
                 HexCodeField(text: model.piBinding(), placeholder: "0000", width: 72)
@@ -5966,6 +6120,37 @@ private struct RDSProgramTab: View {
 
         Card(title: "Snapshot") {
             KeyValueGrid(rows: model.rdsRows)
+        }
+    }
+}
+
+private struct PSBankRow: View {
+    let letter: String
+    @ObservedObject var model: MPXPrimeViewModel
+    let path: WritableKeyPath<AppConfig, String>
+
+    var body: some View {
+        let isActive = model.config.rdsPSActiveBank.uppercased() == letter
+        HStack(spacing: 10) {
+            Button(action: {
+                model.config.rdsPSActiveBank = letter
+            }) {
+                Image(systemName: isActive ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+                    .imageScale(.large)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isActive ? "PS bank \(letter) active" : "Activate PS bank \(letter)")
+            .help("Make PS \(letter) the active bank")
+
+            Text("PS \(letter)")
+                .frame(width: 40, alignment: .leading)
+                .font(.callout.monospaced())
+                .foregroundStyle(isActive ? Color.primary : Color.secondary)
+
+            TextField("", text: model.configBinding(path))
+                .textFieldStyle(.roundedBorder)
+                .disabled(false)
         }
     }
 }
@@ -6303,6 +6488,7 @@ private struct InlineRestartRequiredNote: View {
             Image(systemName: "arrow.clockwise.circle")
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
+                .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Restart Required")
@@ -6380,11 +6566,11 @@ private struct HelpInputLevelsView: View {
 private struct HelpRDSTextView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Timed text sequences for PS and Radiotext, plus now-playing macro support.")
+            Text("Stereotool-compatible RDS text grammar for PS, Radiotext, PTYN, and Long PS. Existing Stereotool presets should load without modification.")
                 .foregroundStyle(.secondary)
                 .font(.callout)
 
-            Text("Syntax")
+            Text("Quick start")
                 .font(.headline)
                 .padding(.top, 4)
 
@@ -6394,29 +6580,88 @@ private struct HelpRDSTextView: View {
                 .foregroundStyle(.secondary)
                 .font(.callout)
 
-            Text("Current supported syntax")
+            // MARK: Timing
+
+            Text("Timing prefixes")
                 .font(.headline)
                 .padding(.top, 8)
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("• `Ns:Text` timed segments")
-                Text("• `/` to separate repeating segments")
-                Text("• Structured now-playing macros in Radiotext")
+                Text("• `Ns:Text` — show `Text` for `N` seconds. Fractional accepted: `1.5s:Text`")
+                Text("• `Nt:Text` — transmit-count. Show `Text` for `N` full transmissions of the field, then advance. Useful when you want the receiver to see the message a known number of times rather than for a fixed wall-clock duration.")
+                Text("• Untimed plain text holds for 10 s before repeating.")
             }
             .foregroundStyle(.secondary)
             .font(.callout)
 
-            Text("Examples")
+            CodeBlock("""
+1.5s:Short segment
+3t:Transmit me three times/5s:Then this for 5 seconds
+""")
+
+            // MARK: Separators
+
+            Text("Segment separators")
                 .font(.headline)
                 .padding(.top, 8)
 
-            CodeBlock("""
-5s:MPX Prime - 5s:FM Coder
-20s:Station Name/10s:Now Playing
-8s:Tune to 88.5/8s:My Frequency
-""")
+            VStack(alignment: .leading, spacing: 6) {
+                Text("• `/` separates segments at the top level. Escape as `\\/` to transmit a literal slash.")
+                Text("• Inline whitespace-separated timed tokens also work: `1s:A 2s:B 3s:C` reads as three segments.")
+            }
+            .foregroundStyle(.secondary)
+            .font(.callout)
 
-            Text("Now Playing macros")
+            // MARK: Scroll
+
+            Text("Scrolling (PS only)")
+                .font(.headline)
+                .padding(.top, 8)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("• `<Text` scrolls left, `>Text` scrolls right. Each marker advances by one character per full PS transmission.")
+                Text("• Repeat the marker for faster scroll: `<<Text` moves two chars per tick, `<<<Text` three.")
+                Text("• Scroll markers are parser-level only on Radiotext — RT transmits too slowly (~5.8 s per cycle) for scrolling to be useful.")
+            }
+            .foregroundStyle(.secondary)
+            .font(.callout)
+
+            CodeBlock("<<MPX PRIME - FM BROADCAST ENCODER")
+
+            // MARK: Escapes
+
+            Text("Escaping special characters")
+                .font(.headline)
+                .padding(.top, 8)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("• `\\<`  `\\>`  `\\|`  `\\:`  `\\/`  `\\\\` — transmit the special char literally instead of treating it as a marker.")
+                Text("• `||` is accepted for Stereotool compatibility but is a no-op: word-wrap is always on.")
+            }
+            .foregroundStyle(.secondary)
+            .font(.callout)
+
+            CodeBlock("Visit us\\: https\\://example.com/10s:Alt text")
+
+            // MARK: External content
+
+            Text("External content")
+                .font(.headline)
+                .padding(.top, 8)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("• `\\R\"path\"` — load file, force uppercase.")
+                Text("• `\\r\"path\"` — load file, preserve case.")
+                Text("• `\\F\"path\"` / `\\f\"path\"` — Stereotool-compatible aliases for `\\R` / `\\r`.")
+                Text("• `\\w\"url\"` — fetch text from a URL. MPX Prime extension, not in Stereotool.")
+                Text("File content re-enters the parser, so timing markers inside a loaded file are honored.")
+            }
+            .foregroundStyle(.secondary)
+            .font(.callout)
+
+            // MARK: Now Playing
+
+            Text("Now Playing macros (Radiotext)")
                 .font(.headline)
                 .padding(.top, 8)
 
@@ -6427,18 +6672,46 @@ Now: {now_playing}
 {date} {time}
 """)
 
-            Text("Notes")
-                .font(.headline)
-                .padding(.top, 8)
-
             VStack(alignment: .leading, spacing: 6) {
                 Text("• `{now_playing}` and `{display}` use the script display text")
                 Text("• `{artist}` and `{title}` are preferred for RT+ tagging")
                 Text("• When the now-playing script is enabled, RT+ tags are derived from structured script output automatically")
-                Text("• In Mono Mode, pilot and RDS are suppressed, so transmitted RDS text is disabled until Mono Mode is turned off")
             }
             .foregroundStyle(.secondary)
             .font(.callout)
+
+            // MARK: Field limits
+
+            Text("Field widths and transmission cadence")
+                .font(.headline)
+                .padding(.top, 8)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("• PS is 8 chars wide. One full PS transmission = 4 group-0 blocks.")
+                Text("• Radiotext 2A is 64 chars wide (16 segments); 2B is 32 chars (16 segments).")
+                Text("• PTYN is 8 chars wide (2 segments).")
+                Text("• Long PS is 32 chars wide (8 segments).")
+                Text("• Overlong text is word-wrapped and cycled; chunks inherit their segment's timing.")
+                Text("• In Mono Mode pilot and RDS are suppressed — transmitted RDS text is disabled until Mono Mode is turned off.")
+            }
+            .foregroundStyle(.secondary)
+            .font(.callout)
+
+            // MARK: Examples
+
+            Text("More examples")
+                .font(.headline)
+                .padding(.top, 8)
+
+            CodeBlock("""
+5s:MPX Prime - 5s:FM Coder
+20s:Station Name/10s:Now Playing
+8s:Tune to 88.5/8s:My Frequency
+1.5s:Short/2t:Repeat Twice
+<<MARQUEE TEXT
+10s:Now\\: {artist} - {title}
+\\R"~/Documents/station_name.txt"/10s:Static segment
+""")
 
             Spacer(minLength: 0)
         }
@@ -6523,6 +6796,7 @@ private struct DisclaimerBox: View {
             HStack {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
+                    .accessibilityHidden(true)
                 Text("Disclaimer")
                     .font(.headline)
             }
@@ -6605,12 +6879,26 @@ private struct PendingApplyCard: View {
     
 
 
+// Conditional `.help()` so an empty/nil tooltip does not clear tooltips set
+// elsewhere in the subtree — SwiftUI interprets `.help("")` as "remove help".
+private struct TooltipIfPresent: ViewModifier {
+    let text: String?
+    func body(content: Content) -> some View {
+        if let text = text, !text.isEmpty {
+            content.help(text)
+        } else {
+            content
+        }
+    }
+}
+
 private struct DoubleSliderRow: View {
     let title: String
     @Binding var value: Double
     let range: ClosedRange<Double>
     let format: String
-    var accessibilityLabel: String?
+    var accessibilityLabel: String? = nil
+    var tooltip: String? = nil
 
     var body: some View {
         LabeledContent(title) {
@@ -6623,7 +6911,14 @@ private struct DoubleSliderRow: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 70, alignment: .trailing)
             }
+            // Attach on the interactive HStack so hovering the slider /
+            // readout fires the tooltip reliably (LabeledContent alone does
+            // not always forward `.help()` to its content on macOS 15).
+            .contentShape(Rectangle())
+            .modifier(TooltipIfPresent(text: tooltip))
         }
+        .contentShape(Rectangle())
+        .modifier(TooltipIfPresent(text: tooltip))
     }
 }
 
@@ -6633,6 +6928,7 @@ private struct IntStepperRow: View {
     let range: ClosedRange<Int>
     let step: Int
     let format: String
+    var tooltip: String? = nil
 
     var body: some View {
         LabeledContent(title) {
@@ -6644,7 +6940,11 @@ private struct IntStepperRow: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 180, alignment: .trailing)
             }
+            .contentShape(Rectangle())
+            .modifier(TooltipIfPresent(text: tooltip))
         }
+        .contentShape(Rectangle())
+        .modifier(TooltipIfPresent(text: tooltip))
     }
 }
 
@@ -6791,7 +7091,7 @@ private struct StereoPreMPXSpectrumView: View {
                 Spacer()
                 Text("Tap: raw stereo input before processing")
             }
-            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .font(.system(.caption, design: .monospaced).weight(.medium))
             .foregroundStyle(.secondary)
         }
     }
