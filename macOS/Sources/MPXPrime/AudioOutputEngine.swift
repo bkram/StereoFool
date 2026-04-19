@@ -359,7 +359,10 @@ final class AudioOutputEngine {
         self.requestedOutputDeviceID = outputDeviceID
         self.outputMode = outputMode
         self.targetDeviationKHz = Float(max(1.0, config.mpxDeviationKHz))
+        self.encoderFIREnabled = config.encoderFIREnabled
     }
+
+    private let encoderFIREnabled: Bool
 
     func start() throws {
         isShuttingDown = false
@@ -383,6 +386,10 @@ final class AudioOutputEngine {
         }
         configuredRenderSampleRate = renderRate
         generator.setSampleRate(renderRate)
+        // TX-grade FIR encoder bandwidth guard only runs in composite output
+        // mode; monitor mode keeps the low-latency Butterworth so operator
+        // monitoring stays snappy.
+        generator.setEncoderFIREnabled(outputMode == .mpxComposite && encoderFIREnabled)
         loudnessAnalyzer = MonitorLoudnessAnalyzer(sampleRate: Float(renderRate))
         configureScopeHistory(renderRate: renderRate, inputRate: configuredInputSampleRate)
         preAllocateBuffers(maxFrames: Int(max(renderRate, 192000.0) * 0.1))

@@ -974,6 +974,143 @@ struct ProgramLowpass {
     }
 }
 
+/// Linear-phase FIR lowpass for the transmit-path encoder bandwidth guard.
+/// Kaiser-windowed sinc with a configurable cutoff and transition band,
+/// sized at configure() time to meet a stop-band attenuation target. Used
+/// in place of the Butterworth `ProgramLowpass` on the TX path so later
+/// nonlinear stages (DC clipper, composite clipper) see a much steeper
+/// audio-spectrum roll-off — brings stop-band suppression from ~40 dB
+/// (Butterworth) to >=80 dB. Coefficients computed once, hot path is a
+/// circular-buffer dot product.
+///
+/// Trade-off: the filter introduces (N-1)/2 samples of group delay. At
+/// 192 kHz with ~1.5 kHz transition band this is ~320 samples / 1.67 ms —
+/// tolerable on the transmit path, unacceptable on a live-monitor path.
+/// The Butterworth `ProgramLowpass` continues to be used when the engine
+/// runs in monitor mode.
+struct LinearPhaseFIRLowpass {
+    private var coeffs: [Float] = []
+    private var delayL: [Float] = []
+    private var delayR: [Float] = []
+    private var writeIdx: Int = 0
+    private var lengthTaps: Int = 0
+    private var halfLength: Int = 0
+
+    var tapCount: Int { lengthTaps }
+    var groupDelaySamples: Int { halfLength }
+    var enabled: Bool { lengthTaps > 0 }
+
+    mutating func configure(
+        cutoffHz: Float,
+        sampleRate: Float,
+        stopBandDB: Float = 82.0,
+        transitionHz: Float = 1_500.0
+    ) {
+        let sr = max(8_000.0 as Float, sampleRate)
+        let nyq = sr * 0.5
+        let fc = clampf(cutoffHz, 1_000.0, nyq - 500.0)
+        let transition = max(200.0, min(transitionHz, nyq - fc - 50.0))
+        let attenuation = max(21.0, stopBandDB)
+
+        // Kaiser order estimate: N ≈ (A - 8) / (2.285 · 2π · Δf / fs).
+        let normalizedTransition = transition / sr
+        let rawN = Int(ceilf((attenuation - 8.0) / (2.285 * 2.0 * .pi * normalizedTransition)))
+        // Odd length gives a sample-centred symmetric kernel (exact linear
+        // phase). Clamp to a sane range so pathological sample rates don't
+        // produce multi-thousand-tap filters.
+        let N = max(63, min(2_049, rawN | 1))
+
+        lengthTaps = N
+        halfLength = (N - 1) / 2
+        coeffs = [Float](repeating: 0.0, count: N)
+
+        let beta: Float
+        if attenuation > 50 {
+            beta = 0.1102 * (attenuation - 8.7)
+        } else {
+            beta = 0.5842 * powf(attenuation - 21.0, 0.4) + 0.07886 * (attenuation - 21.0)
+        }
+        let i0beta = Self.kaiserI0(beta)
+
+        // Design around the midpoint of the transition band so the -6 dB
+        // point sits roughly at (fc + fc + transition)/2. This is the
+        // standard Kaiser-design convention.
+        let fcNorm = (fc + transition * 0.5) / sr
+        let M = Float(N - 1)
+        var accumulation: Float = 0
+        for n in 0..<N {
+            let nn = Float(n) - M * 0.5
+            let sinc: Float
+            if abs(nn) < 1e-6 {
+                sinc = 2.0 * fcNorm
+            } else {
+                sinc = sinf(2.0 * .pi * fcNorm * nn) / (.pi * nn)
+            }
+            let u = 2.0 * nn / M
+            let arg = beta * sqrtf(max(0.0, 1.0 - u * u))
+            let w = Self.kaiserI0(arg) / i0beta
+            let tap = sinc * w
+            coeffs[n] = tap
+            accumulation += tap
+        }
+        // Normalise to exact unity DC gain.
+        if accumulation > 1e-6 {
+            let scale = 1.0 / accumulation
+            for i in 0..<N {
+                coeffs[i] *= scale
+            }
+        }
+
+        delayL = [Float](repeating: 0.0, count: N)
+        delayR = [Float](repeating: 0.0, count: N)
+        writeIdx = 0
+    }
+
+    mutating func reset() {
+        guard lengthTaps > 0 else { return }
+        for i in 0..<lengthTaps {
+            delayL[i] = 0
+            delayR[i] = 0
+        }
+        writeIdx = 0
+    }
+
+    mutating func process(left: Float, right: Float) -> (Float, Float) {
+        guard lengthTaps > 0 else { return (left, right) }
+        delayL[writeIdx] = left
+        delayR[writeIdx] = right
+        var outL: Float = 0
+        var outR: Float = 0
+        var idx = writeIdx
+        let n = lengthTaps
+        for i in 0..<n {
+            outL += coeffs[i] * delayL[idx]
+            outR += coeffs[i] * delayR[idx]
+            idx -= 1
+            if idx < 0 { idx = n - 1 }
+        }
+        writeIdx += 1
+        if writeIdx >= n { writeIdx = 0 }
+        return (outL, outR)
+    }
+
+    /// Modified Bessel function of the first kind, order 0. Series expansion
+    /// converges rapidly for the Kaiser beta range we care about (<15).
+    @inline(__always)
+    private static func kaiserI0(_ x: Float) -> Float {
+        var sum: Float = 1.0
+        var term: Float = 1.0
+        let halfX = x * 0.5
+        let halfXSq = halfX * halfX
+        for k in 1...50 {
+            term *= halfXSq / Float(k * k)
+            sum += term
+            if term < 1e-9 * sum { break }
+        }
+        return sum
+    }
+}
+
 @inline(__always)
 private func effectiveProgramLowpassHz(configured: Float, preemphasisUS: Int) -> Float {
     guard preemphasisUS > 0 else { return configured }
@@ -3876,6 +4013,11 @@ final class MPXGenerator {
     private var preDiff = PreemphasisFilter()
     private var programLP = ProgramLowpass()
     private var encoderProgramLP = ProgramLowpass()
+    private var encoderProgramFIR = LinearPhaseFIRLowpass()
+    // Selects the TX-grade FIR over the low-latency Butterworth. Set by
+    // AudioOutputEngine based on output mode (composite → FIR, monitor →
+    // Butterworth) and the `encoderFirEnabled` config toggle.
+    private var useEncoderFIR: Bool = false
     private var pilotNotchL = Biquad()
     private var pilotNotchR = Biquad()
     private var encoderHFGuardSplit = StereoLinkwitzRiley4()
@@ -4137,6 +4279,25 @@ final class MPXGenerator {
         updateDerivedRates()
         configureMonitorDemod()
     }
+
+    /// Called by AudioOutputEngine at start() to pick the TX-grade FIR or
+    /// low-latency Butterworth for the encoder program lowpass, based on the
+    /// engine's output mode (composite/monitor) and the user's config toggle.
+    func setEncoderFIREnabled(_ enabled: Bool) {
+        if enabled == useEncoderFIR { return }
+        useEncoderFIR = enabled
+        encoderProgramLP.configure(
+            cutoffHz: effectiveEncoderLowpassHz(configured: programLowpassHz, preemphasisUS: preemphasisUS),
+            sampleRate: sampleRate
+        )
+        encoderProgramFIR.configure(
+            cutoffHz: effectiveEncoderLowpassHz(configured: programLowpassHz, preemphasisUS: preemphasisUS),
+            sampleRate: sampleRate
+        )
+    }
+
+    var encoderFIRTapCount: Int { encoderProgramFIR.tapCount }
+    var encoderFIRGroupDelaySamples: Int { encoderProgramFIR.groupDelaySamples }
 
     func setSampleRate(_ newSampleRate: Double) {
         let sr = Float(max(8_000.0, newSampleRate))
@@ -4486,6 +4647,7 @@ final class MPXGenerator {
         let config = makeEncoderComplianceConfig()
         programLP.configure(cutoffHz: config.programLowpassHz, sampleRate: sampleRate)
         encoderProgramLP.configure(cutoffHz: config.encoderLowpassHz, sampleRate: sampleRate)
+        encoderProgramFIR.configure(cutoffHz: config.encoderLowpassHz, sampleRate: sampleRate)
         if preemphasisUS > 0 {
             pilotNotchL.configureNotch(freqHz: 19_000.0, sampleRate: sampleRate, q: 50.0)
             pilotNotchR.configureNotch(freqHz: 19_000.0, sampleRate: sampleRate, q: 50.0)
@@ -5244,7 +5406,17 @@ final class MPXGenerator {
         // Final encoder-facing bandwidth guard. This sits immediately ahead of
         // stereo encoding and pre-emphasis so later nonlinear stages do not
         // re-broaden the transmitted audio spectrum.
-        let encoderBand = encoderProgramLP.process(left: left, right: right)
+        //
+        // Transmit mode uses a Kaiser-windowed linear-phase FIR for a >80 dB
+        // stop-band (~1.67 ms latency at 192 kHz). Monitor mode uses the
+        // Butterworth cascade for minimum latency. The choice is made per
+        // engine start by AudioOutputEngine via setEncoderFIREnabled(_:).
+        let encoderBand: (Float, Float)
+        if useEncoderFIR {
+            encoderBand = encoderProgramFIR.process(left: left, right: right)
+        } else {
+            encoderBand = encoderProgramLP.process(left: left, right: right)
+        }
         left = encoderBand.0
         right = encoderBand.1
 

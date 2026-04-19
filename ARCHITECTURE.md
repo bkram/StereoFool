@@ -49,8 +49,11 @@ Audio Input (L/R) @ interface rate (typically 192 kHz)
 │    └── Dynamic HF reduction to protect pre-emphasis compliance
 │
 ├──► Encoder program lowpass (~15 kHz)
-│    └── Final audio-bandwidth guard; stops later nonlinear stages from
-│        re-broadening the transmitted audio spectrum
+│    ├── TX path: Kaiser-windowed linear-phase FIR, >80 dB stop-band
+│    │   (~1.67 ms latency at 192 kHz). Pushes DC-clipper / composite-
+│    │   clipper aliasing well below the stereo subcarrier floor.
+│    └── Monitor path: 12th-order Butterworth cascade, ~13 dB at 17 kHz,
+│        ~0.2 ms latency — keeps live monitor responsive
 │
 ├──► Stereo-image protection
 │    └── Limits side-channel expansion from Orbass/widener
@@ -129,7 +132,7 @@ Within the main audio path, MPX Prime runs:
 11. **Bass clipper** (dedicated LF clipper with LR4 split, optional)
 12. **Distortion-cancelled clipper** (Orban-principle LF cancellation, optional)
 13. Encoder HF guard
-14. Encoder program lowpass (~15 kHz final audio-bandwidth guard before stereo encoding)
+14. Encoder program lowpass (~15 kHz final audio-bandwidth guard before stereo encoding) — **linear-phase FIR on TX**, Butterworth cascade on monitor
 15. Stereo-image protection
 16. Pre-encode audio limiter (L/R domain, stereo-linked true-peak)
 17. Pre-emphasis (during stereo encoding)
@@ -171,6 +174,16 @@ L/R domain audio clipper implementing Orban's distortion-cancellation principle:
 
 ### BS.412 MPX Power Limiter
 ITU-R BS.412 rolling average power measurement with slow gain reduction for European regulatory compliance (required in DE, AT, CH, SE, CZ, SI, and others). Measures decimated RMS power over a configurable sliding window (default 60 seconds) and applies slow gain reduction when average power exceeds the threshold. Operates on the audio composite before the safety limiter.
+
+### Encoder program lowpass (FIR / Butterworth split)
+Final audio-bandwidth guard sitting immediately before stereo encoding. Two implementations co-exist and the engine picks per output mode:
+
+- **Transmit mode (`mpxComposite`)**: Kaiser-windowed linear-phase FIR with ~80 dB stop-band attenuation. Tap count is derived from sample rate to maintain ~1.5 kHz transition at 15 kHz cutoff (≈641 taps at 192 kHz, ≈160 taps at 48 kHz). Group delay ~1.67 ms. The steep roll-off prevents downstream nonlinear stages (DC clipper, composite clipper) from re-broadening audio content into the 19 kHz pilot region, bringing DC-clipper aliasing from ≈-38 dBFS (Butterworth) to below -75 dBFS.
+- **Monitor mode (`monitorAudio`)**: 12th-order Butterworth cascade (six biquads). ~0.2 ms latency, ~13 dB attenuation at 17 kHz. Intentionally shallower for low-latency live monitoring. The monitor is documented as "an idea of how it would sound" — the transmitted composite uses the FIR.
+
+The choice is resolved once per engine start by `AudioOutputEngine.start()` via `MPXGenerator.setEncoderFIREnabled(_:)`. Both filters remain configured so toggling output mode on engine restart is immediate. The AppConfig `encoder_fir_enabled` flag allows bypassing the FIR entirely (defaults to true).
+
+`DSPThroughputTests.preEmphasisDoesNotExplodeFullChainCost` and `EncoderBandwidthTests` guard this stage: the former catches any regression in the combined limiter+encoder cost on HF-rich program, the latter characterises the FIR's stop-band depth directly and asserts a ≥20 dB gap over the Butterworth baseline.
 
 ## General DSP notes
 

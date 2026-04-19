@@ -83,6 +83,11 @@ struct AppConfig {
     var preEncodeAudioLimiterEnabled: Bool = true
     var preEncodeThreshold: Double = 0.85
     var preEncodeReleaseMS: Double = 50.0
+    // TX-path encoder bandwidth guard: linear-phase FIR (~1.67 ms latency at
+    // 192 kHz, >80 dB stop-band) instead of the default Butterworth (~0.2 ms
+    // latency, ~40 dB stop-band). Only active when running in composite
+    // output mode; monitor mode always uses the low-latency Butterworth.
+    var encoderFIREnabled: Bool = true
     var audioCompositeSoftClipEnabled: Bool = true
     var audioCompositeSmootherEnabled: Bool = true
     var finalMPXSoftClipEnabled: Bool = true
@@ -300,6 +305,8 @@ struct AppConfig {
             "pre_encode_threshold", defaultValue: cfg.preEncodeThreshold)
         cfg.preEncodeReleaseMS = mpx.double(
             "pre_encode_release_ms", defaultValue: cfg.preEncodeReleaseMS)
+        cfg.encoderFIREnabled = mpx.bool(
+            "encoder_fir_enabled", defaultValue: cfg.encoderFIREnabled)
         cfg.audioCompositeSoftClipEnabled = mpx.bool(
             "audio_composite_softclip_enabled",
             defaultValue: cfg.audioCompositeSoftClipEnabled
@@ -711,6 +718,7 @@ struct AppConfig {
             "pre_encode_limiter_enabled = \(Self.boolString(preEncodeAudioLimiterEnabled))",
             "pre_encode_threshold = \(Self.formatFloat(preEncodeThreshold))",
             "pre_encode_release_ms = \(Self.formatFloat(preEncodeReleaseMS))",
+            "encoder_fir_enabled = \(Self.boolString(encoderFIREnabled))",
             "audio_composite_softclip_enabled = \(Self.boolString(audioCompositeSoftClipEnabled))",
             "audio_composite_smoother_enabled = \(Self.boolString(audioCompositeSmootherEnabled))",
             "final_mpx_softclip_enabled = \(Self.boolString(finalMPXSoftClipEnabled))",

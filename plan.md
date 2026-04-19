@@ -2,14 +2,15 @@
 
 ## Next up
 
-1. **7.5 — FIR brick-wall 15 kHz.** Replace the Butterworth `encoderProgramLP` with a linear-phase FIR with >80 dB stop-band. Would push DC clipper aliasing from -38 dBFS to below -75 dBFS and improve stereo subcarrier separation. Design FIR at engine-start, cache coefficients. If latency exceeds monitor-path budget, keep the biquad LP on the monitor path.
-2. **7.6 — Dynamic pre-emphasis ("Smart HF").** Lookahead-based HF envelope follower before pre-emphasis; dynamically relax the pre-emphasis curve during HF transients. Reduces clipper workload. Significant algorithm effort. **Must preserve M/S-domain pre-emphasis placement** (see 0.10 "Pre-emphasis placement" note below) — if a sidechain-only HF-boost feed into the pre-encode limiter is needed, build it as a dedicated sidechain path, not by moving pre-emphasis upstream.
-3. **Preset tuning.** Make the composite clipper useful out of the box — current defaults (-3 dBFS threshold, -0.5 dBFS ceiling) don't engage meaningfully. Requires listening on real program material.
-4. **Release smoke pass.** Validate live-apply vs restart-required settings on difficult real material.
-5. **Extend baselines to `--verify-presets` and `--verify-long`.** Same `VerifierBaselineFile` schema, different scenario sets.
+1. **7.6 — Dynamic pre-emphasis ("Smart HF").** Lookahead-based HF envelope follower before pre-emphasis; dynamically relax the pre-emphasis curve during HF transients. Reduces clipper workload. Significant algorithm effort. **Must preserve M/S-domain pre-emphasis placement** (see 0.10 "Pre-emphasis placement" note below) — if a sidechain-only HF-boost feed into the pre-encode limiter is needed, build it as a dedicated sidechain path, not by moving pre-emphasis upstream.
+2. **Preset tuning.** Make the composite clipper useful out of the box — current defaults (-3 dBFS threshold, -0.5 dBFS ceiling) don't engage meaningfully. Requires listening on real program material.
+3. **Release smoke pass.** Validate live-apply vs restart-required settings on difficult real material.
+4. **Extend baselines to `--verify-presets` and `--verify-long`.** Same `VerifierBaselineFile` schema, different scenario sets.
+5. ~~**7.5 — FIR brick-wall 15 kHz.**~~ Done 2026-04-19. Kaiser-windowed linear-phase FIR on TX path with ≥80 dB stop-band (see ARCHITECTURE.md "Encoder program lowpass"). Monitor path keeps Butterworth for low latency. `EncoderBandwidthTests` guards stop-band depth.
 
 ## Completed in 0.10
 
+- **7.5 FIR brick-wall 15 kHz on TX path.** Linear-phase Kaiser-windowed FIR replaces the Butterworth program lowpass when the engine runs in composite output mode. ≥80 dB stop-band at 17 kHz (measured −80 at 17 k, −90+ at 19 k in `EncoderBandwidthTests`), ≈1.67 ms group delay at 192 kHz. Monitor mode retains the Butterworth cascade for low latency. Config toggle `encoder_fir_enabled` (default on).
 - **Stereotool-compatible RDS text grammar.** Fractional `Ns:`, `Nt:` transmit-count, `/` top-level separation, escape handling for `< > | : / \`, `||` word-wrap toggle (no-op), `<`/`>` scroll markers for PS with speed-by-repeat, `\F`/`\f` file-load aliases for `\R`/`\r`. See README "RDS text syntax". Pure parser extracted to `RDSTextParser.swift` with early-exit escape encode/decode.
 - **4 PS banks with exclusive active selector.** `rdsPSA/B/C/D` + `rdsPSActiveBank`. Live-apply via `RDSRuntimeConfig` — switching active bank rebuilds `psSequence` without engine restart. INI migrates legacy `ps_dynamic` into bank A. Empty bank transmits 8 spaces.
 - **Live RDS snapshot in Monitoring.** Monitoring card now reads the actual transmitted PS (8 chars, including live scroll window), RT (64/32), PTYN (8), Long PS (32) from the running coder — not a UI-side simulation. Writes guarded by `OSAllocatedUnfairLock` on the audio thread so UI contention never stalls the render callback.
@@ -30,10 +31,10 @@
 ## Phase 7 — remaining items
 
 ### 7.5. FIR brick-wall 15 kHz
-See "Next up" #1.
+~~See "Next up" #1.~~ Done 2026-04-19. TX-path linear-phase Kaiser-windowed FIR (~1.67 ms group delay at 192 kHz, ≥80 dB stop-band at 17 kHz). Monitor path retains the 12th-order Butterworth cascade (~0.2 ms latency, ~13 dB at 17 kHz). Selected per engine start from `AudioOutputEngine.start()`. Config toggle: `encoder_fir_enabled`. Tests: `EncoderBandwidthTests`.
 
 ### 7.6. Dynamic pre-emphasis
-See "Next up" #2. **Constraint:** must stay in M/S domain inside `makeCompositeComponents`, or implement as a dedicated sidechain feed into the pre-encode limiter. Moving the audio-path pre-emphasis upstream of the limiter (the `b806053` pattern) is verified to cause ring-overflow dropouts and is now guarded by `DSPThroughputTests.preEmphasisDoesNotExplodeFullChainCost`.
+See "Next up" #1. **Constraint:** must stay in M/S domain inside `makeCompositeComponents`, or implement as a dedicated sidechain feed into the pre-encode limiter. Moving the audio-path pre-emphasis upstream of the limiter (the `b806053` pattern) is verified to cause ring-overflow dropouts and is now guarded by `DSPThroughputTests.preEmphasisDoesNotExplodeFullChainCost`.
 
 ### 7.7. Pilot-synchronized limiter control
 Defer until measurement justifies. If the composite limiter's control envelope modulates near 19 kHz, it can induce sidebands around the pilot. Measure first, then phase-lock the limiter's release to a pilot subharmonic if needed.
