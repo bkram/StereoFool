@@ -4845,8 +4845,42 @@ private struct RDSSnapshotCardView: View {
     @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
-        Card(title: "RDS Snapshot") {
-            KeyValueGrid(rows: model.rdsRows)
+        Card(title: "RDS Snapshot", style: .meter) {
+            RDSLivePreviewPlate(model: model)
+        }
+    }
+}
+
+/// Terminal-style monospaced plate showing what's actually going out on
+/// the air right now — PS window, Radiotext, PTYN, Long PS, plus the PI
+/// / PTY / AID chips. Reads from `model.rdsRows`, which is sourced from
+/// the running coder's live snapshot via `updateRDSFields`.
+private struct RDSLivePreviewPlate: View {
+    @ObservedObject var model: MPXPrimeViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(model.rdsRows, id: \.0) { row in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(row.0.uppercased())
+                        .font(BroadcastStyle.chipLabel)
+                        .foregroundStyle(.secondary)
+                        .frame(width: 68, alignment: .leading)
+                    Text(row.1)
+                        .font(BroadcastStyle.valueReadout)
+                        .textSelection(.enabled)
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(BroadcastStyle.panelSurface.opacity(0.70))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                .stroke(BroadcastStyle.panelBorder, lineWidth: 0.5)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+                }
+            }
         }
     }
 }
@@ -6243,8 +6277,8 @@ private struct RDSProgramTab: View {
             Toggle("Center PTYN", isOn: model.configBinding(\.rdsPTYNCentered))
         }
 
-        Card(title: "Snapshot") {
-            KeyValueGrid(rows: model.rdsRows)
+        Card(title: "Snapshot", style: .meter) {
+            RDSLivePreviewPlate(model: model)
         }
     }
 }
@@ -6287,10 +6321,18 @@ private struct HexCodeField: View {
 
     var body: some View {
         TextField("", text: text, prompt: Text(placeholder).foregroundStyle(.tertiary))
-            .textFieldStyle(.roundedBorder)
-            .font(.system(.body, design: .monospaced))
+            .textFieldStyle(.plain)
+            .font(.system(.body, design: .monospaced).weight(.semibold))
             .multilineTextAlignment(.center)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
             .frame(width: width)
+            .background(BroadcastStyle.meterSurface)
+            .overlay(
+                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .stroke(BroadcastStyle.panelBorder, lineWidth: 0.75)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
             .textSelection(.enabled)
     }
 }
