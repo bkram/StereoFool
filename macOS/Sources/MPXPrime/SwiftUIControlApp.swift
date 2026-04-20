@@ -3817,6 +3817,8 @@ private struct MonitoringDashboardView: View {
                     MonitoringDSPStatusSectionView(model: model)
                 }
 
+                ScopesCardView(model: model)
+
                 Card(title: "Calibration") {
                     MonitoringCalibrationSectionView(model: model)
                 }
@@ -5104,7 +5106,7 @@ private struct ScopesCardView: View {
     private let scopeTimebasesMS: [Double] = [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 
     var body: some View {
-        Card(title: "Scopes") {
+        Card(title: "Scopes", style: .meter) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 14) {
                     LabeledContent("Window") {
@@ -5131,31 +5133,58 @@ private struct ScopesCardView: View {
                     )
                     .toggleStyle(.checkbox)
                     Spacer()
+                    Button {
+                        NSApp.sendAction(Selector(("showScopesWindow")), to: nil, from: nil)
+                    } label: {
+                        Image(systemName: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open Scopes in a dedicated window")
+                    .accessibilityLabel("Pop out scopes")
                 }
                 .font(.callout)
 
                 HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Stereo Input").font(.subheadline).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("STEREO INPUT")
+                            .font(BroadcastStyle.chipLabel)
+                            .foregroundStyle(.secondary)
                         ScopeView(samples: model.inputScopeLeft, secondarySamples: model.inputScopeRight)
+                            .frame(height: 100)
                             .accessibilityLabel("Input scope waveform")
                     }
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("MPX Output").font(.subheadline).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("MPX OUTPUT")
+                            .font(BroadcastStyle.chipLabel)
+                            .foregroundStyle(.secondary)
                         ScopeView(samples: model.outputScope)
+                            .frame(height: 100)
                             .accessibilityLabel("Output scope waveform")
                     }
                 }
                 .frame(maxWidth: .infinity)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(kMPXSpectrumWindowTitle).font(.subheadline).foregroundStyle(.secondary)
-                    MPXSpectrumView(
-                        dbBins: model.mpxSpectrumDB,
-                        maxHz: model.mpxSpectrumMaxHz,
-                        nyquistHz: model.mpxSpectrumNyquistHz
-                    )
+                HStack(alignment: .firstTextBaseline) {
+                    Text(kMPXSpectrumWindowTitle.uppercased())
+                        .font(BroadcastStyle.chipLabel)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        NSApp.sendAction(Selector(("showSpectrumWindow")), to: nil, from: nil)
+                    } label: {
+                        Image(systemName: "arrow.up.right.square")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open the MPX Spectrum window")
+                    .accessibilityLabel("Pop out spectrum")
                 }
+
+                MPXSpectrumView(
+                    dbBins: model.mpxSpectrumDB,
+                    maxHz: model.mpxSpectrumMaxHz,
+                    nyquistHz: model.mpxSpectrumNyquistHz
+                )
+                .frame(height: 140)
 
                 Text(
                     model.scopeAutoGainEnabled ? "Auto gain enabled." : "Fixed vertical scale: ±1.0"
