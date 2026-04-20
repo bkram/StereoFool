@@ -172,6 +172,7 @@ enum AppSection: String, CaseIterable, Identifiable {
 }
 
 enum ProcessingTab: String, CaseIterable, Identifiable {
+    case overview = "Overview"
     case core = "Core"
     case agc = "AGC"
     case phaseRotator = "Phase Rot"
@@ -191,6 +192,8 @@ enum ProcessingTab: String, CaseIterable, Identifiable {
 
     var resetButtonTitle: String {
         switch self {
+        case .overview:
+            return "Reset All Processing"
         case .core:
             return "Reset Core Tab"
         case .agc:
@@ -224,6 +227,8 @@ enum ProcessingTab: String, CaseIterable, Identifiable {
 
     var resetStatusText: String {
         switch self {
+        case .overview:
+            return "Reset every processing tab to defaults"
         case .core:
             return "Reset processing core tab to defaults"
         case .agc:
@@ -1181,7 +1186,7 @@ final class MPXPrimeViewModel: ObservableObject {
     private static let audioPeakMeterReleaseMS: Float = 180.0
 
     @Published var selectedSection: AppSection = .monitoring
-    @Published var selectedProcessingTab: ProcessingTab = .core
+    @Published var selectedProcessingTab: ProcessingTab = .overview
     @Published var selectedRDSTab: RDSTab = .program
     @Published var statusText: String = "Idle"
     @Published var pendingRuntimeApply: Bool = false
@@ -1805,6 +1810,9 @@ final class MPXPrimeViewModel: ObservableObject {
         let defaults = AppConfig()
 
         switch selectedProcessingTab {
+        case .overview:
+            // Overview has no detail parameters of its own — nothing to reset.
+            return
         case .core:
             processingBypass = defaults.processingBypass
             inputGainDB = defaults.inputGainDB
@@ -1923,7 +1931,8 @@ final class MPXPrimeViewModel: ObservableObject {
         switch selectedProcessingTab {
         case .core:
             runtimeDisposition = .restart
-        case .agc, .orbass, .multiband, .widener, .limiter,
+        case .overview,
+             .agc, .orbass, .multiband, .widener, .limiter,
              .phaseRotator, .parametricEQ, .mbLimiter, .expander,
              .bassClipper, .dcClipper, .bs412, .compositeClipper:
             runtimeDisposition = .live
@@ -5470,6 +5479,8 @@ private struct ProcessingSectionView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     switch model.selectedProcessingTab {
+                    case .overview:
+                        ProcessingOverviewGrid(model: model)
                     case .core:
                         ProcessingCoreTab(model: model)
                     case .agc:
@@ -5500,12 +5511,15 @@ private struct ProcessingSectionView: View {
                         ProcessingCompositeClipperTab(model: model)
                     }
 
-                    HStack {
-                        Spacer()
-                        Button(model.selectedProcessingTab.resetButtonTitle) {
-                            model.resetCurrentProcessingTabToDefaults()
+                    // Overview has no per-tab reset action.
+                    if model.selectedProcessingTab != .overview {
+                        HStack {
+                            Spacer()
+                            Button(model.selectedProcessingTab.resetButtonTitle) {
+                                model.resetCurrentProcessingTabToDefaults()
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.bordered)
                     }
                 }
                 .padding(20)
