@@ -4883,29 +4883,67 @@ private struct LevelsCardView: View {
     @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
-        Card(title: "Levels") {
-            VStack(alignment: .leading, spacing: 12) {
-                MeterRow(
-                    label: "Stereo Input L", valueText: model.inputLText, level: model.inputLLevel,
-                    peakLevel: model.inputLPeakHoldLevel, showsDBScale: true)
-                MeterRow(
-                    label: "Stereo Input R", valueText: model.inputRText, level: model.inputRLevel,
-                    peakLevel: model.inputRPeakHoldLevel, showsDBScale: true)
-                MeterRow(
-                    label: "AGC Out L", valueText: model.agcOutputLText, level: model.agcOutputLLevel,
-                    peakLevel: model.agcOutputLPeakHoldLevel, showsDBScale: true)
-                MeterRow(
-                    label: "AGC Out R", valueText: model.agcOutputRText, level: model.agcOutputRLevel,
-                    peakLevel: model.agcOutputRPeakHoldLevel, showsDBScale: true)
-                MeterRow(
-                    label: "MPX Output", valueText: model.outputText, level: model.outputLevel,
-                    peakLevel: model.outputPeakHoldLevel, showsDBScale: true)
-                MeterRow(
-                    label: "Modulation", valueText: model.modulationText,
-                    level: model.modulationLevel, peakLevel: model.modulationPeakHoldLevel,
-                    scaleStyle: .modulation100kHz(limitKHz: model.config.mpxDeviationKHz))
+        Card(title: "Levels", style: .meter) {
+            HStack(alignment: .center, spacing: 12) {
+                VerticalMeterStrip(
+                    label: "IN L",
+                    valueText: model.inputLText,
+                    level: model.inputLLevel,
+                    peakLevel: model.inputLPeakHoldLevel,
+                    scale: .dbfs
+                )
+                VerticalMeterStrip(
+                    label: "IN R",
+                    valueText: model.inputRText,
+                    level: model.inputRLevel,
+                    peakLevel: model.inputRPeakHoldLevel,
+                    scale: .dbfs
+                )
+                VerticalMeterStrip(
+                    label: "AGC L",
+                    valueText: model.agcOutputLText,
+                    level: model.agcOutputLLevel,
+                    peakLevel: model.agcOutputLPeakHoldLevel,
+                    scale: .dbfs
+                )
+                VerticalMeterStrip(
+                    label: "AGC R",
+                    valueText: model.agcOutputRText,
+                    level: model.agcOutputRLevel,
+                    peakLevel: model.agcOutputRPeakHoldLevel,
+                    scale: .dbfs
+                )
+                VerticalMeterStrip(
+                    label: "MPX",
+                    valueText: model.outputText,
+                    level: model.outputLevel,
+                    peakLevel: model.outputPeakHoldLevel,
+                    scale: .dbfs
+                )
+                VerticalMeterStrip(
+                    label: "MOD",
+                    valueText: model.modulationText,
+                    level: model.modulationLevel,
+                    peakLevel: model.modulationPeakHoldLevel,
+                    scale: .modulationKHz(limit: model.config.mpxDeviationKHz)
+                )
+                VerticalMeterStrip(
+                    label: "GR",
+                    valueText: String(format: "%.1f dB", Double(model.compositeLimiterGainReductionDBValue)),
+                    level: max(0.0, min(1.0, Double(model.compositeLimiterGainReductionDBValue) / 16.0)),
+                    peakLevel: nil,
+                    scale: .gainReductionDB
+                )
+                VerticalMeterStrip(
+                    label: "SAFE",
+                    valueText: String(format: "%.1f dB", Double(model.safetyLimiterGainReductionDBValue)),
+                    level: max(0.0, min(1.0, Double(model.safetyLimiterGainReductionDBValue) / 16.0)),
+                    peakLevel: nil,
+                    scale: .gainReductionDB
+                )
+                Spacer(minLength: 0)
             }
-            .controlSize(.regular)
+            .frame(height: 340)
         }
     }
 }
