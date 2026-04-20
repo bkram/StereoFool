@@ -3648,52 +3648,59 @@ private struct RootView: View {
     @ObservedObject var model: MPXPrimeViewModel
 
     var body: some View {
-        HSplitView {
-            VStack(spacing: 0) {
-                List(selection: $model.selectedSection) {
-                    Section {
-                        ForEach(AppSection.allCases) { section in
-                            Label(section.rawValue, systemImage: section.icon)
-                                .tag(section)
+        VStack(spacing: 0) {
+            // Always-visible broadcast status header — transport / peaks /
+            // deviation / GR / budget / injections. Present across all
+            // sections so operators never lose sight of safety metrics.
+            BroadcastStatusBar(model: model)
+
+            HSplitView {
+                VStack(spacing: 0) {
+                    List(selection: $model.selectedSection) {
+                        Section {
+                            ForEach(AppSection.allCases) { section in
+                                Label(section.rawValue, systemImage: section.icon)
+                                    .tag(section)
+                            }
                         }
                     }
-                }
-                .listStyle(.sidebar)
-                .scrollDisabled(true)
+                    .listStyle(.sidebar)
+                    .scrollDisabled(true)
 
-                Spacer()
-            }
-            .frame(minWidth: 200, idealWidth: 220, maxWidth: 260)
-
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text(model.selectedSection.detailTitle)
-                        .font(.title2.weight(.semibold))
                     Spacer()
                 }
-                .padding(.top, 16)
-                .padding(.horizontal, 22)
-                .padding(.bottom, 8)
+                .frame(minWidth: 200, idealWidth: 220, maxWidth: 260)
 
-                Text(model.selectedSection.detailSubtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 22)
-                    .padding(.bottom, 16)
-
-                Group {
-                    switch model.selectedSection {
-                    case .monitoring:
-                        MonitoringDashboardView(model: model)
-                    case .processing:
-                        ProcessingSectionView(model: model)
-                    case .rds:
-                        RDSSectionView(model: model)
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack {
+                        Text(model.selectedSection.detailTitle)
+                            .font(.title2.weight(.semibold))
+                        Spacer()
                     }
+                    .padding(.top, 16)
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 8)
+
+                    Text(model.selectedSection.detailSubtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 22)
+                        .padding(.bottom, 16)
+
+                    Group {
+                        switch model.selectedSection {
+                        case .monitoring:
+                            MonitoringDashboardView(model: model)
+                        case .processing:
+                            ProcessingSectionView(model: model)
+                        case .rds:
+                            RDSSectionView(model: model)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 }
