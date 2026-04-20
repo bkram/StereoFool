@@ -3698,25 +3698,61 @@ private struct RootView: View {
     }
 }
 
+enum CardStyle {
+    /// Standard broadcast panel — used for parameter controls, general
+    /// status blocks, RDS config. Uses the window control-background
+    /// surface.
+    case standard
+    /// Meter / readout plate — slightly darker surface so heat-mapped
+    /// bars and LED dots pop. Used for metering cards and RDS live
+    /// snapshots where the content is dense numeric readout.
+    case meter
+}
+
 private struct Card<Content: View>: View {
     let title: String
+    let style: CardStyle
     @ViewBuilder var content: Content
+
+    init(title: String, style: CardStyle = .standard, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.style = style
+        self.content = content()
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text(title)
                 .font(.headline)
                 .foregroundStyle(.secondary)
-                .padding(.bottom, 8)
+                .padding(.bottom, 6)
                 .padding(.horizontal, 4)
-            
-            VStack(alignment: .leading, spacing: 12) {
+
+            VStack(alignment: .leading, spacing: BroadcastStyle.cardSpacing) {
                 content
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .padding(padding)
+            .background(surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: BroadcastStyle.panelCornerRadius)
+                    .stroke(BroadcastStyle.panelBorder, lineWidth: 0.5)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: BroadcastStyle.panelCornerRadius))
+        }
+    }
+
+    private var surface: Color {
+        switch style {
+        case .standard: return BroadcastStyle.panelSurface
+        case .meter:    return BroadcastStyle.meterSurface
+        }
+    }
+
+    private var padding: CGFloat {
+        switch style {
+        case .standard: return BroadcastStyle.cardPadding
+        case .meter:    return BroadcastStyle.meterCardPadding
         }
     }
 }
@@ -4594,22 +4630,25 @@ private struct DSPStatusPill: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Circle()
-                .fill(color)
-                .frame(width: 8, height: 8)
+            BroadcastStyle.ledHalo(for: color)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title)
-                    .font(.caption2)
+                    .font(BroadcastStyle.chipLabel)
                     .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
                 Text(value)
-                    .font(.caption.weight(.semibold))
+                    .font(BroadcastStyle.chipValue)
             }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.5))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(BroadcastStyle.meterSurface.opacity(0.70))
+        .overlay(
+            RoundedRectangle(cornerRadius: BroadcastStyle.panelInsetCornerRadius, style: .continuous)
+                .stroke(BroadcastStyle.panelBorder, lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: BroadcastStyle.panelInsetCornerRadius, style: .continuous))
     }
 }
 
@@ -4628,24 +4667,29 @@ private struct DSPMetricGroupCard: View {
                     .foregroundStyle(.secondary)
             }
 
-            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+            Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 6) {
                 ForEach(rows.indices, id: \.self) { i in
                     GridRow {
                         Text(rows[i].0)
-                            .font(.caption.monospaced())
+                            .font(BroadcastStyle.scaleLabel)
                             .foregroundStyle(.secondary)
+                            .textCase(.uppercase)
                         Text(rows[i].1)
-                            .font(.caption.monospaced())
+                            .font(BroadcastStyle.valueReadout)
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
             }
         }
-        .padding(12)
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .windowBackgroundColor).opacity(0.35))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(BroadcastStyle.meterSurface.opacity(0.65))
+        .overlay(
+            RoundedRectangle(cornerRadius: BroadcastStyle.panelInsetCornerRadius, style: .continuous)
+                .stroke(BroadcastStyle.panelBorder, lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: BroadcastStyle.panelInsetCornerRadius, style: .continuous))
     }
 }
 
@@ -4958,16 +5002,9 @@ private struct MeterBar: View {
     private var meterTint: Color {
         switch scaleStyle {
         case .modulation100kHz(let limitKHz):
-            let limitNorm = max(0.01, min(1.0, limitKHz / 100.0))
-            if level > limitNorm { return .red }
-            if level >= (limitNorm * 0.95) { return .orange }
-            if level >= (limitNorm * 0.80) { return .yellow }
-            return .green
+            return BroadcastStyle.tint(forLevel: level, limitNorm: limitKHz / 100.0)
         case .dbfs, .none:
-            if level >= 0.92 { return .red }
-            if level >= 0.83 { return .orange }
-            if level >= 0.66 { return .yellow }
-            return .green
+            return BroadcastStyle.tint(forLevel: level)
         }
     }
 
