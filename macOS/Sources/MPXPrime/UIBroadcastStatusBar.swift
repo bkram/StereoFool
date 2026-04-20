@@ -80,33 +80,48 @@ struct BroadcastStatusBar: View {
     }
 
     // MARK: - Chips
+    //
+    // Every value-bearing chip reserves a fixed-width frame for its
+    // readout column so the bar doesn't shuffle horizontally as values
+    // gain or lose digits, signs, or secondary peak-hold suffixes
+    // ("…pk"). Widths chosen to fit the worst-case formatted string in
+    // the monospaced value font.
+
+    /// Column widths in points. Tuned against the `.system(.callout, .monospaced)`
+    /// metric at default text size. Each value is sized to fit the
+    /// worst-case formatted string (e.g. "-99.9 dBFS   -99.9 pk").
+    private enum W {
+        static let peak: CGFloat = 168   // "-99.9 dBFS   -99.9 pk"
+        static let mpxPeak: CGFloat = 178  // heroReadout is a touch wider
+        static let deviation: CGFloat = 108  // "-999.9 kHz"
+        static let grValue: CGFloat = 64   // "16.0 dB"
+        static let budgetValue: CGFloat = 76  // "+99.9 dB"
+        static let injectionValue: CGFloat = 56  // "99.9%"
+        static let transportValue: CGFloat = 78  // "STOPPED"
+    }
 
     private var transportChip: some View {
         HStack(spacing: 8) {
             BroadcastStyle.ledHalo(for: model.isRunning ? BroadcastStyle.safeGreen : Color.secondary, active: model.isRunning)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("TRANSPORT")
-                    .font(BroadcastStyle.chipLabel)
-                    .foregroundStyle(.secondary)
-                Text(model.isRunning ? "RUNNING" : "STOPPED")
-                    .font(BroadcastStyle.chipValue)
-                    .foregroundStyle(model.isRunning ? BroadcastStyle.safeGreen : Color.secondary)
-            }
+            chipLabelledValue(
+                label: "TRANSPORT",
+                value: model.isRunning ? "RUNNING" : "STOPPED",
+                width: W.transportValue,
+                valueFont: BroadcastStyle.chipValue,
+                tint: model.isRunning ? BroadcastStyle.safeGreen : Color.secondary
+            )
         }
     }
 
     private func peakChip(label: String, value: String, level: Double, emphasized: Bool = false) -> some View {
         let tint = BroadcastStyle.tint(forLevel: level)
-        return VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(BroadcastStyle.chipLabel)
-                .foregroundStyle(.secondary)
-            Text(value)
-                .font(emphasized ? BroadcastStyle.heroReadout : BroadcastStyle.chipValue)
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .fixedSize()
-        }
+        return chipLabelledValue(
+            label: label,
+            value: value,
+            width: emphasized ? W.mpxPeak : W.peak,
+            valueFont: emphasized ? BroadcastStyle.heroReadout : BroadcastStyle.chipValue,
+            tint: tint
+        )
     }
 
     private var deviationChip: some View {
@@ -114,16 +129,13 @@ struct BroadcastStatusBar: View {
         let kHz = Double(model.estimatedDeviationPeakKHz)
         let norm = max(0.0, min(1.0, kHz / 100.0))
         let tint = BroadcastStyle.tint(forLevel: norm, limitNorm: limit / 100.0)
-        return VStack(alignment: .leading, spacing: 1) {
-            Text("DEV")
-                .font(BroadcastStyle.chipLabel)
-                .foregroundStyle(.secondary)
-            Text(String(format: "%.1f kHz", kHz))
-                .font(BroadcastStyle.heroReadout)
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .fixedSize()
-        }
+        return chipLabelledValue(
+            label: "DEV",
+            value: String(format: "%.1f kHz", kHz),
+            width: W.deviation,
+            valueFont: BroadcastStyle.heroReadout,
+            tint: tint
+        )
     }
 
     private func gainReductionChip(label: String, valueDB: Float) -> some View {
@@ -135,16 +147,13 @@ struct BroadcastStatusBar: View {
         else if db >= 3.0 { tint = BroadcastStyle.tightAmber }
         else if db > 0.1 { tint = BroadcastStyle.safeGreen }
         else { tint = .secondary }
-        return VStack(alignment: .leading, spacing: 1) {
-            Text(label)
-                .font(BroadcastStyle.chipLabel)
-                .foregroundStyle(.secondary)
-            Text(String(format: "%.1f dB", db))
-                .font(BroadcastStyle.chipValue)
-                .foregroundStyle(tint)
-                .lineLimit(1)
-                .fixedSize()
-        }
+        return chipLabelledValue(
+            label: label,
+            value: String(format: "%.1f dB", db),
+            width: W.grValue,
+            valueFont: BroadcastStyle.chipValue,
+            tint: tint
+        )
     }
 
     private var budgetChip: some View {
@@ -155,16 +164,13 @@ struct BroadcastStatusBar: View {
         else { tint = BroadcastStyle.overRed }
         return HStack(spacing: 8) {
             BroadcastStyle.ledHalo(for: tint)
-            VStack(alignment: .leading, spacing: 1) {
-                Text("BUDGET")
-                    .font(BroadcastStyle.chipLabel)
-                    .foregroundStyle(.secondary)
-                Text(String(format: "%+.1f dB", margin))
-                    .font(BroadcastStyle.chipValue)
-                    .foregroundStyle(tint)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
+            chipLabelledValue(
+                label: "BUDGET",
+                value: String(format: "%+.1f dB", margin),
+                width: W.budgetValue,
+                valueFont: BroadcastStyle.chipValue,
+                tint: tint
+            )
         }
     }
 
@@ -173,15 +179,38 @@ struct BroadcastStatusBar: View {
             Circle()
                 .fill(tint.opacity(0.85))
                 .frame(width: 6, height: 6)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(label)
-                    .font(BroadcastStyle.chipLabel)
-                    .foregroundStyle(.secondary)
-                Text(String(format: "%.1f%%", percent))
-                    .font(BroadcastStyle.chipValue)
-                    .lineLimit(1)
-                    .fixedSize()
-            }
+            chipLabelledValue(
+                label: label,
+                value: String(format: "%.1f%%", percent),
+                width: W.injectionValue,
+                valueFont: BroadcastStyle.chipValue,
+                tint: .primary
+            )
+        }
+    }
+
+    /// Shared chip body: uppercase caption label stacked over a
+    /// fixed-width monospaced value. `frame(width:)` on the value locks
+    /// the chip width so sign flips and digit changes don't re-flow the
+    /// rest of the bar. `.monospacedDigit()` keeps digits column-
+    /// aligned within the reserved box.
+    private func chipLabelledValue(
+        label: String,
+        value: String,
+        width: CGFloat,
+        valueFont: Font,
+        tint: Color
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label)
+                .font(BroadcastStyle.chipLabel)
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(valueFont)
+                .monospacedDigit()
+                .foregroundStyle(tint)
+                .lineLimit(1)
+                .frame(width: width, alignment: .leading)
         }
     }
 
